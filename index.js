@@ -16,6 +16,14 @@ const client = new Client({
   }
 });
 
+// ─── Keep-alive HTTP server (required by Render, also used for pinging) ──────
+const http = require('http');
+const PORT = process.env.PORT || 3000;
+http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('Ani-Chan Bot is alive');
+}).listen(PORT, () => console.log(`🌐 Health server on port ${PORT}`));
+
 const PREFIX = process.env.PREFIX || '.';
 const BOT_NAME = process.env.BOT_NAME || 'Ani-Chan Bot';
 
@@ -90,7 +98,6 @@ client.on('message', async (msg) => {
   try {
     const body = msg.body || '';
 
-    // ── @mention or reply-to-bot trigger: show quick menu ────────────────────
     if (!body.startsWith(PREFIX)) {
       const mentionsBot = msg.mentionedIds &&
         msg.mentionedIds.includes(client.info.wid._serialized);
