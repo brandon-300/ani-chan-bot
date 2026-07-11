@@ -1,0 +1,140 @@
+const axios = require('axios');
+const { MessageMedia } = require('whatsapp-web.js');
+
+const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY;
+
+async function sendImage(msg, url, caption) {
+  try {
+    const media = await MessageMedia.fromUrl(url, { unsafeMime: true });
+    const chat = await msg.getChat();
+    await chat.sendMessage(media, { caption });
+  } catch {
+    msg.reply(caption + `\n🔗 ${url}`);
+  }
+}
+
+module.exports = {
+  // .pinterest [query]
+  async pinterest(client, msg, args) {
+    const query = args.join(' ');
+    if (!query) return msg.reply('❌ Usage: .pinterest [search term]');
+
+    msg.reply(`🔍 Searching Pinterest for "${query}"...`);
+    try {
+      const res = await axios.get('https://pinterest-scraper.p.rapidapi.com/search', {
+        params: { query, limit: '5' },
+        headers: {
+          'X-RapidAPI-Key': RAPIDAPI_KEY,
+          'X-RapidAPI-Host': 'pinterest-scraper.p.rapidapi.com',
+        },
+      });
+
+      const pins = res.data?.data || res.data?.results || [];
+      if (!pins.length) return msg.reply('❌ No results found.');
+
+      const pin = pins[0];
+      const imgUrl = pin?.images?.['736x']?.url || pin?.image_url || pin?.imageUrl;
+      if (!imgUrl) return msg.reply('❌ Could not extract image.');
+
+      await sendImage(msg, imgUrl, `📌 Pinterest: ${query}`);
+    } catch (err) {
+      msg.reply('❌ Pinterest search failed. Check your RapidAPI key.\n💡 Tip: Subscribe to "Pinterest Scraper" on RapidAPI.');
+    }
+  },
+
+  // .sauce / .reverseimg — reverse image search
+  async sauce(client, msg, args) {
+    const quoted = await msg.getQuotedMessage().catch(() => null);
+    const targetMsg = quoted || msg;
+
+    if (!targetMsg.hasMedia) {
+      return msg.reply('❌ Reply to an image with .sauce to reverse search it.');
+    }
+
+    msg.reply('🔍 Reverse searching image...');
+    try {
+      const media = await targetMsg.downloadMedia();
+      const imageBuffer = Buffer.from(media.data, 'base64');
+
+      // Use SauceNAO API for anime sources
+      const FormData = require('form-data');
+      const form = new FormData();
+      form.append('file', imageBuffer, { filename: 'image.jpg', contentType: media.mimetype });
+      form.append('output_type', '2');
+      form.append('numres', '3');
+
+      const res = await axios.post(
+        `https://saucenao.com/search.php?api_key=${process.env.SAUCENAO_KEY || 'demo'}&output_type=2`,
+        form,
+        { headers: form.getHeaders() }
+      );
+
+      const results = res.data?.results?.filter(r => parseFloat(r.header?.similarity) > 70) || [];
+      if (!results.length) return msg.reply('❌ No matching sources found (similarity < 70%).');
+
+      let text = `🔍 *Reverse Image Results*\n\n`;
+      results.slice(0, 3).forEach((r, i) => {
+        text += `${i + 1}. *${r.header?.index_name || 'Unknown'}*\n`;
+        text += `   Similarity: ${r.header?.similarity}%\n`;
+        const ext = r.data?.ext_urls?.[0];
+        if (ext) text += `   🔗 ${ext}\n`;
+        text += '\n';
+      });
+      msg.reply(text);
+    } catch (err) {
+      msg.reply('❌ Reverse search failed. Make sure to reply to an image.\n💡 Get a free SauceNAO API key at saucenao.com');
+    }
+  },
+
+  // .wallpaper [query]
+  async wallpaper(client, msg, args) {
+    const query = args.join(' ') || 'anime';
+    msg.reply(`🖼️ Fetching wallpaper for "${query}"...`);
+
+    try {
+      // Wallhaven API — free, no key needed for SFW
+      const res = await axios.get('https://wallhaven.cc/api/v1/search', {
+        params: {
+          q: query,
+          purity: '100',    // SFW only
+          categories: '111',
+          sorting: 'random',
+          per_page: 5,
+        },
+      });
+
+      const wallpapers = res.data?.data || [];
+      if (!wallpapers.length) return msg.reply('❌ No wallpapers found.');
+
+      const wall = wallpapers[0];
+      const imgUrl = wall.path;
+      await sendImage(msg, imgUrl, `🖼️ Wallpaper: ${query}\n📐 ${wall.resolution}`);
+    } catch (err) {
+      msg.reply('❌ Wallpaper search failed.');
+    }
+  },
+
+  // .lyrics [song name]
+  async lyrics(client, msg, args) {
+    const query = args.join(' ');
+    if (!query) return msg.reply('❌ Usage: .lyrics [song name]');
+
+    msg.reply(`🎵 Searching lyrics for "${query}"...`);
+    try {
+      const res = await axios.get('https://some-random-api.com/lyrics', {
+        params: { title: query },
+      });
+
+      if (!res.data?.lyrics) return msg.reply('❌ Lyrics not found.');
+
+      const lyrics = res.data.lyrics.slice(0, 3000); // WhatsApp message limit
+      const hasMore = res.data.lyrics.length > 3000;
+
+      msg.reply(
+        `🎵 *${res.data.title}*\n👤 ${res.data.author}\n\n${lyrics}${hasMore ? '\n\n... (truncated)' : ''}`
+      );
+    } catch (err) {
+      msg.reply('❌ Lyrics search failed.');
+    }
+  },
+};

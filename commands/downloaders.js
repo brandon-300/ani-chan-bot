@@ -1,0 +1,190 @@
+const axios = require('axios');
+const { MessageMedia } = require('whatsapp-web.js');
+
+// NOTE: All downloaders require RapidAPI keys or alternative APIs.
+// Sign up at https://rapidapi.com and get keys for:
+// - Instagram DL: instagram-downloader.p.rapidapi.com
+// - TikTok DL: tiktok-downloader-download-videos-without-watermark.p.rapidapi.com
+// - YouTube DL: youtube-mp36.p.rapidapi.com
+// - Twitter/X DL: twitter241.p.rapidapi.com
+// - Facebook DL: social-media-video-downloader.p.rapidapi.com
+
+const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY;
+const RAPIDAPI_HOST_IG = 'instagram-downloader.p.rapidapi.com';
+const RAPIDAPI_HOST_TT = 'tiktok-downloader-download-videos-without-watermark.p.rapidapi.com';
+const RAPIDAPI_HOST_YT = 'youtube-mp36.p.rapidapi.com';
+const RAPIDAPI_HOST_TW = 'twitter241.p.rapidapi.com';
+
+async function downloadAndSend(msg, url, caption) {
+  try {
+    const media = await MessageMedia.fromUrl(url, { unsafeMime: true });
+    const chat = await msg.getChat();
+    await chat.sendMessage(media, { caption });
+  } catch (err) {
+    msg.reply(`❌ Failed to download. Error: ${err.message}`);
+  }
+}
+
+module.exports = {
+  // .ig [url]
+  async ig(client, msg, args) {
+    const url = args[0];
+    if (!url || !url.includes('instagram.com')) return msg.reply('❌ Usage: .ig [instagram url]');
+
+    msg.reply('⏳ Downloading from Instagram...');
+    try {
+      const res = await axios.get('https://instagram-downloader.p.rapidapi.com/index', {
+        params: { url },
+        headers: {
+          'X-RapidAPI-Key': RAPIDAPI_KEY,
+          'X-RapidAPI-Host': RAPIDAPI_HOST_IG,
+        },
+      });
+
+      const mediaUrl = res.data?.media?.[0]?.url || res.data?.url;
+      if (!mediaUrl) return msg.reply('❌ Could not extract media.');
+      await downloadAndSend(msg, mediaUrl, '📸 Downloaded from Instagram');
+    } catch (err) {
+      msg.reply('❌ Instagram download failed. Check your API key.');
+    }
+  },
+
+  // .ttk [url]
+  async ttk(client, msg, args) {
+    const url = args[0];
+    if (!url || !url.includes('tiktok.com')) return msg.reply('❌ Usage: .ttk [tiktok url]');
+
+    msg.reply('⏳ Downloading from TikTok...');
+    try {
+      const res = await axios.get('https://tiktok-downloader-download-videos-without-watermark.p.rapidapi.com/index', {
+        params: { url },
+        headers: {
+          'X-RapidAPI-Key': RAPIDAPI_KEY,
+          'X-RapidAPI-Host': RAPIDAPI_HOST_TT,
+        },
+      });
+
+      const videoUrl = res.data?.video?.[0] || res.data?.url;
+      if (!videoUrl) return msg.reply('❌ Could not extract video.');
+      await downloadAndSend(msg, videoUrl, '🎵 Downloaded from TikTok');
+    } catch (err) {
+      msg.reply('❌ TikTok download failed.');
+    }
+  },
+
+  // .yt [url or search query]
+  async yt(client, msg, args) {
+    const query = args.join(' ');
+    if (!query) return msg.reply('❌ Usage: .yt [youtube url or search]');
+
+    msg.reply('⏳ Converting YouTube to MP3...');
+    try {
+      // Try direct URL first
+      const videoId = query.match(/(?:v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/)?.[1];
+      if (!videoId) return msg.reply('❌ Please provide a valid YouTube URL.');
+
+      const res = await axios.get('https://youtube-mp36.p.rapidapi.com/dl', {
+        params: { id: videoId },
+        headers: {
+          'X-RapidAPI-Key': RAPIDAPI_KEY,
+          'X-RapidAPI-Host': RAPIDAPI_HOST_YT,
+        },
+      });
+
+      if (res.data.status !== 'ok') return msg.reply('❌ Conversion failed.');
+      await downloadAndSend(msg, res.data.link, `🎵 ${res.data.title}`);
+    } catch (err) {
+      msg.reply('❌ YouTube download failed.');
+    }
+  },
+
+  // .x [url] — Twitter/X
+  async x(client, msg, args) {
+    const url = args[0];
+    if (!url || (!url.includes('twitter.com') && !url.includes('x.com'))) {
+      return msg.reply('❌ Usage: .x [twitter/x url]');
+    }
+
+    msg.reply('⏳ Downloading from X...');
+    try {
+      const tweetId = url.match(/status\/(\d+)/)?.[1];
+      if (!tweetId) return msg.reply('❌ Invalid Twitter/X URL.');
+
+      const res = await axios.get('https://twitter241.p.rapidapi.com/tweet', {
+        params: { pid: tweetId },
+        headers: {
+          'X-RapidAPI-Key': RAPIDAPI_KEY,
+          'X-RapidAPI-Host': RAPIDAPI_HOST_TW,
+        },
+      });
+
+      const media = res.data?.tweet?.entities?.media?.[0];
+      if (!media) return msg.reply('❌ No media found in tweet.');
+
+      const videoUrl = media?.video_info?.variants?.find(v => v.content_type === 'video/mp4')?.url;
+      const imageUrl = media?.media_url_https;
+
+      await downloadAndSend(msg, videoUrl || imageUrl, '🐦 Downloaded from X');
+    } catch (err) {
+      msg.reply('❌ X download failed.');
+    }
+  },
+
+  // .fb [url] — Facebook
+  async fb(client, msg, args) {
+    const url = args[0];
+    if (!url || !url.includes('facebook.com')) return msg.reply('❌ Usage: .fb [facebook url]');
+
+    msg.reply('⏳ Downloading from Facebook...');
+    try {
+      const res = await axios.get('https://social-media-video-downloader.p.rapidapi.com/smvd/get/all', {
+        params: { url },
+        headers: {
+          'X-RapidAPI-Key': RAPIDAPI_KEY,
+          'X-RapidAPI-Host': 'social-media-video-downloader.p.rapidapi.com',
+        },
+      });
+
+      const link = res.data?.links?.find(l => l.quality === 'hd')?.link || res.data?.links?.[0]?.link;
+      if (!link) return msg.reply('❌ Could not extract video.');
+      await downloadAndSend(msg, link, '📘 Downloaded from Facebook');
+    } catch (err) {
+      msg.reply('❌ Facebook download failed.');
+    }
+  },
+
+  // .play [song name] — search YouTube and return audio
+  async play(client, msg, args) {
+    const query = args.join(' ');
+    if (!query) return msg.reply('❌ Usage: .play [song name]');
+
+    msg.reply(`🔍 Searching for "${query}"...`);
+    try {
+      // Search YouTube
+      const searchRes = await axios.get('https://youtube-mp36.p.rapidapi.com/search', {
+        params: { q: query },
+        headers: {
+          'X-RapidAPI-Key': RAPIDAPI_KEY,
+          'X-RapidAPI-Host': RAPIDAPI_HOST_YT,
+        },
+      });
+
+      const firstResult = searchRes.data?.items?.[0];
+      if (!firstResult) return msg.reply('❌ No results found.');
+
+      // Convert to MP3
+      const dlRes = await axios.get('https://youtube-mp36.p.rapidapi.com/dl', {
+        params: { id: firstResult.id },
+        headers: {
+          'X-RapidAPI-Key': RAPIDAPI_KEY,
+          'X-RapidAPI-Host': RAPIDAPI_HOST_YT,
+        },
+      });
+
+      if (dlRes.data.status !== 'ok') return msg.reply('❌ Conversion failed.');
+      await downloadAndSend(msg, dlRes.data.link, `🎵 ${dlRes.data.title}`);
+    } catch (err) {
+      msg.reply('❌ Play failed. Try with a direct YouTube URL using .yt');
+    }
+  },
+};
