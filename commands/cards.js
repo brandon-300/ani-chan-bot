@@ -1,11 +1,14 @@
-const { CardCatalogue, OwnedCard, Auction } = require('../models/Card');
+const { CardCatalogue, OwnedCard, Auction, TradeRequest } = require('../models/Card');
+const { MessageMedia } = require('whatsapp-web.js');
 const User = require('../models/User');
 const Group = require('../models/Group');
-const { tierEmoji, rollTier, formatNum, pick } = require('../utils/helpers');
+const { tierEmoji, rollTier, formatNum, pick, mentionName, generateUniqueCode, safeGetChat, cardValue } = require('../utils/helpers');
+const crypto = require('crypto');
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 async function getUserCards(userId) {
-  return OwnedCard.find({ ownerId: userId }).sort({ tier: -1, name: 1 });
+  const cards = await OwnedCard.find({ ownerId: userId });
+  return cards.sort((a, b) => cardValue(b.tier) - cardValue(a.tier) || a.name.localeCompare(b.name));
 }
 
 async function getCardByIndex(userId, index) {
@@ -16,23 +19,123 @@ async function getCardByIndex(userId, index) {
 // ─── Drop a Random Card in Group ─────────────────────────────────────────────
 async function dropCard(chat) {
   const tier = rollTier();
-  const card = await CardCatalogue.findOne({ tier }).exec();
-  if (!card) return null;
 
-  const msg = `🎴 *A card has appeared!*\n\n${tierEmoji(tier)} *${card.name}*\n📚 Series: ${card.series}\n⭐ Tier: ${tier}\n\nType *.claim ${card._id}* to claim it!`;
-  await chat.sendMessage(msg);
+  let card = null;
+
+  const tiers = [tier, 'SSS', 'SS', 'S', 'A', 'B', 'C']
+    .filter((v, i, a) => a.indexOf(v) === i);
+
+  for (const currentTier of tiers) {
+    const claimedIds = await OwnedCard.distinct('catalogueId');
+
+    const available = await CardCatalogue.find({
+      tier: currentTier,
+      cardId: { $nin: claimedIds }
+    });
+
+    if (available.length) {
+      card = available[Math.floor(Math.random() * available.length)];
+      break;
+    }
+  }
+
+  if (!card) {
+    await chat.sendMessage('🎴 All cards have already been claimed!');
+    return null;
+  }
+
+  const claimCode = crypto.randomBytes(3).toString('hex').toUpperCase();
+  const groupId = chat.id._serialized;
+
+  await Group.findOneAndUpdate(
+    { id: groupId },
+    {
+      activeCardId: card.cardId,
+      activeCardCode: claimCode,
+      activeCardExpiresAt: new Date(Date.now() + 10 * 60 * 1000)
+    },
+    { upsert: true, new: true }
+  );
+
+  const caption = `🎴 *A card has appeared!*
+
+${tierEmoji(card.tier)} *${card.name}*
+📚 Series: ${card.series}
+⭐ Tier: ${card.tier}
+
+Type *.claim ${claimCode}* to claim it!`;
+
+  if (card.imageUrl) {
+    try {
+      const media = await MessageMedia.fromUrl(card.imageUrl, { unsafeMime: true });
+      await chat.sendMessage(media, { caption });
+      return card;
+    } catch {
+      // image fetch failed — fall through to text-only drop below
+    }
+  }
+
+  await chat.sendMessage(caption);
   return card;
+}
+
+// ─── Track active drop intervals so toggling never leaks or duplicates them ──
+const cardIntervals = new Map(); // chatId -> intervalId
+
+function startDropInterval(chat) {
+  const chatId = chat.id._serialized;
+  if (cardIntervals.has(chatId)) clearInterval(cardIntervals.get(chatId));
+  const intervalId = setInterval(() => dropCard(chat), 5 * 60 * 1000);
+  cardIntervals.set(chatId, intervalId);
+}
+
+function stopDropInterval(chatId) {
+  if (cardIntervals.has(chatId)) {
+    clearInterval(cardIntervals.get(chatId));
+    cardIntervals.delete(chatId);
+  }
+}
+
+// Called once from index.js on bot startup to resume drops after any restart
+async function _initCardDrops(client) {
+  const enabledGroups = await Group.find({ cardsEnabled: true });
+  for (const group of enabledGroups) {
+    try {
+      const chat = await client.getChatById(group.id);
+      startDropInterval(chat);
+    } catch (e) {
+      // Group may no longer exist / bot may have been removed — skip it
+    }
+  }
+  if (enabledGroups.length) {
+    console.log(`🎴 Resumed card drops in ${enabledGroups.length} group(s)`);
+  }
 }
 
 // ─── Commands ─────────────────────────────────────────────────────────────────
 module.exports = {
+  _initCardDrops,
   // .cards on/off
   async cards(client, msg, args) {
-    const chat = await msg.getChat();
+    const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
+    if (!chat) return;
     if (!chat.isGroup) return msg.reply('❌ Group only.');
     const sub = args[0]?.toLowerCase();
     if (!sub) {
-      const group = await Group.findOne({ id: chat.id._serialized });
+      const group = await Group.findOneAndUpdate(
+      {
+        id: chat.id._serialized,
+        activeCardCode: id.toUpperCase()
+      },
+      {
+        $unset: {
+          activeCardId: '',
+          activeCardCode: '',
+          activeCardExpiresAt: ''
+        }
+      },
+      { new: false }
+    );
       return msg.reply(`🎴 Cards are currently *${group?.cardsEnabled ? 'ON' : 'OFF'}*`);
     }
     const group = await Group.findOneAndUpdate(
@@ -49,17 +152,27 @@ module.exports = {
   },
 
   // .card [index]
-  async card(client, msg, args) {
-    const contact = await msg.getContact();
-    const index = parseInt(args[0]);
-    if (isNaN(index)) return msg.reply('❌ Usage: .card [index]');
-
-    const card = await getCardByIndex(contact.id._serialized, index);
-    if (!card) return msg.reply('❌ Card not found at that index.');
-
-    msg.reply(
-      `🎴 *Card #${index}*\n\n${tierEmoji(card.tier)} *${card.name}*\n📚 Series: ${card.series}\n⭐ Tier: ${card.tier}\n💰 For Sale: ${card.isForSale ? `Yes — ${card.price} coins` : 'No'}`
+async cards(client, msg, args) {
+    const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
+    if (!chat) return;
+    if (!chat.isGroup) return msg.reply('❌ Group only.');
+    const sub = args[0]?.toLowerCase();
+    if (!sub) {
+      const group = await Group.findOne({ id: chat.id._serialized });
+      return msg.reply(`🎴 Cards are currently *${group?.cardsEnabled ? 'ON' : 'OFF'}*`);
+    }
+    const group = await Group.findOneAndUpdate(
+      { id: chat.id._serialized },
+      { cardsEnabled: sub === 'on' },
+      { upsert: true, new: true }
     );
+    msg.reply(`🎴 Cards are now *${group.cardsEnabled ? 'ON' : 'OFF'}*`);
+
+    if (group.cardsEnabled) {
+      startDropInterval(chat);
+    } else {
+      stopDropInterval(chat.id._serialized);
+    }
   },
 
   // .ci [name] [tier] — card info from catalogue
@@ -75,9 +188,44 @@ module.exports = {
     const card = await CardCatalogue.findOne(query);
     if (!card) return msg.reply('❌ Card not found.');
 
-    msg.reply(
-      `📖 *Card Info*\n\n${tierEmoji(card.tier)} *${card.name}*\n📚 Series: ${card.series}\n⭐ Tier: ${card.tier}\n🆔 ID: ${card._id}`
-    );
+    const cardId = card.cardId || card._id;
+    const owned = card.cardId
+      ? await OwnedCard.findOne({ catalogueId: card.cardId })
+      : null;
+
+    const ownershipLines = owned
+      ? `👤 Owner: @${owned.ownerId.split('@')[0]}\n🥇 First Owner: @${owned.firstOwner ? owned.firstOwner.split('@')[0] : owned.ownerId.split('@')[0]}\n🔄 Times Traded: ${owned.timesTraded}\n📅 Claimed: ${new Date(owned.obtainedAt).toLocaleDateString()}`
+      : `💎 Status: Available`;
+
+    const caption =
+`📖 *Card Information*
+
+${tierEmoji(card.tier)} *${card.name}*
+📚 Series: ${card.series}
+⭐ Tier: ${card.tier}
+💰 Value: ${cardValue(card.tier).toLocaleString()} coins
+🆔 Card ID: ${cardId}
+
+${ownershipLines}
+📅 Added: ${card.createdAt ? new Date(card.createdAt).toLocaleDateString() : 'Unknown'}${card.description ? `\n📝 ${card.description}` : ''}
+
+Use *.claim* when this card drops!`;
+
+    const mentions = owned
+      ? [...new Set([owned.ownerId, owned.firstOwner].filter(Boolean))]
+      : [];
+
+    if (card.imageUrl) {
+      try {
+        const media = await MessageMedia.fromUrl(card.imageUrl, { unsafeMime: true });
+        const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
+        if (!chat) return;
+        return await chat.sendMessage(media, { caption, mentions });
+      } catch {
+        // image fetch failed — fall through to text-only reply
+      }
+    }
+    msg.reply(caption, undefined, { mentions });
   },
 
   // .cardinfo alias
@@ -88,7 +236,7 @@ module.exports = {
   // .si [name] — series info
   async si(client, msg, args) {
     const name = args.join(' ');
-    if (!name) return msg.reply('❌ Usage: .si [series]');
+if (!name) return msg.reply('❌ Usage: .si [series]');
     const cards = await CardCatalogue.find({ series: new RegExp(name, 'i') }).sort({ tier: -1 });
     if (!cards.length) return msg.reply('❌ Series not found.');
 
@@ -103,7 +251,10 @@ module.exports = {
     const series = args.join(' ');
     if (!series) return msg.reply('❌ Usage: .ss [series]');
 
-    const cards = await OwnedCard.find({ ownerId: contact.id._serialized, series: new RegExp(series, 'i') });
+const cards = await OwnedCard.find({
+  ownerId: contact.id._serialized,
+  series: new RegExp(series, 'i')
+});
     if (!cards.length) return msg.reply('❌ You have no cards from that series.');
 
     let text = `📚 *Your ${series} Cards* (${cards.length})\n\n`;
@@ -125,8 +276,8 @@ module.exports = {
 
     if (!results.length) return msg.reply('❌ No data found.');
     let text = `🏆 *${series} Leaderboard*\n\n`;
-    results.forEach((r, i) => { text += `${i + 1}. ${r._id} — ${r.count} cards\n`; });
-    msg.reply(text);
+    results.forEach((r, i) => { text += `${i + 1}. @${r._id.split('@')[0]} — ${r.count} cards\n`; });
+    msg.reply(text, undefined, { mentions: results.map(r => r._id) });
   },
 
   // .clb — card leaderboard (most total cards)
@@ -136,9 +287,101 @@ module.exports = {
       { $sort: { count: -1 } },
       { $limit: 10 }
     ]);
-    let text = `🏆 *Card Leaderboard*\n\n`;
-    results.forEach((r, i) => { text += `${i + 1}. ${r._id} — ${r.count} cards\n`; });
-    msg.reply(text);
+    if (!results.length) return msg.reply('❌ No data found.');
+    let text = `🏆 *Collection Size Leaderboard*\n\n`;
+    results.forEach((r, i) => { text += `${i + 1}. @${r._id.split('@')[0]} — ${r.count} cards\n`; });
+    msg.reply(text, undefined, { mentions: results.map(r => r._id) });
+  },
+
+  // .vlb — leaderboard by total collection value (Phase 7)
+  async vlb(client, msg, args) {
+    const cards = await OwnedCard.find();
+    const totals = {};
+    for (const c of cards) {
+      totals[c.ownerId] = (totals[c.ownerId] || 0) + cardValue(c.tier);
+    }
+    const ranked = Object.entries(totals).sort((a, b) => b[1] - a[1]).slice(0, 10);
+    if (!ranked.length) return msg.reply('❌ No data found.');
+
+    let text = `🏆 *Collection Value Leaderboard*\n\n`;
+    ranked.forEach(([id, value], i) => {
+      text += `${i + 1}. @${id.split('@')[0]} — 💰 ${value.toLocaleString()} coins\n`;
+    });
+    msg.reply(text, undefined, { mentions: ranked.map(([id]) => id) });
+  },
+
+  // .tlb — leaderboard by the single highest-tier card each person owns (Phase 7)
+  async tlb(client, msg, args) {
+    const cards = await OwnedCard.find();
+    const best = {};
+    for (const c of cards) {
+      const v = cardValue(c.tier);
+      if (!best[c.ownerId] || v > best[c.ownerId].value) {
+        best[c.ownerId] = { value: v, tier: c.tier, name: c.name };
+      }
+    }
+    const ranked = Object.entries(best).sort((a, b) => b[1].value - a[1].value).slice(0, 10);
+    if (!ranked.length) return msg.reply('❌ No data found.');
+
+    let text = `🏆 *Highest Tier Leaderboard*\n\n`;
+    ranked.forEach(([id, info], i) => {
+      text += `${i + 1}. @${id.split('@')[0]} — ${tierEmoji(info.tier)} ${info.tier} (${info.name})\n`;
+    });
+    msg.reply(text, undefined, { mentions: ranked.map(([id]) => id) });
+  },
+
+  // .sslb — leaderboard by number of SS/SSS cards owned (Phase 7)
+  async sslb(client, msg, args) {
+    const cards = await OwnedCard.find({ tier: { $in: ['SS', 'SSS'] } });
+    const counts = {};
+    for (const c of cards) {
+      counts[c.ownerId] = (counts[c.ownerId] || 0) + 1;
+    }
+    const ranked = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 10);
+    if (!ranked.length) return msg.reply('❌ No one owns an SS or SSS card yet.');
+
+    let text = `🏆 *Most SS+ Cards*\n\n`;
+    ranked.forEach(([id, count], i) => {
+      text += `${i + 1}. @${id.split('@')[0]} — 🟠 ${count} card(s)\n`;
+    });
+    msg.reply(text, undefined, { mentions: ranked.map(([id]) => id) });
+  },
+
+  // .mclb — leaderboard by each person's best-completed series (Phase 7)
+  async mclb(client, msg, args) {
+    const catalogue = await CardCatalogue.find();
+    const seriesTotals = {};
+    for (const c of catalogue) {
+      seriesTotals[c.series] = (seriesTotals[c.series] || 0) + 1;
+    }
+
+    const owned = await OwnedCard.find();
+    const ownedBySeries = {};
+    for (const c of owned) {
+      if (!ownedBySeries[c.ownerId]) ownedBySeries[c.ownerId] = {};
+      ownedBySeries[c.ownerId][c.series] = (ownedBySeries[c.ownerId][c.series] || 0) + 1;
+    }
+
+    const best = {};
+    for (const [ownerId, seriesCounts] of Object.entries(ownedBySeries)) {
+      for (const [series, count] of Object.entries(seriesCounts)) {
+        const total = seriesTotals[series];
+        if (!total) continue;
+        const pct = count / total;
+        if (!best[ownerId] || pct > best[ownerId].pct) {
+          best[ownerId] = { pct, series, count, total };
+        }
+      }
+    }
+
+    const ranked = Object.entries(best).sort((a, b) => b[1].pct - a[1].pct).slice(0, 10);
+    if (!ranked.length) return msg.reply('❌ No data found.');
+
+    let text = `🏆 *Most Complete Series*\n\n`;
+    ranked.forEach(([id, info], i) => {
+      text += `${i + 1}. @${id.split('@')[0]} — ${info.series} (${info.count}/${info.total}, ${Math.round(info.pct * 100)}%)\n`;
+    });
+    msg.reply(text, undefined, { mentions: ranked.map(([id]) => id) });
   },
 
   // .deck — view your deck
@@ -158,20 +401,77 @@ module.exports = {
   // .col — view your collection
   async col(client, msg, args) {
     const contact = await msg.getContact();
-    const page = parseInt(args[0]) || 1;
-    const perPage = 15;
     const cards = await getUserCards(contact.id._serialized);
 
     if (!cards.length) return msg.reply('❌ Your collection is empty.');
 
-    const start = (page - 1) * perPage;
-    const slice = cards.slice(start, start + perPage);
+    const arg = args[0]?.trim();
+
+    // .col page <n> — explicit pagination (kept separate from .col <n>,
+    // which drills into a specific card, to avoid ambiguity)
+    if (arg === 'page') {
+      const perPage = 10;
+      const page = parseInt(args[1]) > 0 ? parseInt(args[1]) : 1;
+      const start = (page - 1) * perPage;
+      const slice = cards.slice(start, start + perPage);
+      const totalPages = Math.ceil(cards.length / perPage);
+
+      if (!slice.length) return msg.reply(`❌ No cards on page ${page}. You have ${totalPages} page(s) total.`);
+
+      let text = `🗃️ *Your Collection* [Page ${page}/${totalPages}] (${cards.length} total)\n\n`;
+      slice.forEach((c, i) => {
+        text += `${start + i + 1}. ${tierEmoji(c.tier)} *${c.name}* — ${c.tier}\n   📚 ${c.series}\n\n`;
+      });
+      text += `Use *.col <number>* to view a card's full details.`;
+      if (totalPages > 1) text += `\nUse *.col page <n>* to see more (e.g. .col page 2).`;
+      return msg.reply(text);
+    }
+
+    // .col <number> — drill into a specific card's full detail
+    if (arg && /^\d+$/.test(arg)) {
+      const index = parseInt(arg);
+      const card = cards[index - 1];
+      if (!card) return msg.reply(`❌ No card at position ${index}. You have ${cards.length} card(s) — try *.col* to see them all.`);
+
+      const catalogue = card.catalogueId
+        ? await CardCatalogue.findOne({ cardId: card.catalogueId })
+        : null;
+
+      const caption =
+`📖 *${card.name}*
+
+${tierEmoji(card.tier)} Tier: ${card.tier}
+📚 Series: ${card.series}
+💰 Value: ${cardValue(card.tier).toLocaleString()} coins
+🆔 Code: ${card.code || 'N/A'}
+🔄 Times Traded: ${card.timesTraded}
+📅 Obtained: ${new Date(card.obtainedAt).toLocaleDateString()}${catalogue?.description ? `\n📝 ${catalogue.description}` : ''}`;
+
+      if (catalogue?.imageUrl) {
+        try {
+          const media = await MessageMedia.fromUrl(catalogue.imageUrl, { unsafeMime: true });
+          const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
+          if (!chat) return;
+          return await chat.sendMessage(media, { caption });
+        } catch {
+          // image fetch failed — fall through to text-only reply
+        }
+      }
+      return msg.reply(caption);
+    }
+
+    // .col (no args) — page 1 of the rich list
+    const perPage = 10;
+    const slice = cards.slice(0, perPage);
     const totalPages = Math.ceil(cards.length / perPage);
 
-    let text = `🗃️ *Your Collection* [Page ${page}/${totalPages}] (${cards.length} total)\n\n`;
+    let text = `🗃️ *Your Collection* [Page 1/${totalPages}] (${cards.length} total)\n\n`;
     slice.forEach((c, i) => {
-      text += `${start + i + 1}. ${tierEmoji(c.tier)} ${c.name} — ${c.tier}\n`;
+      text += `${i + 1}. ${tierEmoji(c.tier)} *${c.name}* — ${c.tier}\n   📚 ${c.series}\n\n`;
     });
+    text += `Use *.col <number>* to view a card's full details.`;
+    if (totalPages > 1) text += `\nUse *.col page <n>* to see more (e.g. .col page 2).`;
+
     msg.reply(text);
   },
 
@@ -181,10 +481,10 @@ module.exports = {
     if (!forSale.length) return msg.reply('🛒 The card shop is currently empty.');
 
     let text = `🛒 *Card Shop*\n\n`;
-    forSale.forEach((c, i) => {
-      text += `${i + 1}. ${tierEmoji(c.tier)} *${c.name}* [${c.tier}] — 💰 ${c.price} coins (Owner: ${c.ownerId})\n`;
+    forSale.forEach((c) => {
+      text += `${tierEmoji(c.tier)} *${c.name}* [${c.tier}] — 💰 ${c.price} coins\n🆔 ${c.code || 'pending'} (Owner: ${c.ownerId})\n\n`;
     });
-    text += `\nUse *.claim [index]* to buy!`;
+    text += `Use *.claim <code>* to buy!`;
     msg.reply(text);
   },
 
@@ -250,39 +550,77 @@ module.exports = {
 
   // .claim [id] — claim a dropped card or buy from shop
   async claim(client, msg, args) {
+    const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
+    if (!chat) return;
     const contact = await msg.getContact();
-    const id = args[0];
-    if (!id) return msg.reply('❌ Usage: .claim [id]');
+    const id = args[0]?.trim();
+    if (!id) return msg.reply('❌ Usage: .claim [code]');
 
     const user = await User.findOrCreate(contact.id._serialized, contact.pushname);
 
     // Check if it's a shop card
-    const shopCard = await OwnedCard.findOne({ _id: id, isForSale: true }).catch(() => null);
+    const shopCard = await OwnedCard.findOne({ code: id.toUpperCase(), isForSale: true }).catch(() => null);
     if (shopCard) {
       if (user.coins < shopCard.price) return msg.reply(`❌ Not enough coins. Need ${shopCard.price}.`);
       user.coins -= shopCard.price;
       shopCard.ownerId = contact.id._serialized;
       shopCard.isForSale = false;
       shopCard.price = 0;
+      shopCard.timesTraded += 1;
       await shopCard.save();
       await user.save();
       return msg.reply(`✅ You bought *${shopCard.name}* [${shopCard.tier}]!`);
     }
 
-    // Drop claim
-    const catalogue = await CardCatalogue.findById(id).catch(() => null);
-    if (!catalogue) return msg.reply('❌ Invalid card ID.');
+// Drop claim
+const group = await Group.findOne({ id: chat.id._serialized });
+let catalogue = null;
 
-    const existing = await OwnedCard.findOne({ ownerId: contact.id._serialized, catalogueId: id });
-    if (existing) return msg.reply('❌ You already claimed this card!');
+if (/^[A-Z0-9]{6}$/i.test(id)) {
+  catalogue = await CardCatalogue.findOne({
+    cardId: id.toUpperCase()
+  }).catch(() => null);
+}
+
+if (
+  group?.activeCardCode &&
+  id.toUpperCase() === group.activeCardCode
+) {
+  catalogue = await CardCatalogue.findOne({
+    cardId: group.activeCardId
+  }).catch(() => null);
+}
+
+    if (!group) {
+      return msg.reply('❌ This card has already been claimed or the claim code expired.');
+    }
+
+    if (!catalogue) {
+      return msg.reply('❌ Invalid or expired claim code.');
+    }
+
+const existing = await OwnedCard.findOne({
+  ownerId: contact.id._serialized,
+  catalogueId: catalogue.cardId
+});
+
+if (existing)
+  return msg.reply('❌ You already claimed this card!');
 
     const owned = await OwnedCard.create({
       ownerId: contact.id._serialized,
-      catalogueId: catalogue._id,
+      catalogueId: catalogue.cardId,
+      code: await generateUniqueCode(OwnedCard),
       name: catalogue.name,
       series: catalogue.series,
       tier: catalogue.tier,
+      firstOwner: contact.id._serialized,
     });
+
+    await Group.findOneAndUpdate(
+      { id: chat.id._serialized },
+      { $unset: { activeCardId: '', activeCardCode: '', activeCardExpiresAt: '' } }
+    );
 
     msg.reply(`✅ *${contact.pushname}* claimed ${tierEmoji(catalogue.tier)} *${catalogue.name}* [${catalogue.tier}]!`);
   },
@@ -308,12 +646,14 @@ module.exports = {
     const sellerUser = await User.findOrCreate(contact.id._serialized);
     sellerUser.coins += price;
     card.ownerId = buyer.id._serialized;
+    card.timesTraded += 1;
 
     await Promise.all([buyerUser.save(), sellerUser.save(), card.save()]);
-    msg.reply(`✅ Sold *${card.name}* [${card.tier}] to @${buyer.number} for 💰 ${price}!`);
+    msg.reply(`✅ Sold *${card.name}* [${card.tier}] to @${mentionName(buyer)} for 💰 ${price}!`);
   },
 
-  // .tc [@user] [my_index] [their_index] — trade card
+  // .tc [@user] [your_index] [their_index] — propose a trade (Phase 6: safe
+  // trading). Nothing changes hands yet; the partner must .accepttrade.
   async tc(client, msg, args) {
     const contact = await msg.getContact();
     const mentioned = await msg.getMentions();
@@ -323,23 +663,111 @@ module.exports = {
     const theirIndex = parseInt(args[2]);
     const partner = mentioned[0];
 
+    if (partner.id._serialized === contact.id._serialized) {
+      return msg.reply("❌ You can't trade with yourself.");
+    }
+
     const myCard = await getCardByIndex(contact.id._serialized, myIndex);
     const theirCard = await getCardByIndex(partner.id._serialized, theirIndex);
 
     if (!myCard) return msg.reply('❌ Your card not found.');
     if (!theirCard) return msg.reply(`❌ Their card not found.`);
 
-    myCard.ownerId = partner.id._serialized;
-    theirCard.ownerId = contact.id._serialized;
-    await Promise.all([myCard.save(), theirCard.save()]);
+    const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
+    if (!chat) return;
 
-    msg.reply(`🔄 *Trade Complete!*\n\n${contact.pushname} ➜ ${tierEmoji(myCard.tier)} ${myCard.name}\n${partner.pushname} ➜ ${tierEmoji(theirCard.tier)} ${theirCard.name}`);
+    // Replace any earlier pending offer between these two in this chat, so
+    // .accepttrade always resolves to the latest offer, never a stale one.
+    await TradeRequest.deleteMany({
+      groupId: chat.id._serialized,
+      initiatorId: contact.id._serialized,
+      partnerId: partner.id._serialized
+    });
+
+    await TradeRequest.create({
+      groupId: chat.id._serialized,
+      initiatorId: contact.id._serialized,
+      partnerId: partner.id._serialized,
+      initiatorCardId: myCard._id,
+      partnerCardId: theirCard._id
+    });
+
+    msg.reply(
+      `🔄 *Trade Offer*\n\n${mentionName(contact)} wants to trade:\n${tierEmoji(myCard.tier)} *${myCard.name}*\n\nfor\n\n${tierEmoji(theirCard.tier)} *${theirCard.name}*\n\n@${partner.id.user}, reply *.accepttrade* or *.declinetrade* (expires in 10 min)`,
+      undefined,
+      { mentions: [partner.id._serialized] }
+    );
+  },
+
+  // .accepttrade — accept the most recent pending trade offer sent to you
+  // in this chat.
+  async accepttrade(client, msg, args) {
+    const contact = await msg.getContact();
+    const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
+    if (!chat) return;
+
+    const trade = await TradeRequest.findOne({
+      groupId: chat.id._serialized,
+      partnerId: contact.id._serialized
+    }).sort({ createdAt: -1 });
+
+    if (!trade) return msg.reply('❌ You have no pending trade offers.');
+
+    if (Date.now() - trade.createdAt.getTime() > 10 * 60 * 1000) {
+      await trade.deleteOne();
+      return msg.reply('❌ That trade offer expired. Ask them to send a new one.');
+    }
+
+    const [myCard, theirCard] = await Promise.all([
+      OwnedCard.findById(trade.partnerCardId),
+      OwnedCard.findById(trade.initiatorCardId)
+    ]);
+
+    // Re-check ownership in case a card changed hands (sold, traded, or
+    // auctioned elsewhere) between the offer and this acceptance.
+    if (!myCard || myCard.ownerId !== contact.id._serialized ||
+        !theirCard || theirCard.ownerId !== trade.initiatorId) {
+      await trade.deleteOne();
+      return msg.reply('❌ This trade is no longer valid — one of the cards changed hands since the offer.');
+    }
+
+    myCard.ownerId = trade.initiatorId;
+    theirCard.ownerId = trade.partnerId;
+    myCard.timesTraded += 1;
+    theirCard.timesTraded += 1;
+
+    await Promise.all([myCard.save(), theirCard.save(), trade.deleteOne()]);
+
+    msg.reply(
+      `✅ *Trade Complete!*\n\n@${trade.initiatorId.split('@')[0]} ➜ ${tierEmoji(myCard.tier)} ${myCard.name}\n@${trade.partnerId.split('@')[0]} ➜ ${tierEmoji(theirCard.tier)} ${theirCard.name}`,
+      undefined,
+      { mentions: [trade.initiatorId, trade.partnerId] }
+    );
+  },
+
+  // .declinetrade — decline the most recent pending trade offer sent to you
+  // in this chat.
+  async declinetrade(client, msg, args) {
+    const contact = await msg.getContact();
+    const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
+    if (!chat) return;
+
+    const trade = await TradeRequest.findOne({
+      groupId: chat.id._serialized,
+      partnerId: contact.id._serialized
+    }).sort({ createdAt: -1 });
+
+    if (!trade) return msg.reply('❌ You have no pending trade offers.');
+
+    await trade.deleteOne();
+    msg.reply(`❌ ${mentionName(contact)} declined the trade offer.`, undefined, { mentions: [trade.initiatorId] });
   },
 
   // .lendcard — lend your top card to group temporarily
   async lendcard(client, msg, args) {
     const contact = await msg.getContact();
-    const chat = await msg.getChat();
+    const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
+    if (!chat) return;
     if (!chat.isGroup) return msg.reply('❌ Group only.');
     const cards = await getUserCards(contact.id._serialized);
     if (!cards.length) return msg.reply('❌ You have no cards.');
@@ -361,22 +789,22 @@ module.exports = {
     if (!auctions.length) return msg.reply('🔨 No active auctions.');
 
     let text = `🔨 *Active Auctions*\n\n`;
-    auctions.forEach((a, i) => {
+    auctions.forEach((a) => {
       const timeLeft = Math.max(0, Math.round((a.endsAt - Date.now()) / 60000));
-      text += `${i + 1}. ${tierEmoji(a.cardTier)} *${a.cardName}* [${a.cardTier}]\n   Current Bid: 💰 ${a.currentBid || a.startPrice}\n   Ends in: ${timeLeft}m\n   ID: ${a._id}\n\n`;
+      text += `${tierEmoji(a.cardTier)} *${a.cardName}* [${a.cardTier}]\n   Current Bid: 💰 ${a.currentBid || a.startPrice}\n   Ends in: ${timeLeft}m\n   🆔 ${a.code || 'pending'}\n\n`;
     });
-    text += `Use *.submit [auction_id] [amount]* to bid!`;
+    text += `Use *.submit [code] [amount]* to bid!`;
     msg.reply(text);
   },
 
-  // .submit [auction_id] [amount] — bid
+  // .submit [code] [amount] — bid
   async submit(client, msg, args) {
     const contact = await msg.getContact();
-    const auctionId = args[0];
+    const code = args[0]?.trim().toUpperCase();
     const amount = parseInt(args[1]);
-    if (!auctionId || !amount) return msg.reply('❌ Usage: .submit [auction_id] [amount]');
+    if (!code || !amount) return msg.reply('❌ Usage: .submit [code] [amount]');
 
-    const auction = await Auction.findById(auctionId);
+    const auction = await Auction.findOne({ code });
     if (!auction || !auction.isActive) return msg.reply('❌ Auction not found or ended.');
 
     const user = await User.findOrCreate(contact.id._serialized);
@@ -396,17 +824,17 @@ module.exports = {
     if (!auctions.length) return msg.reply('❌ You have no active auctions.');
 
     let text = `🔨 *Your Auctions*\n\n`;
-    auctions.forEach((a, i) => {
-      text += `${i + 1}. ${a.cardName} [${a.cardTier}] — Bid: 💰 ${a.currentBid}\n   ID: ${a._id}\n`;
+    auctions.forEach((a) => {
+      text += `${a.cardName} [${a.cardTier}] — Bid: 💰 ${a.currentBid}\n   🆔 ${a.code || 'pending'}\n`;
     });
     msg.reply(text);
   },
 
-  // .remauc [auction_id] — remove your auction
+  // .remauc [code] — remove your auction
   async remauc(client, msg, args) {
     const contact = await msg.getContact();
-    const id = args[0];
-    const auction = await Auction.findOne({ _id: id, sellerId: contact.id._serialized });
+    const code = args[0]?.trim().toUpperCase();
+    const auction = await Auction.findOne({ code, sellerId: contact.id._serialized });
     if (!auction) return msg.reply('❌ Auction not found.');
     auction.isActive = false;
     await auction.save();

@@ -1,0 +1,387 @@
+require('dotenv').config();
+const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
+const qrcode = require('qrcode-terminal');
+const mongoose = require('mongoose');
+const fs = require('fs');
+const path = require('path');
+
+process.on('uncaughtException', (err) => {
+  console.error('💥 Uncaught Exception:', err);
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error('💥 Unhandled Rejection:', reason);
+});
+
+const mongoOptions = {
+  serverSelectionTimeoutMS: 10000,
+  connectTimeoutMS: 10000,
+};
+
+async function connectMongo() {
+  try {
+    await mongoose.connect(process.env.MONGO_URI, mongoOptions);
+    console.log('✅ MongoDB connected');
+  } catch (err) {
+    console.error('❌ MongoDB error:', err.message);
+    setTimeout(connectMongo, 15000);
+  }
+}
+
+connectMongo();
+
+const clientOptions = {
+  authStrategy: new LocalAuth(),
+  puppeteer: {
+    headless: true,
+    timeout: 60000,
+    protocolTimeout: 60000,
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-gpu',
+      '--disable-extensions',
+      '--disable-background-networking',
+      '--disable-background-timer-throttling',
+      '--disable-renderer-backgrounding',
+      '--no-first-run',
+      '--no-zygote'
+    ],
+  }
+};
+
+if (process.env.BOT_NUMBER) {
+  clientOptions.pairWithPhoneNumber = {
+    phoneNumber: process.env.BOT_NUMBER,
+    showNotification: true,
+    intervalMs: 180000,
+  };
+}
+
+const client = new Client(clientOptions);
+
+const PREFIX = process.env.BOT_PREFIX || '.';
+const BOT_NAME = process.env.BOT_NAME || 'Ani-Chan Bot';
+
+const commands = {};
+const commandDir = path.join(__dirname, 'commands');
+
+fs.readdirSync(commandDir).forEach(file => {
+  if (!file.endsWith('.js')) return;
+  const module = require(path.join(commandDir, file));
+  Object.entries(module).forEach(([name, fn]) => {
+    if (typeof fn === 'function' && !name.startsWith('_')) {
+      commands[name.toLowerCase()] = fn;
+    }
+  });
+});
+
+console.log(`✅ Loaded ${Object.keys(commands).length} commands`);
+
+const aliases = {
+  bal: 'balance',
+  wd: 'withdraw',
+  dep: 'deposit',
+  p: 'profile',
+  inv: 'inventory',
+  lb: 'leaderboard',
+  s: 'sticker',
+  lc: 'lendcard',
+  gs: 'groupstats',
+  aki: 'akinator',
+  gg: 'greekgod',
+  wyr: 'wouldyourather',
+  pint: 'pinterest',
+  reverseimg: 'sauce',
+  tt: 'translate',
+  tb: 'transcribe',
+};
+
+async function sendQuickMenu(msg) {
+  const menu = `👋 *${BOT_NAME}* — Quick Menu
+
+Prefix: *${PREFIX}*
+
+🛡️ *Admin*: kick, mute, warn, antilink, welcome
+🤖 *AI*: gpt, imagine, upscale, translate
+⬇️ *Download*: ig, ttk, yt, x, fb
+🔍 *Search*: lyrics, pinterest, sauce, wallpaper
+🎴 *Cards*: card, claim, deck, auction
+💰 *Economy*: balance, daily, shop, gamble
+🎮 *Games*: chess, ttt, c4, akinator
+🎉 *Fun*: joke, truth, dare, ship, roast
+🐾 *Pets*: pet adopt, pet feed, pet play
+🖼️ *Media*: sticker, toimg, tovid
+
+Type *${PREFIX}<command>* to use one.`;
+
+  await msg.reply(menu);
+}
+
+let reconnectTimer = null;
+let cardDropsStarted = false;
+let whatsappStarting = false;
+
+function scheduleReconnect(reason) {
+  console.log('❌ WhatsApp disconnected:', reason);
+
+  if (reconnectTimer) return;
+
+  reconnectTimer = setTimeout(async () => {
+    reconnectTimer = null;
+    try {
+      console.log('🔄 Reinitializing client in 5 seconds...');
+      whatsappStarting = true;
+      await client.initialize();
+    } catch (err) {
+      console.error('Reconnect failed:', err);
+      whatsappStarting = false;
+      scheduleReconnect('reconnect-failed');
+    }
+  }, 5000);
+}
+
+async function startWhatsApp() {
+  if (whatsappStarting) return;
+  whatsappStarting = true;
+
+  try {
+    await client.initialize();
+  } catch (err) {
+    console.error('❌ WhatsApp initialize failed:', err.message);
+    whatsappStarting = false;
+    setTimeout(startWhatsApp, 10000);
+  }
+}
+
+client.on('code', (code) => {
+  console.log('');
+  console.log('╔════════════════════════════════╗');
+  console.log(`  🔗 Pairing code: ${code}`);
+  console.log('  Enter in WhatsApp: Settings →');
+  console.log('  Linked Devices → Link with phone');
+  console.log('  number instead');
+  console.log('╚════════════════════════════════╝');
+  console.log('');
+});
+
+client.on('qr', qr => {
+  console.log('📱 Or scan this QR code:');
+  qrcode.generate(qr, { small: true });
+});
+
+client.on('authenticated', () => {
+  console.log('✅ WhatsApp authenticated');
+});
+
+client.on('auth_failure', (msg) => {
+  console.error('❌ Authentication failed:', msg);
+});
+
+client.on('loading_screen', (percent, message) => {
+  console.log(`Loading ${percent}% - ${message}`);
+});
+
+client.on('change_state', (state) => {
+  console.log('📡 State:', state);
+});
+
+client.on('disconnected', (reason) => {
+  whatsappStarting = false;
+  scheduleReconnect(reason);
+});
+
+client.on('error', (err) => {
+  console.error('Client error:', err);
+});
+
+client.on('ready', () => {
+  whatsappStarting = false;
+
+  console.log(`
+╭━━★彡 ${BOT_NAME} is ONLINE 彡★━━╮
+┃  Prefix : ${PREFIX}
+┃  Commands: ${Object.keys(commands).length}
+╰━━━━━━━━━━━━━━━━━━━━━━╯
+  `);
+
+  if (!cardDropsStarted) {
+    cardDropsStarted = true;
+    const { _initCardDrops } = require('./commands/cards');
+    if (_initCardDrops) {
+      _initCardDrops(client).catch(err => console.error('Card drop resume error:', err.message));
+    }
+  }
+});
+
+// Per-chat command queue
+const commandQueues = new Map();
+
+function enqueueCommand(chatId, task) {
+  const previous = commandQueues.get(chatId) || Promise.resolve();
+
+  const next = previous
+    .then(task)
+    .catch(err => console.error('Queue error:', err))
+    .finally(() => {
+      if (commandQueues.get(chatId) === next) {
+        commandQueues.delete(chatId);
+      }
+    });
+
+  commandQueues.set(chatId, next);
+  return next;
+}
+
+client.on('message', (msg) => {
+  enqueueCommand(msg.from, async () => {
+  try {
+    const body = msg.body || '';
+
+    if (!body.startsWith(PREFIX)) {
+      const mentionsBot = msg.mentionedIds &&
+        msg.mentionedIds.includes(client.info.wid._serialized);
+
+      let repliedToBot = false;
+      if (!mentionsBot && msg.hasQuotedMsg) {
+        const quoted = await msg.getQuotedMessage();
+        repliedToBot = quoted.fromMe;
+      }
+
+      if (mentionsBot || repliedToBot) {
+        return await sendQuickMenu(msg);
+      }
+      return;
+    }
+
+    const args = body.slice(PREFIX.length).trim().split(/\s+/);
+    let command = args.shift().toLowerCase();
+
+    if (aliases[command]) command = aliases[command];
+
+    if (command === 'menu' || command === 'help') {
+      return await sendQuickMenu(msg);
+    }
+
+    if (command === 'antilink' && args[0]?.toLowerCase() === 'action') {
+      args.shift();
+      if (commands['antilinkaction']) {
+        return await commands['antilinkaction'](client, msg, args);
+      }
+    }
+
+    if (command === 'guild' && args.length > 0) {
+      const sub = `guild_${args.shift().toLowerCase()}`;
+      if (commands[sub]) return await commands[sub](client, msg, args);
+    }
+
+    if (command === 'pet' && args.length > 0) {
+      const sub = `pet_${args[0].toLowerCase()}`;
+      if (commands[sub]) {
+        args.shift();
+        return await commands[sub](client, msg, args);
+      }
+    }
+
+    if (!commands[command]) {
+      return await msg.reply(`❓ Unknown command: *${PREFIX}${command}*\nType *${PREFIX}menu* to see what's available.`);
+    }
+
+    await commands[command](client, msg, args);
+} catch (err) {
+  console.error('Command error:', err);
+  await msg.reply('❌ An error occurred. Please try again.');
+}
+  });
+});
+
+client.on('group_join', async (notification) => {
+  try {
+    const { commands: cmds } = require('./commands/admin');
+    if (cmds && cmds.onJoin) await cmds.onJoin(client, notification);
+  } catch (err) {
+    console.error('group_join error:', err.message);
+  }
+});
+
+client.on('group_leave', async (notification) => {
+  try {
+    const { commands: cmds } = require('./commands/admin');
+    if (cmds && cmds.onLeave) await cmds.onLeave(client, notification);
+  } catch (err) {
+    console.error('group_leave error:', err.message);
+  }
+});
+
+client.on('message', async (msg) => {
+  if (!msg.from.endsWith('@g.us')) return;
+
+  const senderId = msg.author || msg.from;
+
+  try {
+    const Group = require('./models/Group');
+    await Group.findOneAndUpdate(
+      { id: msg.from },
+      { $inc: { messageCount: 1, [`activityLog.${senderId}`]: 1 } },
+      { upsert: true }
+    );
+  } catch (err) {
+    console.error('Activity tracking error:', err.message);
+  }
+});
+
+client.on('message', async (msg) => {
+  try {
+    if (!msg.from.endsWith('.us')) return;
+
+    const Group = require('./models/Group');
+    const chat = await msg.getChat();
+    const group = await Group.findOne({ id: chat.id._serialized });
+
+    if (!group?.antilink) return;
+
+      const hasLink = /(https?:\/\/|wa\.me|chat\.whatsapp\.com)/i.test(msg.body);
+    if (!hasLink) return;
+
+    const contact = await msg.getContact();
+
+    const isAdmin = chat.participants.some(
+      p => p.id._serialized === contact.id._serialized && p.isAdmin
+    );
+
+    if (isAdmin) return;
+
+    const action = group.antilinkAction || 'warn';
+
+    if (action === 'kick') {
+      await msg.reply(`🚫  was kicked for sending a link.`, undefined, { mentions: [contact] });
+      try {
+        await chat.removeParticipants([contact.id._serialized]);
+      } catch (e) {
+        console.error('Kick failed:', e.stack || e);
+      }
+    } else {
+      await msg.reply(`⚠️  don't send links here!`, undefined, { mentions: [contact] });
+    }
+
+    try {
+      await msg.delete(true);
+    } catch (e) {
+      console.error('Delete failed:', e.stack || e);
+    }
+  } catch (err) {
+    console.error('Antilink error:');
+    console.error(err.stack || err);
+  }
+});
+
+setInterval(() => {
+  try {
+    console.log(`💚 Heartbeat: ${new Date().toLocaleString()}`);
+  } catch (err) {
+    console.error('Heartbeat error:', err.message);
+  }
+}, 60000);
+
+startWhatsApp();

@@ -1,0 +1,188 @@
+const User = require('../models/User');
+
+// ─── Format Numbers ───────────────────────────────────────────────────────────
+function formatNum(n) {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return String(n);
+}
+
+// ─── Cooldown Helper ──────────────────────────────────────────────────────────
+function formatCooldown(ms) {
+  const h = Math.floor(ms / 3_600_000);
+  const m = Math.floor((ms % 3_600_000) / 60_000);
+  const s = Math.floor((ms % 60_000) / 1_000);
+  const parts = [];
+  if (h) parts.push(`${h}h`);
+  if (m) parts.push(`${m}m`);
+  if (s) parts.push(`${s}s`);
+  return parts.join(' ') || '0s';
+}
+
+// ─── Random Range ─────────────────────────────────────────────────────────────
+function rand(min, max) {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+// ─── Pick Random from Array ───────────────────────────────────────────────────
+function pick(arr) {
+  return arr[Math.floor(Math.random() * arr.length)];
+}
+
+// ─── Safe Chat Fetch (with one retry) ─────────────────────────────────────────
+// msg.getChat() occasionally throws a generic WhatsApp-internal error when the
+// connection is momentarily unstable. It's usually transient, so retry once
+// after a short delay before giving up.
+async function safeGetChat(msg, retries = 1) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await msg.getChat();
+    } catch (err) {
+      if (attempt >= retries) throw err;
+      await new Promise(r => setTimeout(r, 700));
+    }
+  }
+}
+
+// ─── Safe Quoted-Message Fetch (with one retry) ───────────────────────────────
+async function safeGetQuotedMessage(msg, retries = 1) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await msg.getQuotedMessage();
+    } catch (err) {
+      if (attempt >= retries) throw err;
+      await new Promise(r => setTimeout(r, 700));
+    }
+  }
+}
+
+// ─── Check if user is group admin ─────────────────────────────────────────────
+async function isAdmin(msg) {
+  let chat;
+  try {
+    chat = await msg.getChat();
+  } catch (err) {
+    console.error('isAdmin: could not get chat, skipping:', err.message);
+    return false;
+  }
+  if (!chat || !chat.isGroup) return false;
+  const contact = await msg.getContact();
+  const participant = chat.participants.find(
+    p => p.id._serialized === contact.id._serialized
+  );
+  return participant && (participant.isAdmin || participant.isSuperAdmin);
+}
+
+// ─── Check if bot is admin ────────────────────────────────────────────────────
+// Returns true/false normally, or null specifically when the chat fetch fails
+// (connection glitch) — distinct from false, so callers don't confuse
+// "couldn't verify" with "genuinely not an admin".
+async function botIsAdmin(msg) {
+  let chat;
+  try {
+    chat = await msg.getChat();
+  } catch (err) {
+    console.error('botIsAdmin: could not get chat, skipping:', err.message);
+    return null;
+  }
+  if (!chat || !chat.isGroup) return false;
+  const botId = msg.to;
+  const participant = chat.participants.find(p => p.id._serialized === botId);
+  return participant && (participant.isAdmin || participant.isSuperAdmin);
+}
+
+// ─── XP & Level ──────────────────────────────────────────────────────────────
+async function addXP(userId, amount) {
+  const user = await User.findOne({ id: userId });
+  if (!user) return;
+  user.xp += amount;
+  const nextLevel = user.level * 100;
+  if (user.xp >= nextLevel) {
+    user.xp -= nextLevel;
+    user.level += 1;
+    user.coins += user.level * 200;
+    return { levelUp: true, level: user.level };
+  }
+  await user.save();
+  return { levelUp: false };
+}
+
+// ─── Card Tier Roll ───────────────────────────────────────────────────────────
+// Drop rates:
+//   C   70%
+//   B   20%
+//   A   7.5%
+//   S   2%
+//   SS  0.4%
+//   SSS 0.1%  (ultra-rare, above SS)
+function rollTier() {
+  const r = Math.random() * 100;
+  if (r < 70) return 'C';
+  if (r < 90) return 'B';
+  if (r < 97.5) return 'A';
+  if (r < 99.5) return 'S';
+  if (r < 99.9) return 'SS';
+  return 'SSS';
+}
+
+// ─── Tier Emoji ───────────────────────────────────────────────────────────────
+function tierEmoji(tier) {
+  return { C: '⚪', B: '🟢', A: '🔵', S: '🟡', SS: '🟠', SSS: '🔴' }[tier] || '⚪';
+}
+
+// ─── Card Value by Tier ───────────────────────────────────────────────────────
+// Baseline coin value per tier. Used by .cardinfo, leaderboards, and auctions
+// (starting/reserve prices) in later phases — not surfaced anywhere yet.
+const TIER_VALUES = {
+  C: 500,
+  B: 2000,
+  A: 5000,
+  S: 10000,
+  SS: 25000,
+  SSS: 100000
+};
+
+function cardValue(tier) {
+  return TIER_VALUES[tier] || 0;
+}
+
+function mentionName(contact) {
+  return contact.name || contact.pushname || contact.number || 'Unknown';
+}
+
+function isOwner(id) {
+  return id === process.env.OWNER_NUMBER;
+}
+
+// ─── Generic unique 6-char code generator ─────────────────────────────────────
+// Used for anything that needs a short, human-typeable ID (shop listings,
+// auctions, etc). Pass the mongoose Model and the field name to check against.
+async function generateUniqueCode(Model, field = 'code') {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // skips ambiguous 0/O/1/I
+  let code;
+  let exists = true;
+  while (exists) {
+    code = Array.from({ length: 6 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+    exists = await Model.findOne({ [field]: code });
+  }
+  return code;
+}
+
+module.exports = {
+  formatNum,
+  formatCooldown,
+  rand,
+  pick,
+  isAdmin,
+  botIsAdmin,
+  addXP,
+  rollTier,
+  tierEmoji,
+  TIER_VALUES,
+  cardValue,
+  mentionName,
+  isOwner,
+  generateUniqueCode,
+  safeGetChat,
+  safeGetQuotedMessage
+};

@@ -1,4 +1,4 @@
-const { pick, rand } = require('../utils/helpers');
+const { pick, rand, mentionName, safeGetChat } = require('../utils/helpers');
 const { Chess } = require('chess.js');
 
 // ─── Active Game Sessions ─────────────────────────────────────────────────────
@@ -80,30 +80,79 @@ const AKI_QUESTIONS = [
 ];
 
 module.exports = {
-  // .ttt — start tic tac toe
+  battleGames,
+// .ttt — start a game, or (if one's active) .ttt [1-9] to make a move
   async ttt(client, msg, args) {
-    const chat = await msg.getChat();
+    const chat = await safeGetChat(msg);
+    if (!chat) return;
+    if (!chat) return;
     const contact = await msg.getContact();
-    const mentioned = await msg.getMentions();
+    const chatId = chat.id._serialized;
 
+    const game = tttGames.get(chatId);
+    const movePos = parseInt(args[0]);
+
+    // ── Active game + numeric arg = this is a move ──────────────────────────
+    if (game && !isNaN(movePos)) {
+      if (movePos < 1 || movePos > 9) return msg.reply('❌ Choose a position 1-9.');
+
+      if (!game.players.includes(contact.id._serialized)) {
+        return msg.reply("❌ You're not part of this game!");
+      }
+
+      const currentPlayerId = game.players[game.turn];
+      if (currentPlayerId !== contact.id._serialized) {
+        const waitingOn = await client.getContactById(currentPlayerId);
+        return msg.reply(`❌ Not your turn! Waiting on ${mentionName(waitingOn)}.`);
+      }
+
+      const row = Math.floor((movePos - 1) / 3);
+      const col = (movePos - 1) % 3;
+
+      if (game.board[row][col] !== '·') {
+        return msg.reply('❌ That spot is already taken! Choose another.');
+      }
+
+      game.board[row][col] = game.symbols[game.turn];
+
+      const result = checkTTTWin(game.board);
+      if (result) {
+        tttGames.delete(chatId);
+        if (result === 'draw') {
+          return msg.reply(`${renderTTT(game.board)}\n\n🤝 *It's a draw!*`);
+        }
+        const winner = await client.getContactById(currentPlayerId);
+        return msg.reply(`${renderTTT(game.board)}\n\n🏆 *${mentionName(winner)} wins!* (${result})`);
+      }
+
+      game.turn = game.turn === 0 ? 1 : 0;
+      tttGames.set(chatId, game);
+
+      const nextContact = await client.getContactById(game.players[game.turn]);
+      return msg.reply(
+        `${renderTTT(game.board)}\n\n${game.symbols[game.turn]} ${mentionName(nextContact)}'s turn! Type *.ttt [1-9]* to play.`
+      );
+    }
+
+    // ── Otherwise, this is a request to start a new game ────────────────────
+    const mentioned = await msg.getMentions();
     if (!mentioned.length) return msg.reply('❌ Mention someone to play! .ttt @user');
-    if (tttGames.has(chat.id._serialized)) return msg.reply('❌ A game is already in progress!');
+    if (tttGames.has(chatId)) return msg.reply('❌ A game is already in progress!');
 
     const board = Array.from({ length: 3 }, () => ['·', '·', '·']);
     const players = [contact.id._serialized, mentioned[0].id._serialized];
 
-    tttGames.set(chat.id._serialized, { board, turn: 0, players, symbols: ['❌', '⭕'] });
+    tttGames.set(chatId, { board, turn: 0, players, symbols: ['❌', '⭕'] });
 
     msg.reply(
-      `🎮 *Tic Tac Toe*\n${contact.pushname} (❌) vs ${mentioned[0].pushname} (⭕)\n\n${renderTTT(board)}\n\n❌ ${contact.pushname}'s turn! Type *.ttt [1-9]* to play.`
+      `🎮 *Tic Tac Toe*\n${mentionName(contact)} (❌) vs ${mentionName(mentioned[0])} (⭕)\n\n${renderTTT(board)}\n\n❌ ${mentionName(contact)}'s turn! Type *.ttt [1-9]* to play.`
     );
   },
-
-  // .ttt [1-9] — make move (re-use command name with arg as position)
-  // Handled separately — check for active game in the handler above
   // .startbattle
   async startbattle(client, msg, args) {
-    const chat = await msg.getChat();
+    const chat = await safeGetChat(msg);
+    if (!chat) return;
+    if (!chat) return;
     const contact = await msg.getContact();
     const mentioned = await msg.getMentions();
 
@@ -122,7 +171,9 @@ module.exports = {
 
   // .attack
   async attack(client, msg, args) {
-    const chat = await msg.getChat();
+    const chat = await safeGetChat(msg);
+    if (!chat) return;
+    if (!chat) return;
     const contact = await msg.getContact();
     const game = battleGames.get(chat.id._serialized);
     if (!game) return msg.reply('❌ No active battle. Use .startbattle @user');
@@ -147,7 +198,9 @@ module.exports = {
 
   // .defend
   async defend(client, msg, args) {
-    const chat = await msg.getChat();
+    const chat = await safeGetChat(msg);
+    if (!chat) return;
+    if (!chat) return;
     const contact = await msg.getContact();
     const game = battleGames.get(chat.id._serialized);
     if (!game) return msg.reply('❌ No active battle.');
@@ -167,7 +220,9 @@ module.exports = {
 
   // .flee
   async flee(client, msg, args) {
-    const chat = await msg.getChat();
+    const chat = await safeGetChat(msg);
+    if (!chat) return;
+    if (!chat) return;
     const contact = await msg.getContact();
     const game = battleGames.get(chat.id._serialized);
     if (!game) return msg.reply('❌ No active battle.');
@@ -178,7 +233,9 @@ module.exports = {
 
   // .akinator
   async akinator(client, msg, args) {
-    const chat = await msg.getChat();
+    const chat = await safeGetChat(msg);
+    if (!chat) return;
+    if (!chat) return;
     const contact = await msg.getContact();
 
     akinatorSessions.set(chat.id._serialized, {
@@ -201,7 +258,9 @@ module.exports = {
 
   // .c4 — connect 4
   async c4(client, msg, args) {
-    const chat = await msg.getChat();
+    const chat = await safeGetChat(msg);
+    if (!chat) return;
+    if (!chat) return;
     const contact = await msg.getContact();
     const mentioned = await msg.getMentions();
 
@@ -220,7 +279,9 @@ module.exports = {
 
   // .drop [col]
   async drop(client, msg, args) {
-    const chat = await msg.getChat();
+    const chat = await safeGetChat(msg);
+    if (!chat) return;
+    if (!chat) return;
     const contact = await msg.getContact();
     const game = c4Games.get(chat.id._serialized);
     if (!game) return msg.reply('❌ No active Connect 4 game.');
@@ -253,7 +314,9 @@ module.exports = {
 
   // .chess
   async chess(client, msg, args) {
-    const chat = await msg.getChat();
+    const chat = await safeGetChat(msg);
+    if (!chat) return;
+    if (!chat) return;
     const contact = await msg.getContact();
     const mentioned = await msg.getMentions();
 
@@ -276,7 +339,9 @@ module.exports = {
 
   // .move [e2e4]
   async move(client, msg, args) {
-    const chat = await msg.getChat();
+    const chat = await safeGetChat(msg);
+    if (!chat) return;
+    if (!chat) return;
     const contact = await msg.getContact();
     const game = chessGames.get(chat.id._serialized);
     if (!game) return msg.reply('❌ No chess game active.');

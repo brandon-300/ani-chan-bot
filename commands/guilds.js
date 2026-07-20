@@ -1,6 +1,6 @@
 const Guild = require('../models/Guild');
 const User = require('../models/User');
-const { formatNum } = require('../utils/helpers');
+const { formatNum, mentionName } = require('../utils/helpers');
 
 module.exports = {
   // .guild info
@@ -64,8 +64,7 @@ module.exports = {
 
     guild.pendingInvites.push(target.id._serialized);
     await guild.save();
-
-    msg.reply(`📨 Invited @${target.number} to *${guild.name}*! They can type *.guild accept* to join.`);
+    msg.reply(`📨 Invited @${mentionName(target)} to *${guild.name}*! They can type *.guild accept* to join.`);
   },
 
   // .guild accept

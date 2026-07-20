@@ -1,5 +1,7 @@
 const User = require('../models/User');
-const { formatNum, formatCooldown, rand, pick } = require('../utils/helpers');
+const { CardCatalogue, OwnedCard } = require('../models/Card');
+const { formatNum, formatCooldown, rand, pick, tierEmoji, mentionName, safeGetChat } = require('../utils/helpers');
+const { battleGames } = require('./games');
 
 const SHOP_ITEMS = [
   { name: 'Health Potion', price: 200, emoji: '🧪', effect: 'Restore HP in battles' },
@@ -34,6 +36,56 @@ const ROAST_LINES = [
   "I'd agree with you, but then we'd both be wrong.",
   "You have the personality of a wet sock.",
   "Somewhere out there, a village is missing their idiot.",
+  "You're the human equivalent of a software bug that never gets fixed.",
+  "Your face looks like it caught on fire and someone tried to put it out with a fork.",
+  "You have the personality of expired yogurt left in the sun.",
+  "Your brain cells are on permanent vacation.",
+  "Somewhere out there, a tree is producing oxygen just to regret it.",
+  "You're what happens when laziness breeds with stupidity.",
+  "Your ideas are as fresh as week-old roadkill.",
+  "You couldn't find your way out of a paper bag with a map and GPS.",
+  "Your existence is a waste of perfectly good atoms.",
+  "You're like a broken elevator — never going anywhere.",
+  "Your fashion sense called; it wants its mistakes back.",
+  "You have the charisma of a damp sponge.",
+  "I'd explain it to you, but I left my crayons at home.",
+  "Your logic is as sound as a house of cards in a hurricane.",
+  "You're the reason warning labels exist on everyday items.",
+  "Your common sense is on life support.",
+  "You move slower than a snail on tranquilizers.",
+  "Your presence makes paint dry faster out of boredom.",
+  "You're as sharp as a bag of wet mice.",
+  "Your contributions to society are negative numbers.",
+  "You have the depth of a puddle after a light drizzle.",
+  "I bet even your shadow tries to leave you.",
+  "You're a few fries short of a Happy Meal and the whole damn order.",
+  "Your ambition is as visible as a black cat in a coal mine.",
+  "You couldn't organize a piss-up in a brewery.",
+  "Your IQ is room temperature... in Antarctica.",
+  "You're the human version of a participation trophy for losing.",
+  "Your jokes are older than your grandparents and twice as dead.",
+  "You have all the leadership skills of a headless chicken.",
+  "Your decision-making is sponsored by bad choices.",
+  "You're as useful as a chocolate teapot.",
+  "Your social skills are in the negatives.",
+  "I'd agree with you, but then we'd both be wrong... again.",
+  "You're proof that not everyone should reproduce.",
+  "Your vibe is 'abandoned building' energy.",
+  "You bring nothing to the table except disappointment.",
+  "Your wit is as quick as continental drift.",
+  "You're the reason glue has 'do not eat' instructions.",
+  "Your life is a series of unfortunate events without the charm.",
+  "You have the enthusiasm of a wet blanket at a bonfire.",
+  "Your potential died before it was born.",
+  "You're as inspiring as a rainy Monday morning.",
+  "You couldn't light up a room if you were on fire.",
+  "Your memory is shorter than a goldfish with dementia.",
+  "You're a walking 'do not disturb' sign for success.",
+  "Your excuses are more creative than your actual work.",
+  "You have the drive of a parked car with no engine.",
+  "You're the human equivalent of background noise.",
+  "Your talent is hiding in witness protection.",
+  "You're why some people prefer talking to walls."
 ];
 
 module.exports = {
@@ -69,24 +121,29 @@ module.exports = {
   // .daily
   async daily(client, msg, args) {
     const contact = await msg.getContact();
-    const user = await User.findOrCreate(contact.id._serialized, contact.pushname);
+    await User.findOrCreate(contact.id._serialized, contact.pushname);
+
     const now = Date.now();
     const cooldown = 24 * 60 * 60 * 1000;
+    const reward = 600;
+    const orbReward = Math.random() > 0.7 ? 1 : 0;
 
-    if (now - user.lastDaily < cooldown) {
+    // Atomic: only succeeds if lastDaily is still outside the cooldown window,
+    // preventing two near-simultaneous .daily calls from both paying out.
+    const updated = await User.findOneAndUpdate(
+      { id: contact.id._serialized, lastDaily: { $lt: now - cooldown } },
+      { $inc: { coins: reward, orbs: orbReward }, $set: { lastDaily: now } },
+      { new: true }
+    );
+
+    if (!updated) {
+      const user = await User.findOne({ id: contact.id._serialized });
       const remaining = cooldown - (now - user.lastDaily);
       return msg.reply(`⏳ Come back in *${formatCooldown(remaining)}* for your daily!`);
     }
 
-    const reward = rand(400, 800);
-    const orbReward = Math.random() > 0.7 ? 1 : 0;
-    user.coins += reward;
-    user.orbs += orbReward;
-    user.lastDaily = now;
-    await user.save();
-
     msg.reply(
-      `🎁 *Daily Reward!*\n\n💰 +${reward} coins${orbReward ? '\n🔮 +1 orb (bonus!)' : ''}\n\nTotal: ${formatNum(user.coins)} coins`
+      `🎁 *Daily Reward!*\n\n💰 +${reward} coins${orbReward ? '\n🔮 +1 orb (bonus!)' : ''}\n\nTotal: ${formatNum(updated.coins)} coins`
     );
   },
 
@@ -136,8 +193,7 @@ module.exports = {
     msg.reply(`💝 *${contact.pushname}* donated 💰 ${amount} coins to *${mentioned[0].pushname}*!`);
   },
 
-  // .lottery
-  async lottery(client, msg, args) {
+async lottery(client, msg, args) {
     const contact = await msg.getContact();
     const user = await User.findOrCreate(contact.id._serialized);
     const ticket = 100;
@@ -147,18 +203,28 @@ module.exports = {
     const win = Math.random();
     let result;
     if (win < 0.01) {
-      result = { label: '🎰 JACKPOT!', gain: 50000 };
+      result = { label: '🎰 JACKPOT!', gain: 50000, odds: '1%' };
     } else if (win < 0.1) {
-      result = { label: '🏆 Big Win!', gain: 5000 };
+      result = { label: '🏆 Big Win!', gain: 5000, odds: '9%' };
     } else if (win < 0.3) {
-      result = { label: '✅ Small Win', gain: 300 };
+      result = { label: '✅ Small Win', gain: 300, odds: '20%' };
     } else {
-      result = { label: '❌ No Win', gain: 0 };
+      result = { label: '❌ No Win', gain: 0, odds: '70%' };
     }
 
     user.coins += result.gain;
     await user.save();
-    msg.reply(`🎟️ *Lottery*\n\n${result.label}\n${result.gain > 0 ? `+${result.gain} coins` : 'Better luck next time!'}\nBalance: ${formatNum(user.coins)}`);
+
+    const net = result.gain - ticket;
+    const netLine = net > 0 ? `📈 Net: +${formatNum(net)} coins` : `📉 Net: -${formatNum(Math.abs(net))} coins`;
+
+    msg.reply(
+      `🎟️ *Lottery*\n\n` +
+      `🎫 Ticket: -${ticket} coins\n` +
+      `${result.label}${result.gain > 0 ? ` (+${formatNum(result.gain)} coins)` : ''}\n` +
+      `${netLine}\n\n` +
+      `Balance: ${formatNum(user.coins)}`
+    );
   },
 
   // .rich — top 10 richest users
@@ -173,7 +239,9 @@ module.exports = {
 
   // .richg — richest in this group
   async richg(client, msg, args) {
-    const chat = await msg.getChat();
+    const chat = await safeGetChat(msg);
+    if (!chat) return;
+    if (!chat) return;
     if (!chat.isGroup) return msg.reply('❌ Group only.');
     const ids = chat.participants.map(p => p.id._serialized);
     const users = await User.find({ id: { $in: ids } }).sort({ coins: -1 }).limit(10);
@@ -189,7 +257,7 @@ module.exports = {
     const user = await User.findOrCreate(contact.id._serialized, contact.pushname);
 
     msg.reply(
-      `👤 *${contact.pushname}'s Profile*\n\n` +
+      `👤 *${user.name}'s Profile*\n\n` +
       `📛 Name: ${user.name}\n🎂 Age: ${user.age || 'Not set'}\n📝 Bio: ${user.bio}\n` +
       `⚡ Level: ${user.level} (${user.xp} XP)\n💰 Coins: ${formatNum(user.coins)}\n🔮 Orbs: ${user.orbs}\n` +
       `🃏 Cards: ${user.cards.length}\n🏰 Guild: ${user.guildId || 'None'}\n` +
@@ -197,9 +265,19 @@ module.exports = {
     );
   },
 
-  // .edit — show editable fields
+// .edit — show editable fields
   async edit(client, msg, args) {
-    msg.reply(`✏️ *Editable Profile Fields*\n\n.bio [your bio]\n.setage [age]\n\nMore options coming soon!`);
+    msg.reply(`✏️ *Editable Profile Fields*\n\n.setname [name]\n.bio [your bio]\n.setage [age]\n\nMore options coming soon!`);
+  },
+
+  // .setname [name]
+  async setname(client, msg, args) {
+    const contact = await msg.getContact();
+    const name = args.join(' ');
+    if (!name) return msg.reply('❌ Usage: .setname [name]');
+    if (name.length > 30) return msg.reply('❌ Name must be 30 characters or less.');
+    await User.findOrCreate(contact.id._serialized, name);
+    msg.reply(`✅ Name set to *${name}*!`);
   },
 
   // .bio [bio]
@@ -239,6 +317,7 @@ module.exports = {
   },
 
   // .use [item]
+// .use [item]
   async use(client, msg, args) {
     const contact = await msg.getContact();
     const itemName = args.join(' ');
@@ -248,17 +327,64 @@ module.exports = {
     const idx = user.inventory.findIndex(i => i.toLowerCase() === itemName.toLowerCase());
     if (idx === -1) return msg.reply('❌ Item not in inventory.');
 
+    // Use the item's canonical stored name, not whatever casing the user typed,
+    // so the effect below always matches correctly.
+    const matchedName = user.inventory[idx];
     user.inventory.splice(idx, 1);
 
     let effect = '';
-    if (itemName === 'Health Potion') effect = '💊 HP restored!';
-    else if (itemName === 'Orb Pack') { user.orbs += 3; effect = '🔮 Got 3 orbs!'; }
-    else if (itemName === 'Lucky Charm') effect = '🍀 Drop rates boosted for 1 hour!';
-    else if (itemName === 'Star Fragment') { user.stardust += 50; effect = '⭐ Got 50 stardust!'; }
-    else effect = '✅ Used!';
+    let refund = false;
 
+    if (matchedName === 'Health Potion') {
+      const chat = await safeGetChat(msg);
+    if (!chat) return;
+      if (!chat) return;
+      const game = battleGames.get(chat.id._serialized);
+      const inBattle = game && (game.p1.id === contact.id._serialized || game.p2.id === contact.id._serialized);
+      if (!inBattle) {
+        effect = '💊 No active battle here for you. Health Potion only works during a .startbattle fight!';
+        refund = true;
+      } else {
+        const player = game.p1.id === contact.id._serialized ? game.p1 : game.p2;
+        const healed = Math.min(30, 100 - player.hp);
+        player.hp += healed;
+        battleGames.set(chat.id._serialized, game);
+        effect = `💊 Healed +${healed} HP! (${player.hp}/100 HP)`;
+      }
+    } else if (matchedName === 'Orb Pack') {
+      user.orbs += 3;
+      effect = '🔮 Got 3 orbs!';
+    } else if (matchedName === 'Lucky Charm') {
+      effect = '🍀 Drop rates boosted for 1 hour!';
+    } else if (matchedName === 'Card Pack') {
+      const picks = await CardCatalogue.aggregate([{ $sample: { size: 3 } }]);
+      if (!picks.length) {
+        effect = '❌ No cards available in the catalogue right now.';
+        refund = true;
+      } else {
+        const gained = [];
+        for (const c of picks) {
+          await OwnedCard.create({
+            ownerId: contact.id._serialized,
+            catalogueId: c._id,
+            name: c.name,
+            series: c.series,
+            tier: c.tier,
+          });
+          gained.push(`${tierEmoji(c.tier)} ${c.name} [${c.tier}]`);
+        }
+        effect = `🎴 *Card Pack opened!*\n\n${gained.join('\n')}`;
+      }
+    } else if (matchedName === 'Star Fragment') {
+      user.stardust += 50;
+      effect = '⭐ Got 50 stardust!';
+    } else {
+      effect = '✅ Used!';
+    }
+
+    if (refund) user.inventory.push(matchedName);
     await user.save();
-    msg.reply(`${effect}`);
+    msg.reply(effect);
   },
 
   // .sell [item]
@@ -309,18 +435,22 @@ module.exports = {
   // .dig
   async dig(client, msg, args) {
     const contact = await msg.getContact();
-    const user = await User.findOrCreate(contact.id._serialized);
+    await User.findOrCreate(contact.id._serialized);
+
     const now = Date.now();
     const cooldown = 30 * 60 * 1000;
+    const loot = pick(DIG_LOOT);
 
-    if (now - user.lastDig < cooldown) {
+    const updated = await User.findOneAndUpdate(
+      { id: contact.id._serialized, lastDig: { $lt: now - cooldown } },
+      { $inc: { coins: loot.coins }, $set: { lastDig: now } },
+      { new: true }
+    );
+
+    if (!updated) {
+      const user = await User.findOne({ id: contact.id._serialized });
       return msg.reply(`⏳ You're tired! Come back in *${formatCooldown(cooldown - (now - user.lastDig))}*.`);
     }
-
-    const loot = pick(DIG_LOOT);
-    user.coins += loot.coins;
-    user.lastDig = now;
-    await user.save();
 
     if (loot.coins === 0) {
       msg.reply('⛏️ You dug for a while... and found *nothing*. Unlucky!');
@@ -332,18 +462,23 @@ module.exports = {
   // .fish
   async fish(client, msg, args) {
     const contact = await msg.getContact();
-    const user = await User.findOrCreate(contact.id._serialized);
+    await User.findOrCreate(contact.id._serialized);
+
     const now = Date.now();
     const cooldown = 20 * 60 * 1000;
+    const loot = pick(FISH_LOOT);
 
-    if (now - user.lastFish < cooldown) {
+    const updated = await User.findOneAndUpdate(
+      { id: contact.id._serialized, lastFish: { $lt: now - cooldown } },
+      { $inc: { coins: loot.coins }, $set: { lastFish: now } },
+      { new: true }
+    );
+
+    if (!updated) {
+      const user = await User.findOne({ id: contact.id._serialized });
       return msg.reply(`⏳ Fishing on cooldown! Come back in *${formatCooldown(cooldown - (now - user.lastFish))}*.`);
     }
 
-    const loot = pick(FISH_LOOT);
-    user.coins += loot.coins;
-    user.lastFish = now;
-    await user.save();
     msg.reply(`🎣 You cast your line and caught a *${loot.item}*!\n💰 +${loot.coins} coins`);
   },
 
@@ -360,7 +495,7 @@ module.exports = {
   // .roast
   async roast(client, msg, args) {
     const mentioned = await msg.getMentions();
-    const target = mentioned.length ? `@${mentioned[0].number}` : 'you';
+    const target = mentioned.length ? `@${mentionName(mentioned[0])}` : 'you';
     const line = pick(ROAST_LINES);
     msg.reply(`🔥 *Roasting ${target}*\n\n${line}`);
   },
@@ -387,13 +522,10 @@ module.exports = {
   // .beg
   async beg(client, msg, args) {
     const contact = await msg.getContact();
-    const user = await User.findOrCreate(contact.id._serialized);
+    await User.findOrCreate(contact.id._serialized);
+
     const now = Date.now();
     const cooldown = 5 * 60 * 1000;
-
-    if (now - user.lastBeg < cooldown) {
-      return msg.reply(`❌ You already begged recently. Wait *${formatCooldown(cooldown - (now - user.lastBeg))}*.`);
-    }
 
     const responses = [
       { text: 'A kind stranger gave you some coins!', coins: rand(10, 80) },
@@ -402,9 +534,18 @@ module.exports = {
       { text: 'A merchant took pity on you.', coins: rand(50, 100) },
     ];
     const res = pick(responses);
-    user.coins += res.coins;
-    user.lastBeg = now;
-    await user.save();
+
+    const updated = await User.findOneAndUpdate(
+      { id: contact.id._serialized, lastBeg: { $lt: now - cooldown } },
+      { $inc: { coins: res.coins }, $set: { lastBeg: now } },
+      { new: true }
+    );
+
+    if (!updated) {
+      const user = await User.findOne({ id: contact.id._serialized });
+      return msg.reply(`❌ You already begged recently. Wait *${formatCooldown(cooldown - (now - user.lastBeg))}*.`);
+    }
+
     msg.reply(`🙏 ${res.text}\n${res.coins > 0 ? `+💰 ${res.coins} coins` : ''}`);
   },
 };

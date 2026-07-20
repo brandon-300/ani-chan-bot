@@ -1,4 +1,4 @@
-# ╭━━★彡 Miyabi Bot 彡★━━╮
+# ╭━━★彡 AniChan Bot 彡★━━╮
 > A full-featured WhatsApp bot by Riz, powered by whatsapp-web.js
 
 ---
@@ -13,7 +13,7 @@
 
 ### 2. Install Dependencies
 ```bash
-cd miyabi-bot
+cd ani-chan-bot
 npm install
 ```
 
@@ -30,7 +30,7 @@ Edit `.env` and fill in:
 | `SAUCENAO_KEY` | For .sauce (free at saucenao.com) |
 | `OWNER_NUMBER` | Your WhatsApp number with country code |
 | `PREFIX` | Default is `.` |
-| `BOT_NAME` | Default is `Miyabi` |
+| `BOT_NAME` | Default is `Ani-Chan Bot` |
 
 ### 4. Seed Card Database (run once)
 ```bash
@@ -42,7 +42,7 @@ node utils/seedCards.js
 node index.js
 # or with PM2 (recommended for 24/7):
 npm install -g pm2
-pm2 start index.js --name miyabi-bot
+pm2 start index.js --name ani-chan-bot
 pm2 save
 pm2 startup
 ```

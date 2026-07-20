@@ -1,12 +1,16 @@
 const axios = require('axios');
 const { MessageMedia } = require('whatsapp-web.js');
+const SentWallpaper = require('../models/SentWallpaper');
+const { safeGetChat, safeGetQuotedMessage } = require('../utils/helpers');
 
 const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY;
 
 async function sendImage(msg, url, caption) {
   try {
     const media = await MessageMedia.fromUrl(url, { unsafeMime: true });
-    const chat = await msg.getChat();
+    const chat = await safeGetChat(msg);
+    if (!chat) return;
+    if (!chat) return;
     await chat.sendMessage(media, { caption });
   } catch {
     msg.reply(caption + `\n🔗 ${url}`);
@@ -44,7 +48,7 @@ module.exports = {
 
   // .sauce / .reverseimg — reverse image search
   async sauce(client, msg, args) {
-    const quoted = await msg.getQuotedMessage().catch(() => null);
+    const quoted = await safeGetQuotedMessage(msg).catch(() => null);
     const targetMsg = quoted || msg;
 
     if (!targetMsg.hasMedia) {
@@ -87,11 +91,16 @@ module.exports = {
   },
 
   // .wallpaper [query]
-  async wallpaper(client, msg, args) {
+async wallpaper(client, msg, args) {
     const query = args.join(' ') || 'anime';
     msg.reply(`🖼️ Fetching wallpaper for "${query}"...`);
 
     try {
+      const chat = await safeGetChat(msg);
+    if (!chat) return;
+      if (!chat) return;
+      const chatId = chat.id._serialized;
+
       // Wallhaven API — free, no key needed for SFW
       const res = await axios.get('https://wallhaven.cc/api/v1/search', {
         params: {
@@ -99,14 +108,28 @@ module.exports = {
           purity: '100',    // SFW only
           categories: '111',
           sorting: 'random',
-          per_page: 5,
+          per_page: 24,
         },
       });
 
       const wallpapers = res.data?.data || [];
       if (!wallpapers.length) return msg.reply('❌ No wallpapers found.');
 
-      const wall = wallpapers[0];
+      const seenDocs = await SentWallpaper.find({
+        chatId,
+        wallpaperId: { $in: wallpapers.map(w => w.id) },
+      }).select('wallpaperId -_id');
+      const seenIds = new Set(seenDocs.map(d => d.wallpaperId));
+
+      const fresh = wallpapers.filter(w => !seenIds.has(w.id));
+
+      if (!fresh.length) {
+        return msg.reply(`❌ You've seen all recent wallpapers for "${query}". Try a different search, or wait for new ones to be added.`);
+      }
+
+      const wall = fresh[Math.floor(Math.random() * fresh.length)];
+      await SentWallpaper.create({ chatId, wallpaperId: wall.id }).catch(() => {});
+
       const imgUrl = wall.path;
       await sendImage(msg, imgUrl, `🖼️ Wallpaper: ${query}\n📐 ${wall.resolution}`);
     } catch (err) {

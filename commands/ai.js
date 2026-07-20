@@ -1,6 +1,7 @@
 const axios = require('axios');
 const { MessageMedia } = require('whatsapp-web.js');
 const OpenAI = require('openai');
+const { safeGetChat, safeGetQuotedMessage } = require('../utils/helpers');
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY;
@@ -29,7 +30,9 @@ module.exports = {
     const prompt = args.join(' ');
     if (!prompt) return msg.reply('❌ Usage: .copilot [your message]');
 
-    const chat = await msg.getChat();
+    const chat = await safeGetChat(msg);
+    if (!chat) return;
+    if (!chat) return;
     msg.reply('🤖 Thinking...');
 
     try {
@@ -88,19 +91,22 @@ module.exports = {
 
     msg.reply('🎨 Generating image...');
     try {
-      const response = await openai.images.generate({
-        model: 'dall-e-3',
+const response = await openai.images.generate({
+        model: 'gpt-image-1',
         prompt,
         n: 1,
         size: '1024x1024',
-        quality: 'standard',
+        quality: 'high',
       });
 
-      const imageUrl = response.data[0].url;
-      const media = await MessageMedia.fromUrl(imageUrl);
-      const chat = await msg.getChat();
+      const b64 = response.data[0].b64_json;
+      const media = new MessageMedia('image/png', b64, 'imagine.png');
+      const chat = await safeGetChat(msg);
+    if (!chat) return;
+      if (!chat) return;
       await chat.sendMessage(media, { caption: `🎨 *Imagine:* ${prompt}` });
-    } catch (err) {
+} catch (err) {
+      console.error('Imagine error:', err.status, err.code, err.message);
       if (err.code === 'content_policy_violation') {
         msg.reply('❌ Prompt violates content policy. Try a different description.');
       } else {
@@ -110,8 +116,8 @@ module.exports = {
   },
 
   // .upscale — upscale a replied-to image using RapidAPI
-  async upscale(client, msg, args) {
-    const quoted = await msg.getQuotedMessage().catch(() => null);
+async upscale(client, msg, args) {
+    const quoted = await safeGetQuotedMessage(msg).catch(() => null);
     const targetMsg = quoted || msg;
 
     if (!targetMsg.hasMedia) return msg.reply('❌ Reply to an image with .upscale');
@@ -119,31 +125,36 @@ module.exports = {
     msg.reply('⬆️ Upscaling image...');
     try {
       const media = await targetMsg.downloadMedia();
-      const imageBuffer = Buffer.from(media.data, 'base64');
+      // media.data is already base64-encoded
 
-      // Using AI Image Upscaler on RapidAPI
-      const FormData = require('form-data');
-      const form = new FormData();
-      form.append('image', imageBuffer, { filename: 'image.jpg', contentType: media.mimetype });
-      form.append('scale', '2');
+      const params = new URLSearchParams();
+      params.append('image_base64', media.data);
+      params.append('scale_factor', '2');
 
       const res = await axios.post(
-        'https://ai-image-upscaler.p.rapidapi.com/upscale',
-        form,
+        'https://ai-image-upscaler1.p.rapidapi.com/v1',
+        params.toString(),
         {
           headers: {
-            ...form.getHeaders(),
+            'Content-Type': 'application/x-www-form-urlencoded',
             'X-RapidAPI-Key': RAPIDAPI_KEY,
-            'X-RapidAPI-Host': 'ai-image-upscaler.p.rapidapi.com',
+            'X-RapidAPI-Host': 'ai-image-upscaler1.p.rapidapi.com',
           },
-          responseType: 'arraybuffer',
         }
       );
 
-      const upscaledMedia = new MessageMedia('image/jpeg', Buffer.from(res.data).toString('base64'));
-      const chat = await msg.getChat();
+      if (res.data.code !== 0 || !res.data.result_base64) {
+        console.error('Upscale non-ok response:', JSON.stringify(res.data)?.slice(0, 300));
+        return msg.reply('❌ Upscale failed. Make sure you replied to an image and your RapidAPI key is valid.');
+      }
+
+      const upscaledMedia = new MessageMedia('image/jpeg', res.data.result_base64);
+      const chat = await safeGetChat(msg);
+    if (!chat) return;
+      if (!chat) return;
       await chat.sendMessage(upscaledMedia, { caption: '✅ Image upscaled 2x!' });
     } catch (err) {
+      console.error('Upscale error:', err.response?.status, JSON.stringify(err.response?.data)?.slice(0, 300) || err.message);
       msg.reply('❌ Upscale failed. Make sure you replied to an image and your RapidAPI key is valid.');
     }
   },
@@ -154,7 +165,7 @@ module.exports = {
     const text = args.slice(1).join(' ');
 
     // Check if replying to a message
-    const quoted = await msg.getQuotedMessage().catch(() => null);
+    const quoted = await safeGetQuotedMessage(msg).catch(() => null);
     const toTranslate = text || quoted?.body;
 
     if (!lang || !toTranslate) {
@@ -184,7 +195,7 @@ module.exports = {
 
   // .transcribe — transcribe a voice note using Whisper
   async transcribe(client, msg, args) {
-    const quoted = await msg.getQuotedMessage().catch(() => null);
+    const quoted = await safeGetQuotedMessage(msg).catch(() => null);
     const targetMsg = quoted || msg;
 
     if (!targetMsg.hasMedia) return msg.reply('❌ Reply to a voice note with .transcribe');
@@ -216,8 +227,12 @@ module.exports = {
       });
 
       msg.reply(`🎙️ *Transcription*\n\n${res.data.text}`);
-    } catch (err) {
-      msg.reply('❌ Transcription failed. Make sure you replied to a voice note.');
-    }
-  },
+ } catch (err) {
+  console.error('TRANSCRIBE ERROR:', err.response?.data || err.message || err);
+
+  msg.reply(
+    `❌ Transcription failed.\n\n${JSON.stringify(err.response?.data || err.message)}`
+   );
+  }
+ },
 };

@@ -1,4 +1,4 @@
-const { pick, rand } = require('../utils/helpers');
+const { pick, rand, mentionName } = require('../utils/helpers');
 
 const TRUTHS = [
   "What's your most embarrassing moment?",

@@ -1,0 +1,225 @@
+ANI-CHAN BOT - FULL COMMAND REFERENCE
+Prefix: . (set by BOT_PREFIX in .env)
+============================================================
+
+-- ADMIN & MODERATION --
+  .kick @user
+  .delete — delete a replied message
+  .antilink
+  .antilink action [warn/kick]
+  .antism on/off
+  .warn @user [reason]
+  .resetwarn @user
+  .groupstats
+  .welcome on/off
+  .setwelcome [message] — use @user as placeholder
+  .leave on/off
+  .setleave [message]
+  .purge [count] — delete last N messages
+  .blacklist add/remove/list
+  .promote @user
+  .demote @user
+  .mute
+  .unmute
+  .hidetag [message] — mention all without notification
+  .tagall [message]
+  .activity — show member activity
+  .active — most active members
+  .inactive — least active
+  .open
+  .close
+
+-- AI --
+  .copilot [prompt] — full context-aware AI chat
+  .gpt [prompt] — single-turn GPT (no history)
+  .imagine [prompt] — AI image generation with DALL-E 3
+  .upscale — upscale a replied-to image using RapidAPI
+  .translate [lang] [text] — translate text
+  .transcribe — transcribe a voice note using Whisper
+
+-- SEARCH --
+  .pinterest [query]
+  .sauce / .reverseimg — reverse image search
+  .wallpaper [query]
+  .lyrics [song name]
+
+-- DOWNLOADERS --
+  .ig [url]
+  .ttk [url]
+  .yt [url or search query]
+  .x [url] — Twitter/X
+  .fb [url] — Facebook
+  .play [song name] — search YouTube and return audio
+
+-- ANIME / IMAGES (some NSFW-gated) --
+  .waifu
+  .neko
+  .maid
+  .oppai
+  .selfies
+  .uniform
+  .nsfw on/off
+  .milf
+  .ass
+  .hentai
+  .oral
+  .ecchi
+  .paizuri
+  .ero
+  .ehentai — link to e-hentai with tag
+  .nhentai — link to nhentai with code or tag
+
+-- ECONOMY --
+  .balance
+  .orbs
+  .ebal [@user]
+  .daily
+  .withdraw [amount]
+  .deposit [amount]
+  .donate [@user] [amount]
+  .lottery
+  .rich — top 10 richest users
+  .richg — richest in this group
+  .profile
+  .edit — show editable fields
+  .bio [bio]
+  .setage [age]
+  .inventory
+  .use [item]
+  .sell [item]
+  .shop
+  .buy [item]
+  .dig
+  .fish
+  .leaderboard
+  .roast
+  .gamble [amount]
+  .beg
+
+-- GAMBLING MINI-GAMES --
+  .slots [amount]
+  .cf [amount] — coin flip
+  .dice [amount]
+  .db [amount] — double or bust
+  .dp [amount] — double or pass (lower risk, lower reward)
+  .roulette [amount] [bet_type]
+  .horse [horse_number] [amount]
+
+-- CARD MANAGEMENT (Owner Only) --
+  .addcard [character name] [tier] — fetch a character from AniList and add it to the catalogue (random tier if omitted)
+  .bulkadd — add multiple characters at once, one per line (optional tier per line, max 20 per batch)
+  .delcard [card id] — remove a card from the catalogue
+  .editcard [card id] [field] [value] — edit name/series/tier/description/imageUrl
+  .reloadcards — confirm the catalogue is live and reachable (no cache to actually reload)
+  .cardstats — catalogue stats: total/claimed/unclaimed cards, breakdown by tier
+
+-- CARD COLLECTION GAME --
+  .cards on/off
+  .card [index]
+  .ci [name] [tier] — card info from catalogue
+  .cardinfo alias
+  .si [name] — series info
+  .ss [series] — owned cards from that series
+  .slb [series] — series leaderboard (who has most)
+  .clb — card leaderboard (most total cards)
+  .deck — view your deck
+  .col — view your collection
+  .cardshop
+  .sellc [index] [price]
+  .rc [index] — remove card from sale
+  .vs — battle with decks
+  .claim [id] — claim a dropped card or buy from shop
+  .sc [@user] [index] [price] — sell card to a user
+  .tc [@user] [my_index] [their_index] — trade card
+  .lendcard — lend your top card to group temporarily
+  .auction
+  .submit [auction_id] [amount] — bid
+  .myauc — your active auctions
+  .remauc [auction_id] — remove your auction
+  .listauc — same as .auction
+  .stardust
+  .anticamp — toggle anticamp
+
+-- GUILDS --
+  .guild info
+  .guild create [name]
+  .guild invite @user
+  .guild accept
+  .guild decline
+  .guild emblem [emoji]
+  .guild leave
+  .guild disband
+
+-- GAMES --
+  .ttt — start tic tac toe
+  .startbattle
+  .attack
+  .defend
+  .flee
+  .akinator
+  .greekgod
+  .c4 — connect 4
+  .drop [col]
+  .wcg — would you rather (group game)
+  .chess
+  .move [e2e4]
+
+-- FUN / SOCIAL --
+  .gay
+  .lesbian
+  .simp
+  .ship [@user1] [@user2]
+  .skill
+  .duality
+  .gen
+  .pov
+  .social
+  .relation
+  .pp
+  .wouldyourather
+  .joke
+  .truth
+  .dare
+  .td — random truth or dare
+  .uno — start a silly uno card
+
+-- PETS --
+  .pet — view pet
+  .pet adopt [type]
+  .pet feed
+  .pet play
+  .pet name [name]
+
+-- REACTION / INTERACTION (action gifs) --
+  .hug [@user] -- send a hug reaction gif/action
+  .kiss [@user] -- send a kiss reaction gif/action
+  .slap [@user] -- send a slap reaction gif/action
+  .wave [@user] -- send a wave reaction gif/action
+  .pat [@user] -- send a pat reaction gif/action
+  .dance [@user] -- send a dance reaction gif/action
+  .sad [@user] -- send a sad reaction gif/action
+  .smile [@user] -- send a smile reaction gif/action
+  .laugh [@user] -- send a laugh reaction gif/action
+  .lick [@user] -- send a lick reaction gif/action
+  .punch [@user] -- send a punch reaction gif/action
+  .jihad [@user] -- send a jihad reaction gif/action
+  .crusade [@user] -- send a crusade reaction gif/action
+  .kill [@user] -- send a kill reaction gif/action
+  .bonk [@user] -- send a bonk reaction gif/action
+  .fuck [@user] -- send a fuck reaction gif/action
+  .tickle [@user] -- send a tickle reaction gif/action
+  .shrug [@user] -- send a shrug reaction gif/action
+  .wank [@user] -- send a wank reaction gif/action
+  .kidnap [@user] -- send a kidnap reaction gif/action
+
+-- MEDIA CONVERTER --
+  .sticker — convert image/gif/video to sticker
+  .take — save sticker metadata (pack name, author)
+  .toimg — convert sticker/webp to image
+  .tovid — convert gif to video
+  .rotate [degrees] — rotate an image
+
+============================================================
+Total documented commands: 187
+(196 total loaded -- remaining are internal subcommand handlers,
+ e.g. guild_info/pet_feed, invoked via .guild <sub> / .pet <sub>)

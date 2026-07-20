@@ -1,5 +1,7 @@
 const axios = require('axios');
 const { MessageMedia } = require('whatsapp-web.js');
+const yts = require('yt-search');
+const { safeGetChat } = require('../utils/helpers');
 
 // NOTE: All downloaders require RapidAPI keys or alternative APIs.
 // Sign up at https://rapidapi.com and get keys for:
@@ -18,7 +20,9 @@ const RAPIDAPI_HOST_TW = 'twitter241.p.rapidapi.com';
 async function downloadAndSend(msg, url, caption) {
   try {
     const media = await MessageMedia.fromUrl(url, { unsafeMime: true });
-    const chat = await msg.getChat();
+    const chat = await safeGetChat(msg);
+    if (!chat) return;
+    if (!chat) return;
     await chat.sendMessage(media, { caption });
   } catch (err) {
     msg.reply(`❌ Failed to download. Error: ${err.message}`);
@@ -91,9 +95,13 @@ module.exports = {
         },
       });
 
-      if (res.data.status !== 'ok') return msg.reply('❌ Conversion failed.');
+      if (res.data.status !== 'ok') {
+        console.error('YT conversion non-ok status:', JSON.stringify(res.data));
+        return msg.reply('❌ Conversion failed.');
+      }
       await downloadAndSend(msg, res.data.link, `🎵 ${res.data.title}`);
     } catch (err) {
+      console.error('YT download error:', err.response?.status, JSON.stringify(err.response?.data)?.slice(0, 300) || err.message);
       msg.reply('❌ YouTube download failed.');
     }
   },
@@ -160,30 +168,27 @@ module.exports = {
 
     msg.reply(`🔍 Searching for "${query}"...`);
     try {
-      // Search YouTube
-      const searchRes = await axios.get('https://youtube-mp36.p.rapidapi.com/search', {
-        params: { q: query },
-        headers: {
-          'X-RapidAPI-Key': RAPIDAPI_KEY,
-          'X-RapidAPI-Host': RAPIDAPI_HOST_YT,
-        },
-      });
-
-      const firstResult = searchRes.data?.items?.[0];
+      // Real YouTube search (youtube-mp36 has no /search endpoint — it only converts a known ID)
+      const searchResults = await yts(query);
+      const firstResult = searchResults.videos?.[0];
       if (!firstResult) return msg.reply('❌ No results found.');
 
-      // Convert to MP3
+      // Convert to MP3 via the working /dl endpoint
       const dlRes = await axios.get('https://youtube-mp36.p.rapidapi.com/dl', {
-        params: { id: firstResult.id },
+        params: { id: firstResult.videoId },
         headers: {
           'X-RapidAPI-Key': RAPIDAPI_KEY,
           'X-RapidAPI-Host': RAPIDAPI_HOST_YT,
         },
       });
 
-      if (dlRes.data.status !== 'ok') return msg.reply('❌ Conversion failed.');
-      await downloadAndSend(msg, dlRes.data.link, `🎵 ${dlRes.data.title}`);
+      if (dlRes.data.status !== 'ok') {
+        console.error('Play conversion non-ok status:', JSON.stringify(dlRes.data));
+        return msg.reply('❌ Conversion failed.');
+      }
+      await downloadAndSend(msg, dlRes.data.link, `🎵 ${dlRes.data.title || firstResult.title}`);
     } catch (err) {
+      console.error('Play error:', err.response?.status, JSON.stringify(err.response?.data)?.slice(0, 300) || err.message);
       msg.reply('❌ Play failed. Try with a direct YouTube URL using .yt');
     }
   },

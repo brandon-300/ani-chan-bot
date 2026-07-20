@@ -1,9 +1,12 @@
 const Group = require('../models/Group');
 const User = require('../models/User');
-const { isAdmin, botIsAdmin } = require('../utils/helpers');
+const { isAdmin, botIsAdmin, mentionName, isOwner, safeGetChat, safeGetQuotedMessage } = require('../utils/helpers');
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 async function requireAdmin(msg) {
+  const contact = await msg.getContact().catch(() => null);
+  if (contact && isOwner(contact.id._serialized)) return true;
+
   const ok = await isAdmin(msg);
   if (!ok) { msg.reply('❌ Admins only!'); return false; }
   return true;
@@ -11,6 +14,7 @@ async function requireAdmin(msg) {
 
 async function requireBotAdmin(msg) {
   const ok = await botIsAdmin(msg);
+  if (ok === null) { msg.reply('⚠️ WhatsApp connection hiccup — please try again in a moment.'); return false; }
   if (!ok) { msg.reply('❌ Make me an admin first!'); return false; }
   return true;
 }
@@ -28,7 +32,7 @@ async function onJoin(client, notification) {
   const contact = await notification.getContact();
   const name = contact.pushname || contact.number;
   let welcomeMsg = group.welcomeMsg || '👋 Welcome to the group, @user!';
-  welcomeMsg = welcomeMsg.replace('@user', `@${contact.number}`);
+welcomeMsg = welcomeMsg.replace('@user', `@${mentionName(contact)}`);
 
   await chat.sendMessage(welcomeMsg, { mentions: [contact] });
 }
@@ -40,7 +44,7 @@ async function onLeave(client, notification) {
 
   const contact = await notification.getContact();
   let leaveMsg = group.leaveMsg || '👋 @user has left the group.';
-  leaveMsg = leaveMsg.replace('@user', `@${contact.number}`);
+leaveMsg = leaveMsg.replace('@user', `@${mentionName(contact)}`);
 
   await chat.sendMessage(leaveMsg, { mentions: [contact] });
 }
@@ -56,13 +60,14 @@ module.exports = {
     const mentioned = await msg.getMentions();
     if (!mentioned.length) return msg.reply('❌ Mention someone to kick.');
 
-    const chat = await msg.getChat();
+    const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
+    if (!chat) return;
     for (const user of mentioned) {
       try {
         await chat.removeParticipants([user.id._serialized]);
-        msg.reply(`👢 @${user.number} has been kicked.`);
+        msg.reply(`👢 @${mentionName(user)} has been kicked.`);
       } catch {
-        msg.reply(`❌ Could not kick @${user.number}.`);
+        msg.reply(`❌ Could not kick @${mentionName(user)}.`);
       }
     }
   },
@@ -70,7 +75,8 @@ module.exports = {
   // .delete — delete a replied message
   async delete(client, msg, args) {
     if (!await requireAdmin(msg)) return;
-    const quoted = await msg.getQuotedMessage().catch(() => null);
+    const quoted = await safeGetQuotedMessage(msg).catch(err => { console.error("getQuotedMessage failed:", err.message); return 'ERROR'; });
+    if (quoted === 'ERROR') return msg.reply('⚠️ WhatsApp connection hiccup — please try again in a moment.');
     if (!quoted) return msg.reply('❌ Reply to a message to delete it.');
     try {
       await quoted.delete(true);
@@ -83,7 +89,8 @@ module.exports = {
   // .antilink
   async antilink(client, msg, args) {
     if (!await requireAdmin(msg)) return;
-    const chat = await msg.getChat();
+    const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
+    if (!chat) return;
     const group = await getOrCreateGroup(chat.id._serialized);
 
     group.antilink = !group.antilink;
@@ -97,7 +104,8 @@ module.exports = {
     const action = args[0]?.toLowerCase();
     if (!['warn', 'kick'].includes(action)) return msg.reply('❌ Usage: .antilink action [warn/kick]');
 
-    const chat = await msg.getChat();
+    const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
+    if (!chat) return;
     const group = await getOrCreateGroup(chat.id._serialized);
     group.antilinkAction = action;
     await group.save();
@@ -110,7 +118,8 @@ module.exports = {
     const sub = args[0]?.toLowerCase();
     if (!['on', 'off'].includes(sub)) return msg.reply('❌ Usage: .antism [on/off]');
 
-    const chat = await msg.getChat();
+    const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
+    if (!chat) return;
     const group = await getOrCreateGroup(chat.id._serialized);
     group.antispam = sub === 'on';
     await group.save();
@@ -129,15 +138,16 @@ module.exports = {
     user.warns += 1;
     await user.save();
 
-    const chat = await msg.getChat();
+    const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
+    if (!chat) return;
     chat.sendMessage(
-      `⚠️ *Warning* for @${target.number}\n\nReason: ${reason}\nTotal warns: ${user.warns}/3\n${user.warns >= 3 ? '🔴 Auto-kick threshold reached!' : ''}`,
+       `⚠️ *Warning* for @${mentionName(target)}\n\nReason: ${reason}\nTotal warns: ${user.warns}/3\n${user.warns >= 3 ? '🔴 Auto-kick threshold reached!' : ''}`,
       { mentions: [target] }
     );
 
     if (user.warns >= 3 && await botIsAdmin(msg)) {
       await chat.removeParticipants([target.id._serialized]);
-      chat.sendMessage(`👢 @${target.number} was auto-kicked after 3 warnings.`, { mentions: [target] });
+      chat.sendMessage(`👢 @${mentionName(target)} was auto-kicked after 3 warnings.`, { mentions: [target] });
     }
   },
 
@@ -150,12 +160,13 @@ module.exports = {
     const user = await User.findOrCreate(mentioned[0].id._serialized);
     user.warns = 0;
     await user.save();
-    msg.reply(`✅ Warnings reset for @${mentioned[0].number}.`);
+     msg.reply(`✅ Warnings reset for @${mentionName(mentioned[0])}.`);
   },
 
   // .groupstats
   async groupstats(client, msg, args) {
-    const chat = await msg.getChat();
+    const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
+    if (!chat) return;
     if (!chat.isGroup) return msg.reply('❌ Group only.');
 
     const group = await Group.findOne({ id: chat.id._serialized });
@@ -173,7 +184,8 @@ module.exports = {
     const sub = args[0]?.toLowerCase();
     if (!['on', 'off'].includes(sub)) return msg.reply('❌ Usage: .welcome [on/off]');
 
-    const chat = await msg.getChat();
+    const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
+    if (!chat) return;
     const group = await getOrCreateGroup(chat.id._serialized);
     group.welcome = sub === 'on';
     await group.save();
@@ -186,7 +198,8 @@ module.exports = {
     const welcomeMsg = args.join(' ');
     if (!welcomeMsg) return msg.reply('❌ Usage: .setwelcome [message]\n\nUse @user as a placeholder for the new member\'s name.');
 
-    const chat = await msg.getChat();
+    const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
+    if (!chat) return;
     const group = await getOrCreateGroup(chat.id._serialized);
     group.welcomeMsg = welcomeMsg;
     await group.save();
@@ -199,7 +212,8 @@ module.exports = {
     const sub = args[0]?.toLowerCase();
     if (!['on', 'off'].includes(sub)) return msg.reply('❌ Usage: .leave [on/off]');
 
-    const chat = await msg.getChat();
+    const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
+    if (!chat) return;
     const group = await getOrCreateGroup(chat.id._serialized);
     group.leave = sub === 'on';
     await group.save();
@@ -212,7 +226,8 @@ module.exports = {
     const leaveMsg = args.join(' ');
     if (!leaveMsg) return msg.reply('❌ Usage: .setleave [message]\n\nUse @user as a placeholder.');
 
-    const chat = await msg.getChat();
+    const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
+    if (!chat) return;
     const group = await getOrCreateGroup(chat.id._serialized);
     group.leaveMsg = leaveMsg;
     await group.save();
@@ -233,7 +248,8 @@ module.exports = {
     if (!await requireAdmin(msg)) return;
     const action = args[0]?.toLowerCase();
     const word = args[1]?.toLowerCase();
-    const chat = await msg.getChat();
+    const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
+    if (!chat) return;
     const group = await getOrCreateGroup(chat.id._serialized);
 
     if (action === 'add' && word) {
@@ -261,10 +277,11 @@ module.exports = {
     const mentioned = await msg.getMentions();
     if (!mentioned.length) return msg.reply('❌ Mention someone to promote.');
 
-    const chat = await msg.getChat();
+    const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
+    if (!chat) return;
     try {
       await chat.promoteParticipants([mentioned[0].id._serialized]);
-      msg.reply(`⬆️ @${mentioned[0].number} is now an admin!`);
+       msg.reply(`⬆️ @${mentionName(mentioned[0])} is now an admin!`);
     } catch {
       msg.reply('❌ Could not promote.');
     }
@@ -278,10 +295,11 @@ module.exports = {
     const mentioned = await msg.getMentions();
     if (!mentioned.length) return msg.reply('❌ Mention someone to demote.');
 
-    const chat = await msg.getChat();
+    const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
+    if (!chat) return;
     try {
       await chat.demoteParticipants([mentioned[0].id._serialized]);
-      msg.reply(`⬇️ @${mentioned[0].number} is no longer an admin.`);
+      msg.reply(`⬇️ @${mentionName(mentioned[0])} is no longer an admin.`);
     } catch {
       msg.reply('❌ Could not demote.');
     }
@@ -292,7 +310,8 @@ module.exports = {
     if (!await requireAdmin(msg)) return;
     if (!await requireBotAdmin(msg)) return;
 
-    const chat = await msg.getChat();
+    const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
+    if (!chat) return;
     await chat.setMessagesAdminsOnly(true);
     const group = await getOrCreateGroup(chat.id._serialized);
     group.isMuted = true;
@@ -305,7 +324,8 @@ module.exports = {
     if (!await requireAdmin(msg)) return;
     if (!await requireBotAdmin(msg)) return;
 
-    const chat = await msg.getChat();
+    const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
+    if (!chat) return;
     await chat.setMessagesAdminsOnly(false);
     const group = await getOrCreateGroup(chat.id._serialized);
     group.isMuted = false;
@@ -317,21 +337,25 @@ module.exports = {
   async hidetag(client, msg, args) {
     if (!await requireAdmin(msg)) return;
     const text = args.join(' ') || '📢';
-    const chat = await msg.getChat();
+    const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
+    if (!chat) return;
     const mentions = chat.participants.map(p => p.id._serialized);
     const hiddenMentions = mentions.map(() => '‎').join('');
     await chat.sendMessage(text + hiddenMentions, { mentions });
   },
 
   // .tagall [message]
-  async tagall(client, msg, args) {
+async tagall(client, msg, args) {
     if (!await requireAdmin(msg)) return;
     const text = args.join(' ') || '📢 Attention everyone!';
-    const chat = await msg.getChat();
+    const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
+    if (!chat) return;
+    const botId = client.info.wid._serialized;
 
     const mentions = [];
     let tagText = `${text}\n\n`;
     for (const p of chat.participants) {
+      if (p.id._serialized === botId) continue;
       tagText += `@${p.id.user} `;
       mentions.push(p.id._serialized);
     }
@@ -341,7 +365,8 @@ module.exports = {
 
   // .activity — show member activity
   async activity(client, msg, args) {
-    const chat = await msg.getChat();
+    const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
+    if (!chat) return;
     if (!chat.isGroup) return msg.reply('❌ Group only.');
 
     const group = await Group.findOne({ id: chat.id._serialized });
@@ -362,7 +387,8 @@ module.exports = {
 
   // .inactive — least active
   async inactive(client, msg, args) {
-    const chat = await msg.getChat();
+    const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
+    if (!chat) return;
     if (!chat.isGroup) return msg.reply('❌ Group only.');
 
     const group = await Group.findOne({ id: chat.id._serialized });
@@ -380,7 +406,8 @@ module.exports = {
     if (!await requireAdmin(msg)) return;
     if (!await requireBotAdmin(msg)) return;
 
-    const chat = await msg.getChat();
+    const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
+    if (!chat) return;
     await chat.setMessagesAdminsOnly(false);
     msg.reply('🟢 Group is now *open*. Everyone can send messages.');
   },
@@ -390,7 +417,8 @@ module.exports = {
     if (!await requireAdmin(msg)) return;
     if (!await requireBotAdmin(msg)) return;
 
-    const chat = await msg.getChat();
+    const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
+    if (!chat) return;
     await chat.setMessagesAdminsOnly(true);
     msg.reply('🔴 Group is now *closed*. Only admins can send messages.');
   },
@@ -399,7 +427,8 @@ module.exports = {
 // ─── Blacklist listener (passive, called from index.js or separate listener) ──
 module.exports.handleBlacklist = async (msg) => {
   try {
-    const chat = await msg.getChat();
+    const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
+    if (!chat) return;
     if (!chat.isGroup) return;
 
     const group = await Group.findOne({ id: chat.id._serialized });
@@ -411,6 +440,6 @@ module.exports.handleBlacklist = async (msg) => {
 
     await msg.delete(true);
     const contact = await msg.getContact();
-    chat.sendMessage(`🚫 @${contact.number} used a blacklisted word.`, { mentions: [contact] });
+    chat.sendMessage(`🚫 @${mentionName(contact)} used a blacklisted word.`, { mentions: [contact] });
   } catch {}
 };

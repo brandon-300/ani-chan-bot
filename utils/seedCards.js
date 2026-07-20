@@ -1,4 +1,4 @@
-// Run this once: node utils/seedCards.js
+// Run this anytime: node utils/seedCards.js
 require('dotenv').config();
 const mongoose = require('mongoose');
 const { CardCatalogue } = require('../models/Card');
@@ -59,9 +59,53 @@ const cards = [
   { name: 'Knight', series: 'Common', tier: 'B' },
 ];
 
-mongoose.connect(process.env.MONGO_URI).then(async () => {
-  await CardCatalogue.deleteMany({});
-  await CardCatalogue.insertMany(cards);
-  console.log(`✅ Seeded ${cards.length} cards`);
-  mongoose.disconnect();
-});
+async function main() {
+  try {
+    if (!process.env.MONGO_URI) {
+      throw new Error('MONGO_URI is missing in your environment variables.');
+    }
+
+    await mongoose.connect(process.env.MONGO_URI);
+    console.log('✅ MongoDB connected');
+
+    const ops = cards.map((card) => ({
+      updateOne: {
+        filter: {
+          name: card.name,
+          series: card.series,
+        },
+        update: {
+          $set: {
+            name: card.name,
+            series: card.series,
+            tier: card.tier,
+          },
+        },
+        upsert: true,
+      },
+    }));
+
+    const result = await CardCatalogue.bulkWrite(ops, { ordered: false });
+
+    const upserted = result.upsertedCount || 0;
+    const modified = result.modifiedCount || 0;
+    const matched = result.matchedCount || 0;
+
+    console.log(`🌱 Card seeding complete`);
+    console.log(`📚 Total cards in file: ${cards.length}`);
+    console.log(`➕ Newly added: ${upserted}`);
+    console.log(`🔄 Updated: ${modified}`);
+    console.log(`✅ Matched existing: ${matched}`);
+
+    await mongoose.disconnect();
+    console.log('✅ MongoDB disconnected');
+  } catch (err) {
+    console.error('❌ Seed failed:', err.message);
+    try {
+      await mongoose.disconnect();
+    } catch {}
+    process.exitCode = 1;
+  }
+}
+
+main();

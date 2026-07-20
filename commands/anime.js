@@ -1,6 +1,7 @@
 const axios = require('axios');
 const { MessageMedia } = require('whatsapp-web.js');
 const Group = require('../models/Group');
+const { safeGetChat } = require('../utils/helpers');
 
 // ─── nekos.best — SFW anime images ───────────────────────────────────────────
 async function getSFW(endpoint) {
@@ -19,7 +20,9 @@ async function getNSFW(tag) {
 async function sendAnimeImg(msg, url, caption, nsfw = false) {
   try {
     if (nsfw) {
-      const chat = await msg.getChat();
+      const chat = await safeGetChat(msg);
+    if (!chat) return;
+      if (!chat) return;
       if (!chat.isGroup) return msg.reply('❌ NSFW commands can only be used in groups.');
 
       const group = await Group.findOne({ id: chat.id._serialized });
@@ -29,7 +32,9 @@ async function sendAnimeImg(msg, url, caption, nsfw = false) {
     }
 
     const media = await MessageMedia.fromUrl(url, { unsafeMime: true });
-    const chat = await msg.getChat();
+    const chat = await safeGetChat(msg);
+    if (!chat) return;
+    if (!chat) return;
     await chat.sendMessage(media, { caption });
   } catch (err) {
     msg.reply(`❌ Failed to fetch image. API may be down.\n${caption}`);
@@ -116,7 +121,9 @@ module.exports = {
   // ─── NSFW Toggle ─────────────────────────────────────────────────────────────
   // .nsfw on/off
   async nsfw(client, msg, args) {
-    const chat = await msg.getChat();
+    const chat = await safeGetChat(msg);
+    if (!chat) return;
+    if (!chat) return;
     if (!chat.isGroup) return msg.reply('❌ Group only.');
 
     const contact = await msg.getContact();
@@ -189,7 +196,9 @@ module.exports = {
 
   // .ehentai — link to e-hentai with tag
   async ehentai(client, msg, args) {
-    const chat = await msg.getChat();
+    const chat = await safeGetChat(msg);
+    if (!chat) return;
+    if (!chat) return;
     if (chat.isGroup) {
       const group = await Group.findOne({ id: chat.id._serialized });
       if (!group?.nsfw) return msg.reply('❌ NSFW is disabled here.');
@@ -200,7 +209,9 @@ module.exports = {
 
   // .nhentai — link to nhentai with code or tag
   async nhentai(client, msg, args) {
-    const chat = await msg.getChat();
+    const chat = await safeGetChat(msg);
+    if (!chat) return;
+    if (!chat) return;
     if (chat.isGroup) {
       const group = await Group.findOne({ id: chat.id._serialized });
       if (!group?.nsfw) return msg.reply('❌ NSFW is disabled here.');

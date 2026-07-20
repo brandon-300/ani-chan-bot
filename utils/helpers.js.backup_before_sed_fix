@@ -1,0 +1,143 @@
+const User = require('../models/User');
+
+// ─── Format Numbers ───────────────────────────────────────────────────────────
+function formatNum(n) {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return String(n);
+}
+
+// ─── Cooldown Helper ──────────────────────────────────────────────────────────
+function formatCooldown(ms) {
+  const h = Math.floor(ms / 3_600_000);
+  const m = Math.floor((ms % 3_600_000) / 60_000);
+  const s = Math.floor((ms % 60_000) / 1_000);
+  const parts = [];
+  if (h) parts.push(`${h}h`);
+  if (m) parts.push(`${m}m`);
+  if (s) parts.push(`${s}s`);
+  return parts.join(' ') || '0s';
+}
+
+// ─── Random Range ─────────────────────────────────────────────────────────────
+function rand(min, max) {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+// ─── Pick Random from Array ───────────────────────────────────────────────────
+function pick(arr) {
+  return arr[Math.floor(Math.random() * arr.length)];
+}
+
+// ─── Check if user is group admin (SAFER) ─────────────────────────────────────────────
+    async function isAdmin(msg) {
+      let chat;
+      try {
+        chat = await msg.getChat();
+      } catch (err) {
+        console.error('Helper: isAdmin - Failed to get chat:', err.message);
+        return false; // Assume not an admin if chat cannot be retrieved
+      }
+
+      if (!chat || !chat.isGroup) return false; // Not a group or chat couldn't be fetched
+
+      const contact = await msg.getContact();
+      const participant = chat.participants.find(
+        p => p.id._serialized === contact.id._serialized
+      );
+      return participant && (participant.isAdmin || participant.isSuperAdmin);
+    }
+
+// ─── Check if bot is admin (SAFER) ────────────────────────────────────────────────────
+    async function botIsAdmin(msg) {
+      let chat;
+      try {
+        chat = await msg.getChat();
+      } catch (err) {
+        console.error('Helper: botIsAdmin - Failed to get chat:', err.message);
+        return false; // Assume not an admin if chat cannot be retrieved
+      }
+
+      if (!chat || !chat.isGroup) return false; // Not a group or chat couldn't be fetched
+
+      const botId = msg.to;
+      const participant = chat.participants.find(p => p.id._serialized === botId);
+      return participant && (participant.isAdmin || participant.isSuperAdmin);
+    }
+
+// ─── XP & Level ──────────────────────────────────────────────────────────────
+async function addXP(userId, amount) {
+  const user = await User.findOne({ id: userId });
+  if (!user) return;
+  user.xp += amount;
+  const nextLevel = user.level * 100;
+  if (user.xp >= nextLevel) {
+    user.xp -= nextLevel;
+    user.level += 1;
+    user.coins += user.level * 200;
+    return { levelUp: true, level: user.level };
+  }
+  await user.save();
+  return { levelUp: false };
+}
+
+// ─── Tier Weights for Card Drops ─────────────────────────────────────────────
+// ─── Card Tier Roll ───────────────────────────────────────────────────────────
+// Drop rates:
+//   C   70%
+//   B   20%
+//   A   7.5%
+//   S   2%
+//   SS  0.4%
+//   SSS 0.1%  (ultra-rare, above SS)
+function rollTier() {
+  const r = Math.random() * 100;
+  if (r < 70) return 'C';
+  if (r < 90) return 'B';
+  if (r < 97.5) return 'A';
+  if (r < 99.5) return 'S';
+  if (r < 99.9) return 'SS';
+  return 'SSS';
+}
+
+// ─── Tier Emoji ───────────────────────────────────────────────────────────────
+function tierEmoji(tier) {
+  return { C: '⚪', B: '🟢', A: '🔵', S: '🟡', SS: '🟠', SSS: '🔴' }[tier] || '⚪';
+}
+
+function mentionName(contact) {
+  return contact.name || contact.pushname || contact.number || 'Unknown';
+}
+
+function isOwner(id) {
+  return id === process.env.OWNER_NUMBER;
+}
+
+// ─── Generic unique 6-char code generator ─────────────────────────────────────
+// Used for anything that needs a short, human-typeable ID (shop listings,
+// auctions, etc). Pass the mongoose Model and the field name to check against.
+async function generateUniqueCode(Model, field = 'code') {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // skips ambiguous 0/O/1/I
+  let code;
+  let exists = true;
+  while (exists) {
+    code = Array.from({ length: 6 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+    exists = await Model.findOne({ [field]: code });
+  }
+  return code;
+}
+
+module.exports = {
+  formatNum,
+  formatCooldown,
+  rand,
+  pick,
+  isAdmin,
+  botIsAdmin,
+  addXP,
+  rollTier,
+  tierEmoji,
+  mentionName,
+  isOwner,
+  generateUniqueCode
+};

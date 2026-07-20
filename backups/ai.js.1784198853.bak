@@ -1,0 +1,235 @@
+const axios = require('axios');
+const { MessageMedia } = require('whatsapp-web.js');
+const OpenAI = require('openai');
+const { safeGetChat } = require('../utils/helpers');
+
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY;
+
+// ─── Conversation memory (per chat, clears after 30 min idle) ─────────────────
+const chatHistory = new Map();
+
+function getHistory(chatId) {
+  return chatHistory.get(chatId) || [];
+}
+
+function addToHistory(chatId, role, content) {
+  const history = getHistory(chatId);
+  history.push({ role, content });
+  if (history.length > 20) history.shift(); // Keep last 20 messages
+  chatHistory.set(chatId, history);
+
+  // Auto-clear after 30 minutes of inactivity
+  setTimeout(() => chatHistory.delete(chatId), 30 * 60 * 1000);
+}
+
+// ─── Copilot (GPT-4 via OpenAI) ──────────────────────────────────────────────
+module.exports = {
+  // .copilot [prompt] — full context-aware AI chat
+  async copilot(client, msg, args) {
+    const prompt = args.join(' ');
+    if (!prompt) return msg.reply('❌ Usage: .copilot [your message]');
+
+    const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
+    if (!chat) return;
+    msg.reply('🤖 Thinking...');
+
+    try {
+      const history = getHistory(chat.id._serialized);
+      addToHistory(chat.id._serialized, 'user', prompt);
+
+      const response = await openai.chat.completions.create({
+        model: 'gpt-4o',
+        messages: [
+          {
+            role: 'system',
+            content: `You are Ani-Chan Bot, a helpful, witty, and friendly WhatsApp bot assistant. Keep responses concise and WhatsApp-friendly (no markdown headers, use *bold* for emphasis).`,
+          },
+          ...history,
+        ],
+        max_tokens: 800,
+      });
+
+      const reply = response.choices[0].message.content;
+      addToHistory(chat.id._serialized, 'assistant', reply);
+      msg.reply(reply);
+    } catch (err) {
+      msg.reply('❌ Copilot failed. Check your OpenAI API key.');
+    }
+  },
+
+  // .gpt [prompt] — single-turn GPT (no history)
+  async gpt(client, msg, args) {
+    const prompt = args.join(' ');
+    if (!prompt) return msg.reply('❌ Usage: .gpt [your question]');
+
+    msg.reply('💭 Processing...');
+    try {
+      const response = await openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [
+          {
+            role: 'system',
+            content: 'You are a helpful assistant. Keep responses short and WhatsApp-friendly.',
+          },
+          { role: 'user', content: prompt },
+        ],
+        max_tokens: 600,
+      });
+
+      msg.reply(response.choices[0].message.content);
+    } catch (err) {
+      msg.reply('❌ GPT failed. Check your OpenAI API key.');
+    }
+  },
+
+  // .imagine [prompt] — AI image generation with DALL-E 3
+  async imagine(client, msg, args) {
+    const prompt = args.join(' ');
+    if (!prompt) return msg.reply('❌ Usage: .imagine [image description]');
+
+    msg.reply('🎨 Generating image...');
+    try {
+const response = await openai.images.generate({
+        model: 'gpt-image-1',
+        prompt,
+        n: 1,
+        size: '1024x1024',
+        quality: 'high',
+      });
+
+      const b64 = response.data[0].b64_json;
+      const media = new MessageMedia('image/png', b64, 'imagine.png');
+      const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
+      if (!chat) return;
+      await chat.sendMessage(media, { caption: `🎨 *Imagine:* ${prompt}` });
+} catch (err) {
+      console.error('Imagine error:', err.status, err.code, err.message);
+      if (err.code === 'content_policy_violation') {
+        msg.reply('❌ Prompt violates content policy. Try a different description.');
+      } else {
+        msg.reply('❌ Image generation failed. Check your OpenAI API key.');
+      }
+    }
+  },
+
+  // .upscale — upscale a replied-to image using RapidAPI
+async upscale(client, msg, args) {
+    const quoted = await msg.getQuotedMessage().catch(() => null);
+    const targetMsg = quoted || msg;
+
+    if (!targetMsg.hasMedia) return msg.reply('❌ Reply to an image with .upscale');
+
+    msg.reply('⬆️ Upscaling image...');
+    try {
+      const media = await targetMsg.downloadMedia();
+      // media.data is already base64-encoded
+
+      const params = new URLSearchParams();
+      params.append('image_base64', media.data);
+      params.append('scale_factor', '2');
+
+      const res = await axios.post(
+        'https://ai-image-upscaler1.p.rapidapi.com/v1',
+        params.toString(),
+        {
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'X-RapidAPI-Key': RAPIDAPI_KEY,
+            'X-RapidAPI-Host': 'ai-image-upscaler1.p.rapidapi.com',
+          },
+        }
+      );
+
+      if (res.data.code !== 0 || !res.data.result_base64) {
+        console.error('Upscale non-ok response:', JSON.stringify(res.data)?.slice(0, 300));
+        return msg.reply('❌ Upscale failed. Make sure you replied to an image and your RapidAPI key is valid.');
+      }
+
+      const upscaledMedia = new MessageMedia('image/jpeg', res.data.result_base64);
+      const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
+      if (!chat) return;
+      await chat.sendMessage(upscaledMedia, { caption: '✅ Image upscaled 2x!' });
+    } catch (err) {
+      console.error('Upscale error:', err.response?.status, JSON.stringify(err.response?.data)?.slice(0, 300) || err.message);
+      msg.reply('❌ Upscale failed. Make sure you replied to an image and your RapidAPI key is valid.');
+    }
+  },
+
+  // .translate [lang] [text] — translate text
+  async translate(client, msg, args) {
+    const lang = args[0];
+    const text = args.slice(1).join(' ');
+
+    // Check if replying to a message
+    const quoted = await msg.getQuotedMessage().catch(() => null);
+    const toTranslate = text || quoted?.body;
+
+    if (!lang || !toTranslate) {
+      return msg.reply('❌ Usage: .translate [language] [text]\nOr reply to a message with .translate [language]');
+    }
+
+    msg.reply('🌍 Translating...');
+    try {
+      const response = await openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [
+          {
+            role: 'system',
+            content: `Translate the following text to ${lang}. Return ONLY the translated text, nothing else.`,
+          },
+          { role: 'user', content: toTranslate },
+        ],
+        max_tokens: 500,
+      });
+
+      const translated = response.choices[0].message.content;
+      msg.reply(`🌍 *Translation (${lang})*\n\n${translated}`);
+    } catch (err) {
+      msg.reply('❌ Translation failed.');
+    }
+  },
+
+  // .transcribe — transcribe a voice note using Whisper
+  async transcribe(client, msg, args) {
+    const quoted = await msg.getQuotedMessage().catch(() => null);
+    const targetMsg = quoted || msg;
+
+    if (!targetMsg.hasMedia) return msg.reply('❌ Reply to a voice note with .transcribe');
+
+    msg.reply('🎙️ Transcribing...');
+    try {
+      const media = await targetMsg.downloadMedia();
+      if (!media.mimetype.includes('audio') && !media.mimetype.includes('ogg')) {
+        return msg.reply('❌ Please reply to a voice note or audio file.');
+      }
+
+      const audioBuffer = Buffer.from(media.data, 'base64');
+
+      // Use OpenAI Whisper
+      const { Readable } = require('stream');
+      const FormData = require('form-data');
+      const form = new FormData();
+
+      const stream = Readable.from(audioBuffer);
+      stream.path = 'audio.ogg';
+      form.append('file', stream, { filename: 'audio.ogg', contentType: media.mimetype });
+      form.append('model', 'whisper-1');
+
+      const res = await axios.post('https://api.openai.com/v1/audio/transcriptions', form, {
+        headers: {
+          ...form.getHeaders(),
+          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        },
+      });
+
+      msg.reply(`🎙️ *Transcription*\n\n${res.data.text}`);
+ } catch (err) {
+  console.error('TRANSCRIBE ERROR:', err.response?.data || err.message || err);
+
+  msg.reply(
+    `❌ Transcription failed.\n\n${JSON.stringify(err.response?.data || err.message)}`
+   );
+  }
+ },
+};

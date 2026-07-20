@@ -1,5 +1,6 @@
 const axios = require('axios');
 const { MessageMedia } = require('whatsapp-web.js');
+const { safeGetChat } = require('../utils/helpers');
 
 // ─── nekos.best API — free anime GIFs ─────────────────────────────────────────
 async function getGif(endpoint) {
@@ -17,7 +18,9 @@ async function sendGif(msg, endpoint, text) {
     try {
       const media = await MessageMedia.fromUrl(url);
       const contact = await msg.getContact();
-      const chat = await msg.getChat();
+      const chat = await safeGetChat(msg);
+    if (!chat) return;
+      if (!chat) return;
       await chat.sendMessage(media, { caption: text });
       return;
     } catch {}

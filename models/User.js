@@ -38,11 +38,13 @@ const UserSchema = new mongoose.Schema({
 });
 
 UserSchema.statics.findOrCreate = async function (id, name) {
-  let user = await this.findOne({ id });
-  if (!user) {
-    user = await this.create({ id, name: name || 'Unknown' });
-  }
-  return user;
+  const update = { $setOnInsert: { id } };
+  if (name) update.$set = { name };
+  return this.findOneAndUpdate(
+    { id },
+    update,
+    { upsert: true, new: true, setDefaultsOnInsert: true }
+  );
 };
 
 module.exports = mongoose.model('User', UserSchema);
