@@ -1,0 +1,157 @@
+const User = require('../models/User');
+const { CardCatalogue, OwnedCard } = require('../models/Card');
+
+// Each achievement's `check(ctx)` runs against a context built fresh from the
+// user's current stats. Only reachable, honestly-checkable achievements are
+// listed here — nothing tied to features that don't actually work yet (e.g.
+// auctions, which have no way to create a listing at the moment).
+//
+// To add a new achievement later: just append an entry here. Nothing else
+// needs to change — checkAchievements() picks it up automatically.
+const ACHIEVEMENTS = [
+  {
+    id: 'first_card',
+    name: 'First Card',
+    emoji: '🎴',
+    desc: 'Claim your first card',
+    check: (ctx) => ctx.totalCards >= 1
+  },
+  {
+    id: 'first_ss',
+    name: 'First SS',
+    emoji: '🟠',
+    desc: 'Own an SS or SSS card',
+    check: (ctx) => ctx.hasSSOrHigher
+  },
+  {
+    id: 'legendary_collector',
+    name: 'Legendary Collector',
+    emoji: '👑',
+    desc: 'Own an SSS card',
+    check: (ctx) => ctx.hasSSS
+  },
+  {
+    id: 'lucky',
+    name: 'Lucky',
+    emoji: '🍀',
+    desc: 'Personally pull an SSS card from a drop (not bought or traded for)',
+    check: (ctx) => ctx.selfPulledSSS
+  },
+  {
+    id: 'collector',
+    name: 'Collector',
+    emoji: '📦',
+    desc: 'Own 10 cards',
+    check: (ctx) => ctx.totalCards >= 10
+  },
+  {
+    id: 'hoarder',
+    name: 'Hoarder',
+    emoji: '🗃️',
+    desc: 'Own 50 cards',
+    check: (ctx) => ctx.totalCards >= 50
+  },
+  {
+    id: 'century',
+    name: '100 Cards',
+    emoji: '💯',
+    desc: 'Own 100 cards',
+    check: (ctx) => ctx.totalCards >= 100
+  },
+  {
+    id: 'millionaire',
+    name: 'Millionaire',
+    emoji: '💰',
+    desc: 'Reach 1,000,000 coins',
+    check: (ctx) => ctx.coins >= 1000000
+  },
+  {
+    id: 'trader',
+    name: 'Trader',
+    emoji: '🔄',
+    desc: 'Complete 10 trades',
+    check: (ctx) => ctx.tradesCompleted >= 10
+  },
+  {
+    id: 'master_trader',
+    name: 'Master Trader',
+    emoji: '🏅',
+    desc: 'Complete 50 trades',
+    check: (ctx) => ctx.tradesCompleted >= 50
+  },
+  {
+    id: 'anime_master',
+    name: 'Anime Master',
+    emoji: '📚',
+    desc: 'Fully complete any one series',
+    check: (ctx) => ctx.hasCompletedSeries
+  }
+];
+
+// Builds the stats context a user's cards/coins currently represent.
+async function buildContext(userId) {
+  const [user, cards, catalogue] = await Promise.all([
+    User.findOrCreate(userId),
+    OwnedCard.find({ ownerId: userId }),
+    CardCatalogue.find()
+  ]);
+
+  console.log(`[achievements] userId="${userId}" cards=${cards.length} tiers=${cards.map(c => c.tier).join(',')}`);
+
+  const seriesTotals = {};
+  for (const c of catalogue) {
+    seriesTotals[c.series] = (seriesTotals[c.series] || 0) + 1;
+  }
+
+  const ownedBySeries = {};
+  for (const c of cards) {
+    ownedBySeries[c.series] = (ownedBySeries[c.series] || 0) + 1;
+  }
+
+  const hasCompletedSeries = Object.entries(ownedBySeries).some(
+    ([series, count]) => seriesTotals[series] && count >= seriesTotals[series]
+  );
+
+  const ctx = {
+    totalCards: cards.length,
+    hasSSOrHigher: cards.some(c => c.tier === 'SS' || c.tier === 'SSS'),
+    hasSSS: cards.some(c => c.tier === 'SSS'),
+    selfPulledSSS: cards.some(c => c.tier === 'SSS' && c.firstOwner === userId),
+    coins: user.coins,
+    tradesCompleted: user.tradesCompleted || 0,
+    hasCompletedSeries
+  };
+  console.log('[achievements] ctx=', JSON.stringify(ctx));
+  return ctx;
+}
+
+// Checks all achievements for a user, unlocks any newly-earned ones, and
+// returns the list of achievements unlocked just now (empty if none).
+async function checkAchievements(userId) {
+  const user = await User.findOrCreate(userId);
+  const alreadyUnlocked = new Set(user.achievements || []);
+  const ctx = await buildContext(userId);
+
+  const newlyUnlocked = ACHIEVEMENTS.filter(
+    a => !alreadyUnlocked.has(a.id) && a.check(ctx)
+  );
+  console.log('[achievements] alreadyUnlocked=', JSON.stringify([...alreadyUnlocked]), 'newlyUnlocked=', JSON.stringify(newlyUnlocked.map(a => a.id)));
+
+  if (newlyUnlocked.length) {
+    user.achievements = [...alreadyUnlocked, ...newlyUnlocked.map(a => a.id)];
+    await user.save();
+    console.log('[achievements] saved. user.achievements now=', JSON.stringify(user.achievements));
+  }
+
+  return newlyUnlocked;
+}
+
+// Formats a notification block for any newly-unlocked achievements. Returns
+// an empty string if there's nothing new (caller should skip sending).
+function formatUnlockNotice(newlyUnlocked) {
+  if (!newlyUnlocked.length) return '';
+  const lines = newlyUnlocked.map(a => `${a.emoji} *${a.name}* — ${a.desc}`);
+  return `\n\n🏆 *Achievement Unlocked!*\n${lines.join('\n')}`;
+}
+
+module.exports = { ACHIEVEMENTS, checkAchievements, formatUnlockNotice };

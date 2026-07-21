@@ -34,9 +34,6 @@ const UserSchema = new mongoose.Schema({
     badge: { type: String, default: '' },
   },
   campCount: { type: Number, default: 0 },      // for anticamp
-  achievements: { type: [String], default: [] }, // unlocked achievement ids
-  wishlist: { type: [String], default: [] },     // card names the user wants to be notified about
-  tradesCompleted: { type: Number, default: 0 },
   createdAt: { type: Date, default: Date.now },
 });
 

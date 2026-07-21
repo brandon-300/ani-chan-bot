@@ -66,29 +66,17 @@ ${tierEmoji(card.tier)} *${card.name}*
 
 Type *.claim ${claimCode}* to claim it!`;
 
-  // Wishlist notifications (Phase 9): anyone who wishlisted this card's name
-  // gets pinged, case-insensitively.
-  const wishers = await User.find({ wishlist: { $exists: true, $ne: [] } });
-  const matchedIds = wishers
-    .filter(u => u.wishlist.some(w => w.toLowerCase() === card.name.toLowerCase()))
-    .map(u => u.id);
-
-  const wishlistNote = matchedIds.length
-    ? `\n\n🔔 ${matchedIds.map(id => `@${id.split('@')[0]}`).join(' ')} — a card on your wishlist appeared!`
-    : '';
-  const fullCaption = caption + wishlistNote;
-
   if (card.imageUrl) {
     try {
       const media = await MessageMedia.fromUrl(card.imageUrl, { unsafeMime: true });
-      await chat.sendMessage(media, { caption: fullCaption, mentions: matchedIds });
+      await chat.sendMessage(media, { caption });
       return card;
     } catch {
       // image fetch failed — fall through to text-only drop below
     }
   }
 
-  await chat.sendMessage(fullCaption, { mentions: matchedIds });
+  await chat.sendMessage(caption);
   return card;
 }
 
@@ -414,7 +402,6 @@ const cards = await OwnedCard.find({
   // .col — view your collection
   async col(client, msg, args) {
     const contact = await msg.getContact();
-    console.log(`[col] checking userId="${contact.id._serialized}"`);
     const cards = await getUserCards(contact.id._serialized);
 
     if (!cards.length) return msg.reply('❌ Your collection is empty.');
@@ -887,61 +874,5 @@ if (existing)
     const contact = await msg.getContact();
     const user = await User.findOrCreate(contact.id._serialized);
     msg.reply(`🏕️ *Anticamp*\n\nYour camp count: ${user.campCount}\n\nIf you hoard too many duplicate cards, they'll decay automatically.`);
-  },
-
-  // .wishlist [add|remove] [name] — manage your wishlist, or view it with no args
-  async wishlist(client, msg, args) {
-    const contact = await msg.getContact();
-    const user = await User.findOrCreate(contact.id._serialized);
-    const sub = args[0]?.toLowerCase();
-
-    if (sub === 'add') {
-      const name = args.slice(1).join(' ').trim();
-      if (!name) return msg.reply('❌ Usage: .wishlist add [character name]');
-
-      const already = user.wishlist.some(w => w.toLowerCase() === name.toLowerCase());
-      if (already) return msg.reply(`❌ *${name}* is already on your wishlist.`);
-
-      user.wishlist.push(name);
-      await user.save();
-      return msg.reply(`❤️ Added *${name}* to your wishlist! You'll be pinged when it drops.`);
-    }
-
-    if (sub === 'remove') {
-      const name = args.slice(1).join(' ').trim();
-      if (!name) return msg.reply('❌ Usage: .wishlist remove [character name]');
-
-      const before = user.wishlist.length;
-      user.wishlist = user.wishlist.filter(w => w.toLowerCase() !== name.toLowerCase());
-      if (user.wishlist.length === before) return msg.reply(`❌ *${name}* isn't on your wishlist.`);
-
-      await user.save();
-      return msg.reply(`✅ Removed *${name}* from your wishlist.`);
-    }
-
-    // No args — view
-    if (!user.wishlist.length) {
-      return msg.reply('❤️ Your wishlist is empty.\n\nUse *.wishlist add [name]* to add a character.');
-    }
-
-    const lines = user.wishlist.map((w, i) => `${i + 1}. ${w}`).join('\n');
-    msg.reply(`❤️ *Your Wishlist*\n\n${lines}\n\nUse *.wishlist remove [name]* to remove one.`);
-  },
-
-  // .wishlb — leaderboard by wishlist size
-  async wishlb(client, msg, args) {
-    const users = await User.find({ wishlist: { $exists: true, $ne: [] } });
-    if (!users.length) return msg.reply('❤️ Nobody has a wishlist yet.');
-
-    const ranked = users
-      .map(u => ({ id: u.id, count: u.wishlist.length }))
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 10);
-
-    let text = `🏆 *Biggest Wishlists*\n\n`;
-    ranked.forEach((u, i) => {
-      text += `${i + 1}. @${u.id.split('@')[0]} — ${u.count} card(s)\n`;
-    });
-    msg.reply(text, undefined, { mentions: ranked.map(u => u.id) });
   },
 };

@@ -2,7 +2,6 @@ const User = require('../models/User');
 const { CardCatalogue, OwnedCard } = require('../models/Card');
 const { formatNum, formatCooldown, rand, pick, tierEmoji, mentionName, safeGetChat } = require('../utils/helpers');
 const { battleGames } = require('./games');
-const { checkAchievements, formatUnlockNotice, ACHIEVEMENTS } = require('../utils/achievements');
 
 const SHOP_ITEMS = [
   { name: 'Health Potion', price: 200, emoji: '🧪', effect: 'Restore HP in battles' },
@@ -143,9 +142,8 @@ module.exports = {
       return msg.reply(`⏳ Come back in *${formatCooldown(remaining)}* for your daily!`);
     }
 
-    const unlocked = await checkAchievements(contact.id._serialized);
     msg.reply(
-      `🎁 *Daily Reward!*\n\n💰 +${reward} coins${orbReward ? '\n🔮 +1 orb (bonus!)' : ''}\n\nTotal: ${formatNum(updated.coins)} coins` + formatUnlockNotice(unlocked)
+      `🎁 *Daily Reward!*\n\n💰 +${reward} coins${orbReward ? '\n🔮 +1 orb (bonus!)' : ''}\n\nTotal: ${formatNum(updated.coins)} coins`
     );
   },
 
@@ -241,7 +239,8 @@ async lottery(client, msg, args) {
 
   // .richg — richest in this group
   async richg(client, msg, args) {
-    const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
+    const chat = await safeGetChat(msg);
+    if (!chat) return;
     if (!chat) return;
     if (!chat.isGroup) return msg.reply('❌ Group only.');
     const ids = chat.participants.map(p => p.id._serialized);
@@ -337,7 +336,8 @@ async lottery(client, msg, args) {
     let refund = false;
 
     if (matchedName === 'Health Potion') {
-      const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
+      const chat = await safeGetChat(msg);
+    if (!chat) return;
       if (!chat) return;
       const game = battleGames.get(chat.id._serialized);
       const inBattle = game && (game.p1.id === contact.id._serialized || game.p2.id === contact.id._serialized);
@@ -547,27 +547,5 @@ async lottery(client, msg, args) {
     }
 
     msg.reply(`🙏 ${res.text}\n${res.coins > 0 ? `+💰 ${res.coins} coins` : ''}`);
-  },
-
-  // .achievements / .ach — list unlocked and locked achievements
-  async achievements(client, msg, args) {
-    const contact = await msg.getContact();
-    // Recheck first, in case something changed since the last time a
-    // triggering command ran (e.g. cards acquired outside .claim/.accepttrade).
-    await checkAchievements(contact.id._serialized);
-    const user = await User.findOrCreate(contact.id._serialized, contact.pushname);
-    const unlockedIds = new Set(user.achievements || []);
-
-    let text = `🏅 *Achievements* (${unlockedIds.size}/${ACHIEVEMENTS.length})\n\n`;
-    for (const a of ACHIEVEMENTS) {
-      const done = unlockedIds.has(a.id);
-      text += `${done ? '✅' : '🔒'} ${a.emoji} *${a.name}* — ${a.desc}\n`;
-    }
-    msg.reply(text);
-  },
-
-  // .ach alias
-  async ach(client, msg, args) {
-    return module.exports.achievements(client, msg, args);
   },
 };
