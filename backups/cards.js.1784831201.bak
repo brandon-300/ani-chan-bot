@@ -3,7 +3,7 @@ const { checkAchievements, formatUnlockNotice } = require('../utils/achievements
 const { MessageMedia } = require('whatsapp-web.js');
 const User = require('../models/User');
 const Group = require('../models/Group');
-const { tierEmoji, rollTier, formatNum, pick, mentionName, generateUniqueCode, safeGetChat, cardValue, tierAbove } = require('../utils/helpers');
+const { tierEmoji, rollTier, formatNum, pick, mentionName, generateUniqueCode, safeGetChat, cardValue } = require('../utils/helpers');
 const crypto = require('crypto');
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -943,93 +943,5 @@ if (existing)
       text += `${i + 1}. @${u.id.split('@')[0]} — ${u.count} card(s)\n`;
     });
     msg.reply(text, undefined, { mentions: ranked.map(u => u.id) });
-  },
-
-  // .fuse [i1] [i2] [i3] — sacrifice 3 same-tier cards for a chance at one
-  // card of the next tier up. Real risk: the 3 cards are consumed whether the
-  // fusion succeeds or fails. A rare "lucky" roll jumps two tiers instead of
-  // one, if a card is actually available there.
-  async fuse(client, msg, args) {
-    const contact = await msg.getContact();
-    const userId = contact.id._serialized;
-
-    const indices = args.slice(0, 3).map(a => parseInt(a));
-    if (indices.length < 3 || indices.some(i => !i || i < 1)) {
-      return msg.reply('❌ Usage: .fuse [index1] [index2] [index3]\n\nPick 3 cards from *.col* (must all be the same tier).');
-    }
-    if (new Set(indices).size < 3) {
-      return msg.reply('❌ Pick 3 *different* cards, not the same one twice.');
-    }
-
-    const cards = await getUserCards(userId);
-    const selected = indices.map(i => cards[i - 1]);
-
-    if (selected.some(c => !c)) {
-      return msg.reply(`❌ One of those positions doesn't exist. You have ${cards.length} card(s) — check *.col*.`);
-    }
-
-    const tier = selected[0].tier;
-    if (!selected.every(c => c.tier === tier)) {
-      return msg.reply('❌ All 3 cards must be the same tier to fuse.');
-    }
-
-    const targetTier = tierAbove(tier);
-    if (!targetTier) {
-      return msg.reply('❌ SSS is already the highest tier — nothing to fuse it into.');
-    }
-
-    const claimedIds = await OwnedCard.distinct('catalogueId');
-    const targetPool = await CardCatalogue.find({ tier: targetTier, cardId: { $nin: claimedIds } });
-
-    if (!targetPool.length) {
-      return msg.reply(`❌ No unclaimed ${targetTier}-tier cards available to fuse into right now. Your cards are safe — nothing was consumed.`);
-    }
-
-    // Roll outcome BEFORE touching any cards, so a failed roll never costs
-    // more than the 3 inputs, and an unavailable target costs nothing at all.
-    const success = Math.random() < 0.7;
-    let finalTier = targetTier;
-    let finalPool = targetPool;
-    let lucky = false;
-
-    if (success && Math.random() < 0.1) {
-      const doubleTier = tierAbove(tier, 2);
-      if (doubleTier) {
-        const doublePool = await CardCatalogue.find({ tier: doubleTier, cardId: { $nin: claimedIds } });
-        if (doublePool.length) {
-          finalTier = doubleTier;
-          finalPool = doublePool;
-          lucky = true;
-        }
-      }
-    }
-
-    // Consume the 3 inputs now that the outcome is decided.
-    await OwnedCard.deleteMany({ _id: { $in: selected.map(c => c._id) } });
-
-    const consumedList = selected.map(c => `${tierEmoji(c.tier)} ${c.name}`).join(', ');
-
-    if (!success) {
-      return msg.reply(`💥 *Fusion Failed!*\n\nConsumed: ${consumedList}\n\nBetter luck next time.`);
-    }
-
-    const resultCatalogue = finalPool[Math.floor(Math.random() * finalPool.length)];
-    await OwnedCard.create({
-      ownerId: userId,
-      catalogueId: resultCatalogue.cardId,
-      code: await generateUniqueCode(OwnedCard),
-      name: resultCatalogue.name,
-      series: resultCatalogue.series,
-      tier: resultCatalogue.tier,
-      firstOwner: userId
-    });
-
-    const unlocked = await checkAchievements(userId);
-    const luckyNote = lucky ? '\n\n🍀 *Lucky!* Jumped two tiers instead of one!' : '';
-
-    msg.reply(
-      `✨ *Fusion Success!*\n\nConsumed: ${consumedList}\n\nReceived: ${tierEmoji(resultCatalogue.tier)} *${resultCatalogue.name}* [${resultCatalogue.tier}]` +
-      luckyNote + formatUnlockNotice(unlocked)
-    );
   },
 };

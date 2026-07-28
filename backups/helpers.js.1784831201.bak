@@ -56,20 +56,6 @@ async function safeGetQuotedMessage(msg, retries = 2) {
   }
 }
 
-// ─── Safe Contact Fetch (with retries) ─────────────────────────────────────────
-// msg.getContact() can hit the same transient WhatsApp-internal glitch as
-// getChat()/getQuotedMessage() above. Same retry-with-backoff pattern.
-async function safeGetContact(msg, retries = 2) {
-  for (let attempt = 0; ; attempt++) {
-    try {
-      return await msg.getContact();
-    } catch (err) {
-      if (attempt >= retries) throw err;
-      await new Promise(r => setTimeout(r, 800 * (attempt + 1)));
-    }
-  }
-}
-
 // ─── Check if user is group admin ─────────────────────────────────────────────
 async function isAdmin(msg) {
   let chat;
@@ -145,16 +131,6 @@ function tierEmoji(tier) {
 }
 
 // ─── Card Value by Tier ───────────────────────────────────────────────────────
-// Canonical ascending tier order — lowest to highest. Used by fusion (Phase
-// 10) to find "the tier above" a given card.
-const TIER_ORDER = ['C', 'B', 'A', 'S', 'SS', 'SSS'];
-
-function tierAbove(tier, steps = 1) {
-  const i = TIER_ORDER.indexOf(tier);
-  if (i === -1) return null;
-  return TIER_ORDER[i + steps] || null; // null if already at/above the top
-}
-
 // Baseline coin value per tier. Used by .cardinfo, leaderboards, and auctions
 // (starting/reserve prices) in later phases — not surfaced anywhere yet.
 const TIER_VALUES = {
@@ -203,13 +179,10 @@ module.exports = {
   rollTier,
   tierEmoji,
   TIER_VALUES,
-  TIER_ORDER,
-  tierAbove,
   cardValue,
   mentionName,
   isOwner,
   generateUniqueCode,
   safeGetChat,
-  safeGetQuotedMessage,
-  safeGetContact
+  safeGetQuotedMessage
 };

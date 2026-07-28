@@ -56,20 +56,6 @@ async function safeGetQuotedMessage(msg, retries = 2) {
   }
 }
 
-// ─── Safe Contact Fetch (with retries) ─────────────────────────────────────────
-// msg.getContact() can hit the same transient WhatsApp-internal glitch as
-// getChat()/getQuotedMessage() above. Same retry-with-backoff pattern.
-async function safeGetContact(msg, retries = 2) {
-  for (let attempt = 0; ; attempt++) {
-    try {
-      return await msg.getContact();
-    } catch (err) {
-      if (attempt >= retries) throw err;
-      await new Promise(r => setTimeout(r, 800 * (attempt + 1)));
-    }
-  }
-}
-
 // ─── Check if user is group admin ─────────────────────────────────────────────
 async function isAdmin(msg) {
   let chat;
@@ -210,6 +196,5 @@ module.exports = {
   isOwner,
   generateUniqueCode,
   safeGetChat,
-  safeGetQuotedMessage,
-  safeGetContact
+  safeGetQuotedMessage
 };

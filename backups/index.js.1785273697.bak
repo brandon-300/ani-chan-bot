@@ -4,7 +4,7 @@ const qrcode = require('qrcode-terminal');
 const mongoose = require('mongoose');
 const fs = require('fs');
 const path = require('path');
-const { safeGetQuotedMessage, safeGetChat, safeGetContact, mentionName } = require('./utils/helpers');
+const { safeGetQuotedMessage } = require('./utils/helpers');
 
 process.on('uncaughtException', (err) => {
   console.error('💥 Uncaught Exception:', err);
@@ -265,123 +265,6 @@ client.on('ready', () => {
   }
 });
 
-// ─── Task ID + activity tracking (for detailed console logging) ───────────────
-// Every prefixed message gets its own sequential Task ID here — whether or
-// not it turns out to match a real command, and even if the same person
-// fires off several commands back-to-back. Counter is in-memory only, so it
-// restarts from 1 each time the bot restarts (which happens fairly often via
-// PM2), rather than trying to persist it in Mongo.
-let taskIdCounter = 0;
-function nextTaskId() {
-  return ++taskIdCounter;
-}
-
-// How many commands are currently "in flight" (received but not yet finished
-// executing) across the whole bot, regardless of chat. This is a general
-// system-load number used only for the "Position at queue" console log line
-// — it is NOT the same thing as the heavy-command queue position below.
-let inFlightCount = 0;
-
-function ordinal(n) {
-  const rem100 = n % 100;
-  if (rem100 >= 11 && rem100 <= 13) return `${n}th`;
-  switch (n % 10) {
-    case 1: return `${n}st`;
-    case 2: return `${n}nd`;
-    case 3: return `${n}rd`;
-    default: return `${n}th`;
-  }
-}
-
-// Set to false if the getContact()/getChat() lookups below ever feel like
-// they're adding too much lag on a bad-network day — the log lines will
-// still print, just with raw WhatsApp IDs instead of resolved names.
-const LOG_FETCH_CONTEXT = true;
-
-async function getSenderName(msg) {
-  if (!LOG_FETCH_CONTEXT) return (msg.author || msg.from || '').split('@')[0] || 'Unknown';
-  try {
-    const contact = await safeGetContact(msg, 0); // 0 retries: this is for logging, shouldn't stall a reply
-    return mentionName(contact);
-  } catch {
-    return (msg.author || msg.from || '').split('@')[0] || 'Unknown';
-  }
-}
-
-async function getChatLabel(msg) {
-  if (!msg.from.endsWith('@g.us')) return 'DM';
-  if (!LOG_FETCH_CONTEXT) return msg.from;
-  try {
-    const chat = await safeGetChat(msg, 0); // 0 retries, same reasoning as above
-    return chat?.name || msg.from;
-  } catch {
-    return msg.from;
-  }
-}
-
-// ─── Heavy command classification ──────────────────────────────────────────────
-// Commands that hit an external API, download/convert media, or otherwise do
-// real work beyond a quick DB read/write. These get queued globally and
-// processed one at a time instead of running immediately, so a burst of
-// people using them at once (e.g. in a busy group) can't pile up and choke
-// the phone's CPU/bandwidth all at once.
-//
-// This list is based on what's currently in commands/downloaders.js,
-// commands/converter.js, commands/ai.js and commands/search.js. Add or
-// remove command names here freely if a command should move between
-// "normal" and "heavy" — nothing else in the file needs to change.
-const HEAVY_COMMANDS = new Set([
-  // downloaders.js — network fetch + media download
-  'ig', 'ttk', 'yt', 'x', 'fb', 'play',
-  // converter.js — ffmpeg / media processing
-  'sticker', 'take', 'toimg', 'tovid', 'rotate', 'tomp3', 'tovn', 'flip', 'resize', 'tourl',
-  // ai.js — external AI/API calls
-  'copilot', 'gpt', 'imagine', 'upscale', 'translate', 'transcribe',
-  // search.js — external API/scraping calls
-  'pinterest', 'sauce', 'wallpaper', 'lyrics',
-]);
-
-// ─── Global serial queue for heavy commands ────────────────────────────────────
-// Separate from the per-chat queue below. The per-chat queue keeps messages
-// within ONE chat in order; this queue makes sure heavy commands from ANY
-// chat run one-at-a-time across the whole bot, so the phone never has to
-// run several ffmpeg/API jobs at once.
-const heavyQueue = [];
-let heavyBusy = false;
-
-// Pushes a task and returns the 1-based position it just took (includes
-// itself) — used for the "Your position at queue" reply to the user.
-//
-// The position is computed and the task pushed in the same synchronous step
-// (no `await` in between), which matters: without that, two heavy commands
-// arriving from two different chats at nearly the same moment could both
-// read the same queue length before either had actually reserved a slot,
-// and both would be told they're "1st".
-function enqueueHeavyTask(task) {
-  const position = heavyQueue.length + (heavyBusy ? 1 : 0) + 1;
-  heavyQueue.push(task);
-  // setImmediate (not a direct call) so an empty queue doesn't start running
-  // the task synchronously right here — that would let its "Executing
-  // command" log line race ahead of the caller's own queue-acknowledgment
-  // reply, which hasn't been sent yet at this point.
-  setImmediate(runHeavyQueue);
-  return position;
-}
-
-async function runHeavyQueue() {
-  if (heavyBusy) return;
-  heavyBusy = true;
-  while (heavyQueue.length > 0) {
-    const task = heavyQueue.shift();
-    try {
-      await task();
-    } catch (err) {
-      console.error('💥 Heavy queue task crashed:', err);
-    }
-  }
-  heavyBusy = false;
-}
-
 // Per-chat command queue
 const commandQueues = new Map();
 
@@ -444,108 +327,38 @@ client.on('message', (msg) => {
 
     if (aliases[command]) command = aliases[command];
 
-    // ── Task ID + logging context ──────────────────────────────────────────
-    // Assigned as soon as we know a command was *attempted*, whether or not
-    // it turns out to resolve to a real handler below.
-    const taskId = nextTaskId();
-    const receivedAt = new Date().toLocaleString();
-    const [senderName, chatLabel] = await Promise.all([getSenderName(msg), getChatLabel(msg)]);
-
-    const queuePosition = inFlightCount + 1;
-    inFlightCount++;
-
-    console.log(`📨 Command received: ${command} by ${senderName}, ${chatLabel} at ${receivedAt}`);
-    console.log(`🆔 Task ID: ${taskId}`);
-    console.log(`👥 Position at queue: ${ordinal(queuePosition)}`);
-
-    // ── Resolve the handler — same routing as before, just captured into a
-    // closure instead of returning immediately, so it can be logged/queued
-    // uniformly below. Order and shift() timing match the original exactly.
-    let handlerFn = null;
-
     if (command === 'menu' || command === 'help') {
-      handlerFn = () => sendQuickMenu(msg);
+      return await sendQuickMenu(msg);
     }
 
-    if (!handlerFn && command === 'antilink' && args[0]?.toLowerCase() === 'action') {
+    if (command === 'antilink' && args[0]?.toLowerCase() === 'action') {
       args.shift();
       if (commands['antilinkaction']) {
-        handlerFn = () => commands['antilinkaction'](client, msg, args);
+        return await commands['antilinkaction'](client, msg, args);
       }
     }
 
-    if (!handlerFn && command === 'guild' && args.length > 0) {
+    if (command === 'guild' && args.length > 0) {
       const sub = `guild_${args.shift().toLowerCase()}`;
-      if (commands[sub]) {
-        handlerFn = () => commands[sub](client, msg, args);
-      }
+      if (commands[sub]) return await commands[sub](client, msg, args);
     }
 
-    if (!handlerFn && command === 'pet' && args.length > 0) {
+    if (command === 'pet' && args.length > 0) {
       const sub = `pet_${args[0].toLowerCase()}`;
       if (commands[sub]) {
         args.shift();
-        handlerFn = () => commands[sub](client, msg, args);
+        return await commands[sub](client, msg, args);
       }
     }
 
-    if (!handlerFn && commands[command]) {
-      handlerFn = () => commands[command](client, msg, args);
-    }
-
-    if (!handlerFn) {
-      console.log(`❌ Failed to execute command: Unknown command "${command}"`);
-      inFlightCount = Math.max(0, inFlightCount - 1);
+    if (!commands[command]) {
       return await msg.reply(`❓ Unknown command: *${PREFIX}${command}*\nType *${PREFIX}menu* to see what's available.`);
     }
 
-    const isHeavy = HEAVY_COMMANDS.has(command);
-
-    if (isHeavy) {
-      // Heavy commands: reserve a spot in the global queue *first* (that's
-      // the atomic, race-free part — see enqueueHeavyTask), then ack with
-      // the Task ID + the position it actually got, then return right away
-      // so this chat's own message queue isn't blocked waiting on it.
-      const heavyPosition = enqueueHeavyTask(async () => {
-        console.log(`Executing command (Task ID: ${taskId})`);
-        try {
-          await handlerFn();
-          console.log(`Command executed and replied to ${senderName} successfully at ${new Date().toLocaleString()}`);
-        } catch (err) {
-          console.error(`Failed to execute command: ${err.message}`);
-          try {
-            await msg.reply('❌ An error occurred while processing your request. Please try again.');
-          } catch {}
-        } finally {
-          inFlightCount = Math.max(0, inFlightCount - 1);
-        }
-      });
-
-      try {
-        await msg.reply(
-          `✅ Command received and awaiting processing\n🆔 Task ID: ${taskId}\n👥 Your position at queue: ${ordinal(heavyPosition)}`
-        );
-      } catch (err) {
-        console.error('Failed to send queue acknowledgment:', err.message);
-      }
-
-      return;
-    }
-
-    // Normal commands: run immediately, same as before.
-    console.log('Executing command');
-    try {
-      await handlerFn();
-      console.log(`Command executed and replied to ${senderName} successfully at ${new Date().toLocaleString()}`);
-    } catch (err) {
-      console.error(`Failed to execute command: ${err.message}`);
-      await msg.reply('❌ An error occurred. Please try again.');
-    } finally {
-      inFlightCount = Math.max(0, inFlightCount - 1);
-    }
+    await commands[command](client, msg, args);
 } catch (err) {
   console.error('Command error:', err);
-  await msg.reply('❌ An error occurred. Please try again.').catch(() => {});
+  await msg.reply('❌ An error occurred. Please try again.');
 }
   });
 });
