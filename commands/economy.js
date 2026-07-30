@@ -1,4 +1,5 @@
 const User = require('../models/User');
+const Guild = require('../models/Guild');
 const { CardCatalogue, OwnedCard } = require('../models/Card');
 const { formatNum, formatCooldown, rand, pick, tierEmoji, mentionName, safeGetChat } = require('../utils/helpers');
 const { battleGames } = require('./games');
@@ -257,11 +258,24 @@ async lottery(client, msg, args) {
     const contact = mentioned.length ? mentioned[0] : await msg.getContact();
     const user = await User.findOrCreate(contact.id._serialized, contact.pushname);
 
+    let guildLabel = 'None';
+    if (user.guildId) {
+      const guild = await Guild.findById(user.guildId);
+      if (guild) {
+        guildLabel = `${guild.emblem} ${guild.name}`;
+      } else {
+        // Guild was disbanded/deleted but this user's record never got cleared.
+        guildLabel = 'None';
+        user.guildId = null;
+        await user.save();
+      }
+    }
+
     msg.reply(
       `👤 *${user.name}'s Profile*\n\n` +
       `📛 Name: ${user.name}\n🎂 Age: ${user.age || 'Not set'}\n📝 Bio: ${user.bio}\n` +
       `⚡ Level: ${user.level} (${user.xp} XP)\n💰 Coins: ${formatNum(user.coins)}\n🔮 Orbs: ${user.orbs}\n` +
-      `🃏 Cards: ${user.cards.length}\n🏰 Guild: ${user.guildId || 'None'}\n` +
+      `🃏 Cards: ${user.cards.length}\n🏰 Guild: ${guildLabel}\n` +
       `🏅 Title: ${user.profile.title}`
     );
   },

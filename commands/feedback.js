@@ -1,4 +1,4 @@
-const { isOwner, safeGetChat, safeGetContact, mentionName } = require('../utils/helpers');
+const { isOwner, safeGetChat, resolveSenderName } = require('../utils/helpers');
 
 module.exports = {
   // .feedback [message] — forwards the message privately to the bot owner.
@@ -22,15 +22,15 @@ module.exports = {
       return msg.reply("⚠️ Feedback couldn't be sent right now — please try again later.");
     }
 
-    // Resolve context for both the owner's copy and the log lines. 0 retries
-    // on each — this is a lightweight command, so if either lookup hiccups
-    // we fall back to the raw ID/chat ID rather than delaying the reply.
-    const contact = await safeGetContact(msg, 0).catch(() => null);
-    const senderName = contact ? mentionName(contact) : senderId.split('@')[0];
+    // Resolve context for both the owner's copy and the log lines. See
+    // resolveSenderName in utils/helpers.js for why this isn't a plain
+    // getContact() call — it works around a whatsapp-web.js bug with @lid
+    // (WhatsApp's newer privacy id) senders resolving as the bot itself.
+    const senderName = await resolveSenderName(msg, client);
 
     let chatLabel = 'Direct Message';
     if (msg.from.endsWith('@g.us')) {
-      const chat = await safeGetChat(msg, 0).catch(() => null);
+      const chat = await safeGetChat(msg, 1).catch(() => null);
       chatLabel = chat?.name || msg.from;
     }
 

@@ -39,10 +39,21 @@ welcomeMsg = welcomeMsg.replace('@user', `@${mentionName(contact)}`);
 
 async function onLeave(client, notification) {
   const chat = await notification.getChat();
+  const contact = await notification.getContact();
+
+  // Guild membership needs to stay in sync whenever someone leaves a
+  // WhatsApp group the bot is in — independent of whether this group has
+  // leave-messages turned on, so this runs before that check/early-return.
+  try {
+    const { _removeMemberFromGuild } = require('./guilds');
+    await _removeMemberFromGuild(contact.id._serialized);
+  } catch (err) {
+    console.error('Guild cleanup on group_leave failed:', err.message);
+  }
+
   const group = await Group.findOne({ id: chat.id._serialized });
   if (!group?.leave) return;
 
-  const contact = await notification.getContact();
   let leaveMsg = group.leaveMsg || '👋 @user has left the group.';
 leaveMsg = leaveMsg.replace('@user', `@${mentionName(contact)}`);
 

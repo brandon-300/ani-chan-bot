@@ -4,7 +4,7 @@ const qrcode = require('qrcode-terminal');
 const mongoose = require('mongoose');
 const fs = require('fs');
 const path = require('path');
-const { safeGetQuotedMessage, safeGetChat, safeGetContact, mentionName } = require('./utils/helpers');
+const { safeGetQuotedMessage, safeGetChat, resolveSenderName } = require('./utils/helpers');
 
 process.on('uncaughtException', (err) => {
   console.error('💥 Uncaught Exception:', err);
@@ -101,20 +101,128 @@ const aliases = {
 };
 
 async function sendQuickMenu(msg) {
-  const menu = `👋 *${BOT_NAME}* — Quick Menu
-
+  const menu = `👋 *${BOT_NAME}* — Command Menu
 Prefix: *${PREFIX}*
 
-🛡️ *Admin*: kick, mute, warn, antilink, welcome
-🤖 *AI*: gpt, imagine, upscale, translate
-⬇️ *Download*: ig, ttk, yt, x, fb
-🔍 *Search*: lyrics, pinterest, sauce, wallpaper
-🎴 *Cards*: card, claim, deck, auction
-💰 *Economy*: balance, daily, shop, gamble
-🎮 *Games*: chess, ttt, c4, akinator
-🎉 *Fun*: joke, truth, dare, ship, roast
-🐾 *Pets*: pet adopt, pet feed, pet play
-🖼️ *Media*: sticker, toimg, tovid
+🛡️ *ADMIN & MODERATION* (group admins)
+▸ kick @user — remove a member
+▸ delete — delete a replied message
+▸ antilink — toggle link auto-removal
+▸ antilink action [warn/kick] — set the punishment
+▸ antism on/off — anti-spam toggle
+▸ warn @user [reason] / resetwarn @user
+▸ groupstats — group activity summary
+▸ welcome on/off, setwelcome [msg] — greet new members (@user placeholder)
+▸ leave on/off, setleave [msg] — announce members leaving
+▸ purge [count] — bulk-delete recent messages
+▸ blacklist add/remove/list — auto-kick blacklisted numbers
+▸ promote/demote @user — group admin status
+▸ mute/unmute — lock/unlock the group
+▸ hidetag [msg] / tagall [msg] — mention everyone
+▸ activity, active, inactive — member activity stats
+▸ open/close — allow/restrict who can send messages
+
+🤖 *AI*
+▸ copilot [prompt] — AI chat that remembers your convo
+▸ gpt [prompt] — one-off AI answer, no memory
+▸ imagine [prompt] — generate an image
+▸ upscale — sharpen a replied-to image
+▸ translate [lang] [text]
+▸ transcribe — voice note → text
+
+🔍 *SEARCH*
+▸ pinterest [query]
+▸ sauce (reverseimg) — reverse image search, reply to an image
+▸ wallpaper [query]
+▸ lyrics [song]
+
+⬇️ *DOWNLOAD*
+▸ ig / ttk / yt / x / fb [url] — Instagram / TikTok / YouTube / X / Facebook
+▸ play [song] — search + download audio from YouTube
+
+💰 *ECONOMY*
+▸ balance (bal), orbs, ebal @user — check coins / premium currency
+▸ daily — daily reward
+▸ withdraw (wd) / deposit (dep) [amt] — bank ↔ wallet
+▸ donate @user [amt]
+▸ lottery, gamble [amt], beg
+▸ rich / richg — richest globally / in this group
+▸ profile (p), edit, bio [text], setname [name], setage [age]
+▸ inventory (inv), use/sell/buy [item], shop
+▸ dig, fish — earn coins/items
+▸ leaderboard (lb) — top earners
+▸ achievements (ach) — your unlocked/locked achievements
+
+🎰 *GAMBLING*
+▸ slots [amt] — 3-reel slot machine
+▸ cf [amt] — coin flip, 50/50
+▸ dice [amt] — dice roll
+▸ db [amt] — double or bust, high risk/reward
+▸ dp [amt] — double or pass, lower risk/reward
+▸ roulette [amt] [bet] — casino roulette
+▸ horse [horse#] [amt] — horse race betting
+
+🎴 *CARD COLLECTION*
+▸ cards on/off — toggle card drops in this group (admin)
+▸ card [i] — quick view of one card from your collection
+▸ ci [name] [tier] (cardinfo) — look up a card
+▸ si [name] — series info · ss [series] — cards you own from it
+▸ deck / deck add [i] / deck remove [i] / deck clear — your battle deck (max 5) · col / col [n] / col page [n] — your full collection
+▸ claim [id] — claim a dropped card or buy from shop
+▸ cardshop, sellc [i] [price], rc [i] — sell/list your cards
+▸ sc @user [i] [price] — sell a card directly to someone
+▸ tc @user [your i] [their i] — propose a trade
+▸ accepttrade / declinetrade — respond to a pending trade
+▸ lendcard — lend your top card to the group temporarily
+▸ fuse [i1] [i2] [i3] — combine 3 same-tier cards for a chance at the next tier up
+▸ wishlist add/remove [name], wishlist — track characters you want · wishlb — leaderboard
+▸ vs — battle another player with your decks
+▸ auction (listauc), submit [id] [amt], myauc, remauc [id] — card auctions
+▸ stardust, anticamp — misc card-game utilities
+📊 Leaderboards: clb (most cards) · vlb (highest value) · tlb (highest tier) · sslb (most SS/SSS) · mclb (best series completion) · slb (series-specific)
+
+🏰 *GUILDS*
+▸ guild info / create [name] / invite @user / accept / decline / emblem [emoji] / leave / disband
+▸ guild members / remove [name] — leader only
+
+🎮 *GAMES*
+▸ ttt — tic-tac-toe · c4, drop [col] — connect 4
+▸ chess, move [e.g. e2e4] — chess
+▸ startbattle, attack, defend, flee — turn-based battle game
+▸ akinator (aki), greekgod (gg) — guessing games
+▸ wcg — group "would you rather"
+
+🎉 *FUN & SOCIAL*
+▸ ship @user1 @user2 — compatibility %
+▸ joke, truth, dare, td (random), uno
+▸ skill, duality, gen, pov, social, relation, pp, gay, lesbian, simp — random social generators
+▸ wouldyourather (wyr)
+
+🎭 *REACTIONS* [@user]
+▸ hug, kiss, slap, wave, pat, dance, sad, smile, laugh, lick, punch, tickle, shrug, kidnap, bonk, jihad, crusade, kill, wank, fuck — send a themed reaction gif
+
+🐾 *PETS*
+▸ pet — view your pet
+▸ pet adopt [type] / feed / play / name [name]
+
+🖼️ *ANIME IMAGES*
+▸ waifu, neko, maid, oppai, selfies, uniform — random anime character pics
+
+🖼️ *MEDIA*
+▸ sticker (s) — image/gif/video → sticker
+▸ take [pack] [author] — save sticker pack/author info, reply to a sticker
+▸ toimg — sticker → image · tovid — gif → video · tomp3 — video/audio → mp3
+▸ rotate [deg] / flip / resize [WxH] — image edits
+▸ tourl — upload replied media, get a link back
+
+📬 *FEEDBACK*
+▸ feedback [message] — send a message straight to my creator
+
+🔞 *NSFW* (18+, off by default — admin: .nsfw on to enable in this group)
+▸ milf, ass, hentai, oral, ecchi, paizuri, ero
+▸ ehentai / nhentai [tag or code] — links out
+
+🔀 *Shortcuts*: bal→balance · wd→withdraw · dep→deposit · p→profile · inv→inventory · lb→leaderboard · s→sticker · lc→lendcard · gs→groupstats · aki→akinator · gg→greekgod · wyr→wouldyourather · pint→pinterest · reverseimg→sauce · tt→translate · tb→transcribe
 
 Type *${PREFIX}<command>* to use one.`;
 
@@ -300,19 +408,14 @@ const LOG_FETCH_CONTEXT = true;
 
 async function getSenderName(msg) {
   if (!LOG_FETCH_CONTEXT) return (msg.author || msg.from || '').split('@')[0] || 'Unknown';
-  try {
-    const contact = await safeGetContact(msg, 0); // 0 retries: this is for logging, shouldn't stall a reply
-    return mentionName(contact);
-  } catch {
-    return (msg.author || msg.from || '').split('@')[0] || 'Unknown';
-  }
+  return resolveSenderName(msg, client);
 }
 
 async function getChatLabel(msg) {
   if (!msg.from.endsWith('@g.us')) return 'DM';
   if (!LOG_FETCH_CONTEXT) return msg.from;
   try {
-    const chat = await safeGetChat(msg, 0); // 0 retries, same reasoning as above
+    const chat = await safeGetChat(msg, 1); // 1 retry — a bare 0 was falling back to the raw ID on any single flaky-connection hiccup
     return chat?.name || msg.from;
   } catch {
     return msg.from;

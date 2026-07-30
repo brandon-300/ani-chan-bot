@@ -17,6 +17,20 @@ async function getCardByIndex(userId, index) {
   return cards[index - 1] || null;
 }
 
+// Resolves a user's deck (array of OwnedCard _id strings) into full card
+// docs, in the exact order they were added — Mongo's $in query does NOT
+// preserve array order, so this can't just be a plain .find(). Stale ids
+// (the card was traded/sold away after being added to the deck) come back
+// as null rather than being dropped, so slot numbers always line up with
+// real array positions — that matters because .deck remove [index] trusts
+// those same positions.
+async function getDeckCards(deckIds) {
+  if (!deckIds.length) return [];
+  const cards = await OwnedCard.find({ _id: { $in: deckIds } });
+  const byId = new Map(cards.map(c => [c._id.toString(), c]));
+  return deckIds.map(id => byId.get(id) || null);
+}
+
 // ─── Drop a Random Card in Group ─────────────────────────────────────────────
 async function dropCard(chat) {
   const tier = rollTier();
@@ -135,42 +149,6 @@ module.exports = {
     if (!chat.isGroup) return msg.reply('❌ Group only.');
     const sub = args[0]?.toLowerCase();
     if (!sub) {
-      const group = await Group.findOneAndUpdate(
-      {
-        id: chat.id._serialized,
-        activeCardCode: id.toUpperCase()
-      },
-      {
-        $unset: {
-          activeCardId: '',
-          activeCardCode: '',
-          activeCardExpiresAt: ''
-        }
-      },
-      { new: false }
-    );
-      return msg.reply(`🎴 Cards are currently *${group?.cardsEnabled ? 'ON' : 'OFF'}*`);
-    }
-    const group = await Group.findOneAndUpdate(
-      { id: chat.id._serialized },
-      { cardsEnabled: sub === 'on' },
-      { upsert: true, new: true }
-    );
-    msg.reply(`🎴 Cards are now *${group.cardsEnabled ? 'ON' : 'OFF'}*`);
-
-    if (group.cardsEnabled) {
-      // Start drop interval every 5 minutes
-      setInterval(() => dropCard(chat), 5 * 60 * 1000);
-    }
-  },
-
-  // .card [index]
-async cards(client, msg, args) {
-    const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
-    if (!chat) return;
-    if (!chat.isGroup) return msg.reply('❌ Group only.');
-    const sub = args[0]?.toLowerCase();
-    if (!sub) {
       const group = await Group.findOne({ id: chat.id._serialized });
       return msg.reply(`🎴 Cards are currently *${group?.cardsEnabled ? 'ON' : 'OFF'}*`);
     }
@@ -186,6 +164,48 @@ async cards(client, msg, args) {
     } else {
       stopDropInterval(chat.id._serialized);
     }
+  },
+
+  // .card [index] — quick view of a single card from your collection by
+  // position (positions match the numbering shown in .col).
+  async card(client, msg, args) {
+    const contact = await msg.getContact();
+    const index = parseInt(args[0]);
+    if (!index || index < 1) {
+      return msg.reply('❌ Usage: .card [index]\n\nUse *.col* to see your collection with numbered positions.');
+    }
+
+    const card = await getCardByIndex(contact.id._serialized, index);
+    if (!card) {
+      const total = (await getUserCards(contact.id._serialized)).length;
+      return msg.reply(`❌ No card at position ${index}. You have ${total} card(s) — try *.col* to see them all.`);
+    }
+
+    const catalogue = card.catalogueId
+      ? await CardCatalogue.findOne({ cardId: card.catalogueId })
+      : null;
+
+    const caption =
+`📖 *${card.name}*
+
+${tierEmoji(card.tier)} Tier: ${card.tier}
+📚 Series: ${card.series}
+💰 Value: ${cardValue(card.tier).toLocaleString()} coins
+🆔 Code: ${card.code || 'N/A'}
+🔄 Times Traded: ${card.timesTraded}
+📅 Obtained: ${new Date(card.obtainedAt).toLocaleDateString()}${catalogue?.description ? `\n📝 ${catalogue.description}` : ''}`;
+
+    if (catalogue?.imageUrl) {
+      try {
+        const media = await MessageMedia.fromUrl(catalogue.imageUrl, { unsafeMime: true });
+        const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
+        if (!chat) return;
+        return await chat.sendMessage(media, { caption });
+      } catch {
+        // image fetch failed — fall through to text-only reply
+      }
+    }
+    return msg.reply(caption);
   },
 
   // .ci [name] [tier] — card info from catalogue
@@ -397,17 +417,88 @@ const cards = await OwnedCard.find({
     msg.reply(text, undefined, { mentions: ranked.map(([id]) => id) });
   },
 
-  // .deck — view your deck
+  // .deck [add|remove|clear] [index] — view/manage your battle deck (max 5 cards)
   async deck(client, msg, args) {
     const contact = await msg.getContact();
-    const user = await User.findOrCreate(contact.id._serialized, contact.pushname);
-    if (!user.deck.length) return msg.reply('❌ Your deck is empty. Use .card [index] and add cards.');
+    const userId = contact.id._serialized;
+    const user = await User.findOrCreate(userId, contact.pushname);
+    const sub = args[0]?.toLowerCase();
 
-    const cards = await OwnedCard.find({ _id: { $in: user.deck } });
+    // .deck add [index] — index = position in your full collection (.col / .card)
+    if (sub === 'add') {
+      const index = parseInt(args[1]);
+      if (!index || index < 1) {
+        return msg.reply('❌ Usage: .deck add [index]\n\nUse the position shown in *.col* or *.card [index]*.');
+      }
+      if (user.deck.length >= 5) {
+        return msg.reply('❌ Your deck is full (5/5). Use *.deck remove [index]* to make room first.');
+      }
+
+      const card = await getCardByIndex(userId, index);
+      if (!card) {
+        const total = (await getUserCards(userId)).length;
+        return msg.reply(`❌ No card at position ${index}. You have ${total} card(s) — check *.col*.`);
+      }
+
+      const cardId = card._id.toString();
+      if (user.deck.includes(cardId)) {
+        return msg.reply(`❌ *${card.name}* is already in your deck.`);
+      }
+
+      user.deck.push(cardId);
+      await user.save();
+      return msg.reply(`✅ Added ${tierEmoji(card.tier)} *${card.name}* to your deck (${user.deck.length}/5).`);
+    }
+
+    // .deck remove [index] — index = slot number shown by plain .deck (1-5)
+    if (sub === 'remove') {
+      const index = parseInt(args[1]);
+      if (!index || index < 1) {
+        return msg.reply('❌ Usage: .deck remove [index]\n\nUse the position shown in *.deck*.');
+      }
+      if (!user.deck.length) return msg.reply('❌ Your deck is already empty.');
+
+      const targetId = user.deck[index - 1];
+      if (!targetId) {
+        return msg.reply(`❌ No card in deck slot ${index}. You have ${user.deck.length} card(s) in your deck.`);
+      }
+
+      const removedCard = await OwnedCard.findById(targetId).catch(() => null);
+      user.deck = user.deck.filter(id => id !== targetId);
+      await user.save();
+
+      const label = removedCard ? `${tierEmoji(removedCard.tier)} *${removedCard.name}*` : 'that card';
+      return msg.reply(`✅ Removed ${label} from your deck (${user.deck.length}/5).`);
+    }
+
+    // .deck clear — empty the whole deck
+    if (sub === 'clear') {
+      if (!user.deck.length) return msg.reply('❌ Your deck is already empty.');
+      user.deck = [];
+      await user.save();
+      return msg.reply('✅ Your deck has been cleared.');
+    }
+
+    // .deck (no args) — view, in the order cards were added
+    if (!user.deck.length) return msg.reply('❌ Your deck is empty. Use *.deck add [index]* (see *.col* for positions) to add cards.');
+
+    const cards = await getDeckCards(user.deck);
     let text = `⚔️ *Your Deck*\n\n`;
-    cards.forEach((c, i) => { text += `${i + 1}. ${tierEmoji(c.tier)} ${c.name} — ${c.tier}\n`; });
-    const power = cards.reduce((sum, c) => sum + ({ C: 10, B: 25, A: 50, S: 100, SS: 200, SSS: 500 }[c.tier] || 0), 0);
+    let power = 0;
+    let staleCount = 0;
+    cards.forEach((c, i) => {
+      if (c) {
+        text += `${i + 1}. ${tierEmoji(c.tier)} ${c.name} — ${c.tier}\n`;
+        power += ({ C: 10, B: 25, A: 50, S: 100, SS: 200, SSS: 500 }[c.tier] || 0);
+      } else {
+        text += `${i + 1}. ⚠️ Unavailable (likely traded/sold) — use *.deck remove ${i + 1}* to clear this slot\n`;
+        staleCount++;
+      }
+    });
     text += `\n⚡ Total Power: ${power}`;
+    if (staleCount) {
+      text += `\n\n${staleCount} slot(s) above need cleanup — the cards were traded/sold away after being added.`;
+    }
     msg.reply(text);
   },
 

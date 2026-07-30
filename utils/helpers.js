@@ -70,6 +70,40 @@ async function safeGetContact(msg, retries = 2) {
   }
 }
 
+// ─── Robust sender display-name resolution ─────────────────────────────────────
+// WhatsApp's "LID" (Linked ID) privacy layer means group participants can
+// show up as "@lid" instead of their phone number, and whatsapp-web.js has a
+// known, currently-unresolved bug where getContact() can misresolve a @lid
+// sender into the BOT'S OWN contact instead of throwing — so a broken lookup
+// silently shows up as "Me" rather than failing loudly and triggering our
+// usual fallback.
+//
+// This resolves a display name in three steps, each one only used if the
+// previous one comes up empty/untrustworthy:
+//   1. The push name WhatsApp attaches to the message itself
+//      (msg._data.notifyName) — comes straight from the sender and doesn't
+//      depend on contact/LID resolution at all, so the bug above can't touch it.
+//   2. getContact(), but only if it doesn't look like the "resolved as me"
+//      misfire (contact.isMe true while the id we looked up isn't the bot's).
+//   3. The raw WhatsApp id as a last resort.
+async function resolveSenderName(msg, client) {
+  const senderId = msg.author || msg.from || '';
+
+  const pushName = msg._data?.notifyName;
+  if (pushName && pushName.trim()) return pushName.trim();
+
+  try {
+    const contact = await safeGetContact(msg, 1);
+    const myId = client?.info?.wid?._serialized;
+    if (contact.isMe && senderId !== myId) {
+      return senderId.split('@')[0] || 'Unknown';
+    }
+    return mentionName(contact);
+  } catch {
+    return senderId.split('@')[0] || 'Unknown';
+  }
+}
+
 // ─── Check if user is group admin ─────────────────────────────────────────────
 async function isAdmin(msg) {
   let chat;
@@ -178,6 +212,33 @@ function isOwner(id) {
   return id === process.env.OWNER_NUMBER;
 }
 
+// ─── Resolve a display name from a raw WhatsApp id ────────────────────────────
+// Guilds (and anything else storing bare ids like leaderId/members[]) only
+// have the WhatsApp id string to go on, not a live Contact object. This
+// resolves the best available display name:
+//   1. Our own User.name (set on first interaction, or via .setname) — no
+//      network round-trip needed, works even if the person left every group.
+//   2. client.getContactById() → mentionName() as a fallback for users the
+//      bot has never seen a command from yet.
+//   3. The raw phone-number portion of the id as a last resort.
+async function resolveNameById(client, id) {
+  if (!id) return 'Unknown';
+  try {
+    const user = await User.findOne({ id });
+    if (user?.name && user.name !== 'Unknown') return user.name;
+  } catch (err) {
+    console.error('resolveNameById: User lookup failed:', err.message);
+  }
+  try {
+    const contact = await client.getContactById(id);
+    const name = mentionName(contact);
+    if (name && name !== 'Unknown') return name;
+  } catch (err) {
+    // Not fatal — likely a contact the bot can't resolve (left all shared groups, etc).
+  }
+  return id.split('@')[0] || 'Unknown';
+}
+
 // ─── Generic unique 6-char code generator ─────────────────────────────────────
 // Used for anything that needs a short, human-typeable ID (shop listings,
 // auctions, etc). Pass the mongoose Model and the field name to check against.
@@ -208,8 +269,10 @@ module.exports = {
   cardValue,
   mentionName,
   isOwner,
+  resolveNameById,
   generateUniqueCode,
   safeGetChat,
   safeGetQuotedMessage,
-  safeGetContact
+  safeGetContact,
+  resolveSenderName
 };
