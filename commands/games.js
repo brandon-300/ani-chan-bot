@@ -1,10 +1,9 @@
 const { pick, rand, mentionName, safeGetChat, resolveNameById } = require('../utils/helpers');
-const { Chess } = require('chess.js');
 const tictactoe = require('./games/tictactoe');
 const connect4 = require('./games/connect4');
+const chessGame = require('./games/chess');
 
 // ─── Active Game Sessions ─────────────────────────────────────────────────────
-const chessGames = new Map();   // chatId -> Chess instance + players
 const battleGames = new Map();  // chatId -> { players, hp }
 
 const GREEK_GODS = [
@@ -66,11 +65,9 @@ module.exports = {
     }
 
     // Chess
-    const chessGame = chessGames.get(chatId);
-    if (chessGame && (chessGame.white === playerId || chessGame.black === playerId)) {
-      chessGames.delete(chatId);
-      const opponentName = chessGame.white === playerId ? chessGame.blackName : chessGame.whiteName;
-      return msg.reply(`🚩 *${contact.pushname}* resigned from Chess.\n🏆 *${opponentName} wins by forfeit!*`);
+    const chessResult = chessGame.quitChess(chatId, playerId);
+    if (chessResult) {
+      return msg.reply(`🚩 *${chessResult.quitterName}* resigned from Chess.\n🏆 *${chessResult.winnerName} wins by forfeit!*`);
     }
 
     // Battle
@@ -204,65 +201,9 @@ module.exports = {
     msg.reply(`🎮 *Would You Rather?*\n\n${q.q}\n\nA) ${q.opts[0]}\nB) ${q.opts[1]}\n\nReply A or B!`);
   },
 
-  // .chess
-  async chess(client, msg, args) {
-    const chat = await safeGetChat(msg);
-    if (!chat) return;
-    if (!chat) return;
-    const contact = await msg.getContact();
-    const mentioned = await msg.getMentions();
-
-    if (!mentioned.length) return msg.reply('❌ Usage: .chess @user');
-    if (chessGames.has(chat.id._serialized)) return msg.reply('❌ A game is already active!');
-
-    const chess = new Chess();
-    chessGames.set(chat.id._serialized, {
-      chess,
-      white: contact.id._serialized,
-      black: mentioned[0].id._serialized,
-      whiteName: contact.pushname,
-      blackName: mentioned[0].pushname,
-    });
-
-    msg.reply(
-      `♟️ *Chess*\n\n♔ White: ${contact.pushname}\n♚ Black: ${mentioned[0].pushname}\n\n${chess.ascii()}\n\nWhite goes first! Use *.move [e2e4]* (from-to format).`
-    );
-  },
+  // .chess @user (play a person) | .chess [easy|medium|hard] (play the bot)
+  chess: chessGame.chess,
 
   // .move [e2e4]
-  async move(client, msg, args) {
-    const chat = await safeGetChat(msg);
-    if (!chat) return;
-    if (!chat) return;
-    const contact = await msg.getContact();
-    const game = chessGames.get(chat.id._serialized);
-    if (!game) return msg.reply('❌ No chess game active.');
-
-    const isWhite = game.white === contact.id._serialized;
-    const isBlack = game.black === contact.id._serialized;
-    if (!isWhite && !isBlack) return msg.reply('❌ You are not in this game.');
-
-    const turn = game.chess.turn() === 'w' ? game.white : game.black;
-    if (contact.id._serialized !== turn) return msg.reply('❌ Not your turn!');
-
-    const moveStr = args[0];
-    if (!moveStr) return msg.reply('❌ Usage: .move [e2e4]');
-
-    const from = moveStr.slice(0, 2);
-    const to = moveStr.slice(2, 4);
-    const result = game.chess.move({ from, to, promotion: 'q' });
-
-    if (!result) return msg.reply('❌ Invalid move!');
-
-    if (game.chess.isGameOver()) {
-      const winner = game.chess.isCheckmate()
-        ? (game.chess.turn() === 'w' ? game.blackName : game.whiteName)
-        : 'Nobody (Draw)';
-      chessGames.delete(chat.id._serialized);
-      return msg.reply(`${game.chess.ascii()}\n\n♟️ *Game Over!*\n🏆 Winner: ${winner}`);
-    }
-
-    const nextName = game.chess.turn() === 'w' ? game.whiteName : game.blackName;
-    msg.reply(`${game.chess.ascii()}\n\n${game.chess.isCheck() ? '⚠️ Check!\n' : ''}*${nextName}'s* turn!`);
-  },
+  move: chessGame.move,
 };
