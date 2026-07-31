@@ -122,6 +122,7 @@ const aliases = {
   reverseimg: 'sauce',
   tt: 'translate',
   tb: 'transcribe',
+  quit: 'quitgame',
 };
 
 async function sendQuickMenu(msg) {

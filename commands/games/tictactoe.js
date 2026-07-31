@@ -1,7 +1,10 @@
-const { mentionName, safeGetChat } = require('../../utils/helpers');
+const { safeGetChat, resolveNameById } = require('../../utils/helpers');
 
 // ─── Active Game Sessions ─────────────────────────────────────────────────────
-// chatId -> { board, turn, players, symbols }
+// chatId -> { board, turn, players, names, symbols }
+// `names` is resolved once at game start and cached here — see the comment
+// on the .ttt command below for why we don't just re-derive it from
+// WhatsApp Contact objects every time we need to display it.
 const tttGames = new Map();
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
@@ -40,14 +43,13 @@ module.exports = {
     if (game && !isNaN(movePos)) {
       if (movePos < 1 || movePos > 9) return msg.reply('❌ Choose a position 1-9.');
 
-      if (!game.players.includes(contact.id._serialized)) {
+      const playerIndex = game.players.indexOf(contact.id._serialized);
+      if (playerIndex === -1) {
         return msg.reply("❌ You're not part of this game!");
       }
 
-      const currentPlayerId = game.players[game.turn];
-      if (currentPlayerId !== contact.id._serialized) {
-        const waitingOn = await client.getContactById(currentPlayerId);
-        return msg.reply(`❌ Not your turn! Waiting on ${mentionName(waitingOn)}.`);
+      if (playerIndex !== game.turn) {
+        return msg.reply(`❌ Not your turn! Waiting on ${game.names[game.turn]}.`);
       }
 
       const row = Math.floor((movePos - 1) / 3);
@@ -65,16 +67,14 @@ module.exports = {
         if (result === 'draw') {
           return msg.reply(`${renderTTT(game.board)}\n\n🤝 *It's a draw!*`);
         }
-        const winner = await client.getContactById(currentPlayerId);
-        return msg.reply(`${renderTTT(game.board)}\n\n🏆 *${mentionName(winner)} wins!* (${result})`);
+        return msg.reply(`${renderTTT(game.board)}\n\n🏆 *${game.names[game.turn]} wins!* (${result})`);
       }
 
       game.turn = game.turn === 0 ? 1 : 0;
       tttGames.set(chatId, game);
 
-      const nextContact = await client.getContactById(game.players[game.turn]);
       return msg.reply(
-        `${renderTTT(game.board)}\n\n${game.symbols[game.turn]} ${mentionName(nextContact)}'s turn! Type *.ttt [1-9]* to play.`
+        `${renderTTT(game.board)}\n\n${game.symbols[game.turn]} ${game.names[game.turn]}'s turn! Type *.ttt [1-9]* to play.`
       );
     }
 
@@ -83,13 +83,45 @@ module.exports = {
     if (!mentioned.length) return msg.reply('❌ Mention someone to play! .ttt @user');
     if (tttGames.has(chatId)) return msg.reply('❌ A game is already in progress!');
 
-    const board = Array.from({ length: 3 }, () => ['·', '·', '·']);
-    const players = [contact.id._serialized, mentioned[0].id._serialized];
+    const playerId = contact.id._serialized;
+    const opponentId = mentioned[0].id._serialized;
 
-    tttGames.set(chatId, { board, turn: 0, players, symbols: ['❌', '⭕'] });
+    // msg.getContact() (the sender) always comes with an accurate pushname
+    // from WhatsApp, but msg.getMentions() (the opponent) often doesn't —
+    // WhatsApp only syncs a contact's pushname to us once we've seen them
+    // message in this chat ourselves. Without this, the opponent falls back
+    // to their raw phone number instead of their actual name. resolveNameById
+    // checks our own saved name for them first, so it works even the very
+    // first time they're mentioned. We resolve both once here and cache the
+    // result in game state — every later message (turn prompts, win
+    // announcement) reads from that cache instead of re-fetching, which also
+    // means no extra network round-trips per move on shaky connections.
+    const [playerName, opponentName] = await Promise.all([
+      resolveNameById(client, playerId),
+      resolveNameById(client, opponentId),
+    ]);
+
+    const board = Array.from({ length: 3 }, () => ['·', '·', '·']);
+    const players = [playerId, opponentId];
+    const names = [playerName, opponentName];
+
+    tttGames.set(chatId, { board, turn: 0, players, names, symbols: ['❌', '⭕'] });
 
     msg.reply(
-      `🎮 *Tic Tac Toe*\n${mentionName(contact)} (❌) vs ${mentionName(mentioned[0])} (⭕)\n\n${renderTTT(board)}\n\n❌ ${mentionName(contact)}'s turn! Type *.ttt [1-9]* to play.`
+      `🎮 *Tic Tac Toe*\n${playerName} (❌) vs ${opponentName} (⭕)\n\n${renderTTT(board)}\n\n❌ ${playerName}'s turn! Type *.ttt [1-9]* to play.`
     );
+  },
+
+  // Ends an in-progress game as a forfeit by `playerId` in `chatId`, if
+  // they're in one. Returns null when there's no ttt game for them here, so
+  // a shared .quitgame command can fall through and try other game types.
+  quitTTT(chatId, playerId) {
+    const game = tttGames.get(chatId);
+    if (!game || !game.players.includes(playerId)) return null;
+
+    const idx = game.players.indexOf(playerId);
+    const winnerIdx = idx === 0 ? 1 : 0;
+    tttGames.delete(chatId);
+    return { quitterName: game.names[idx], winnerName: game.names[winnerIdx] };
   },
 };

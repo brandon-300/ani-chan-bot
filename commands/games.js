@@ -1,36 +1,11 @@
-const { pick, rand, mentionName, safeGetChat } = require('../utils/helpers');
+const { pick, rand, mentionName, safeGetChat, resolveNameById } = require('../utils/helpers');
 const { Chess } = require('chess.js');
 const tictactoe = require('./games/tictactoe');
+const connect4 = require('./games/connect4');
 
 // ─── Active Game Sessions ─────────────────────────────────────────────────────
-const c4Games = new Map();      // chatId -> { board, turn, players }
 const chessGames = new Map();   // chatId -> Chess instance + players
 const battleGames = new Map();  // chatId -> { players, hp }
-
-// ─── Connect 4 Helpers ────────────────────────────────────────────────────────
-function renderC4(board) {
-  return board.map(r => r.join(' ')).join('\n') + '\n1 2 3 4 5 6 7';
-}
-
-function dropC4(board, col, piece) {
-  for (let r = 5; r >= 0; r--) {
-    if (board[r][col] === '⬛') { board[r][col] = piece; return r; }
-  }
-  return -1;
-}
-
-function checkC4Win(board, piece) {
-  // Horizontal, vertical, diagonal checks
-  for (let r = 0; r < 6; r++) {
-    for (let c = 0; c < 7; c++) {
-      if (c + 3 < 7 && [0,1,2,3].every(i => board[r][c+i] === piece)) return true;
-      if (r + 3 < 6 && [0,1,2,3].every(i => board[r+i][c] === piece)) return true;
-      if (r + 3 < 6 && c + 3 < 7 && [0,1,2,3].every(i => board[r+i][c+i] === piece)) return true;
-      if (r + 3 < 6 && c - 3 >= 0 && [0,1,2,3].every(i => board[r+i][c-i] === piece)) return true;
-    }
-  }
-  return false;
-}
 
 const GREEK_GODS = [
   { name: 'Zeus', domain: 'Sky & Thunder', symbol: '⚡' },
@@ -68,6 +43,46 @@ module.exports = {
   battleGames,
   ttt: tictactoe.ttt,
   tttGames: tictactoe.tttGames,
+
+  // .quitgame / .quit — forfeit whichever game you're currently in. Your
+  // opponent is declared the winner regardless of the current board state.
+  async quitgame(client, msg, args) {
+    const chat = await safeGetChat(msg);
+    if (!chat) return;
+    const contact = await msg.getContact();
+    const chatId = chat.id._serialized;
+    const playerId = contact.id._serialized;
+
+    // Tic Tac Toe
+    const tttResult = tictactoe.quitTTT(chatId, playerId);
+    if (tttResult) {
+      return msg.reply(`🚩 *${tttResult.quitterName}* quit Tic Tac Toe.\n🏆 *${tttResult.winnerName} wins by forfeit!*`);
+    }
+
+    // Connect 4
+    const c4Result = connect4.quitC4(chatId, playerId);
+    if (c4Result) {
+      return msg.reply(`🚩 *${c4Result.quitterName}* quit Connect 4.\n🏆 *${c4Result.winnerName} wins by forfeit!*`);
+    }
+
+    // Chess
+    const chessGame = chessGames.get(chatId);
+    if (chessGame && (chessGame.white === playerId || chessGame.black === playerId)) {
+      chessGames.delete(chatId);
+      const opponentName = chessGame.white === playerId ? chessGame.blackName : chessGame.whiteName;
+      return msg.reply(`🚩 *${contact.pushname}* resigned from Chess.\n🏆 *${opponentName} wins by forfeit!*`);
+    }
+
+    // Battle
+    const battleGame = battleGames.get(chatId);
+    if (battleGame && (battleGame.p1.id === playerId || battleGame.p2.id === playerId)) {
+      battleGames.delete(chatId);
+      const opponent = battleGame.p1.id === playerId ? battleGame.p2 : battleGame.p1;
+      return msg.reply(`🚩 *${contact.pushname}* fled the battle.\n🏆 *${opponent.name} wins by forfeit!*`);
+    }
+
+    return msg.reply("❌ You're not currently in any game.");
+  },
 
   // .startbattle
   async startbattle(client, msg, args) {
@@ -178,54 +193,10 @@ module.exports = {
   },
 
   // .c4 — connect 4
-  async c4(client, msg, args) {
-    const chat = await safeGetChat(msg);
-    if (!chat) return;
-    if (!chat) return;
-    const contact = await msg.getContact();
-    const mentioned = await msg.getMentions();
-
-    if (!mentioned.length) return msg.reply('❌ Usage: .c4 @user');
-    if (c4Games.has(chat.id._serialized)) return msg.reply('❌ A game is already active!');
-
-    const board = Array.from({ length: 6 }, () => Array(7).fill('⬛'));
-    const players = [
-      { id: contact.id._serialized, name: contact.pushname, piece: '🔴' },
-      { id: mentioned[0].id._serialized, name: mentioned[0].pushname, piece: '🟡' },
-    ];
-
-    c4Games.set(chat.id._serialized, { board, turn: 0, players });
-    msg.reply(`🎮 *Connect 4*\n🔴 ${players[0].name} vs 🟡 ${players[1].name}\n\n${renderC4(board)}\n\n🔴 ${players[0].name}'s turn! Type *.drop [1-7]* to play.`);
-  },
+  c4: connect4.c4,
 
   // .drop [col]
-  async drop(client, msg, args) {
-    const chat = await safeGetChat(msg);
-    if (!chat) return;
-    if (!chat) return;
-    const contact = await msg.getContact();
-    const game = c4Games.get(chat.id._serialized);
-    if (!game) return msg.reply('❌ No active Connect 4 game.');
-
-    const current = game.players[game.turn];
-    if (current.id !== contact.id._serialized) return msg.reply('❌ Not your turn!');
-
-    const col = parseInt(args[0]) - 1;
-    if (isNaN(col) || col < 0 || col > 6) return msg.reply('❌ Choose a column 1-7.');
-
-    const row = dropC4(game.board, col, current.piece);
-    if (row === -1) return msg.reply('❌ Column full! Choose another.');
-
-    if (checkC4Win(game.board, current.piece)) {
-      c4Games.delete(chat.id._serialized);
-      return msg.reply(`${renderC4(game.board)}\n\n🏆 *${current.name} wins Connect 4!*`);
-    }
-
-    game.turn = game.turn === 0 ? 1 : 0;
-    c4Games.set(chat.id._serialized, game);
-    const next = game.players[game.turn];
-    msg.reply(`${renderC4(game.board)}\n\n${next.piece} *${next.name}'s* turn!`);
-  },
+  drop: connect4.drop,
 
   // .wcg — would you rather (group game)
   async wcg(client, msg, args) {
