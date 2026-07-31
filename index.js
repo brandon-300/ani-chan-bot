@@ -4,7 +4,14 @@ const qrcode = require('qrcode-terminal');
 const mongoose = require('mongoose');
 const fs = require('fs');
 const path = require('path');
+const { execSync } = require('child_process');
 const { safeGetQuotedMessage, safeGetChat, resolveSenderName } = require('./utils/helpers');
+
+// Shared with the LocalAuth session path below and with the browser-lock
+// recovery helpers further down, so both always agree on the same binary
+// and directory instead of duplicating the string in multiple places.
+const CHROMIUM_PATH = process.env.PUPPETEER_EXECUTABLE_PATH || '/data/data/com.termux/files/usr/bin/chromium-browser';
+const SESSION_DIR = path.join(__dirname, '.wwebjs_auth', 'session');
 
 process.on('uncaughtException', (err) => {
   console.error('💥 Uncaught Exception:', err);
@@ -12,6 +19,19 @@ process.on('uncaughtException', (err) => {
 
 process.on('unhandledRejection', (reason) => {
   console.error('💥 Unhandled Rejection:', reason);
+
+  // whatsapp-web.js throws this as a bare string (not an Error) from inside
+  // an internal page-navigation listener that never gets awaited by
+  // anything, which is why it surfaces here as an unhandled rejection
+  // instead of through client.on('disconnected', ...). It happens whenever
+  // the WhatsApp Web page reloads and doesn't finish loading its JS
+  // scaffolding within authTimeoutMs — common on unstable mobile data. Left
+  // alone, the client is silently dead (its message hooks never
+  // re-attached) with no reconnect ever triggered, so we treat it the same
+  // as a real disconnect ourselves.
+  if (reason === 'auth timeout') {
+    handleAuthTimeout();
+  }
 });
 
 const mongoOptions = {
@@ -33,8 +53,12 @@ connectMongo();
 
 const clientOptions = {
   authStrategy: new LocalAuth(),
+  // Default is 30s, which is tight on unstable Airtel/MTN mobile data —
+  // give the WhatsApp Web page more room to finish loading its JS after a
+  // reload before whatsapp-web.js gives up and throws 'auth timeout'.
+  authTimeoutMs: 90000,
   puppeteer: {
-    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/data/data/com.termux/files/usr/bin/chromium-browser',
+    executablePath: CHROMIUM_PATH,
     headless: true,
     timeout: 60000,
     protocolTimeout: 60000,
@@ -233,6 +257,7 @@ let reconnectTimer = null;
 let cardDropsStarted = false;
 let whatsappStarting = false;
 let currentState = null;
+let authTimeoutRecovering = false;
 
 // Wait for the connection to look stable before running a command, instead of
 // launching straight into a mid-reconnect window and failing. Cheap when
@@ -280,6 +305,79 @@ function patchQuotedReply(msg) {
   };
 }
 
+// whatsapp-web.js's Client.initialize() unconditionally calls
+// puppeteer.launch() every time it's invoked — it never checks whether a
+// browser from a previous initialize() is still alive. On Termux this bites
+// us specifically: if the Node process gets killed abruptly (OOM, Android
+// backgrounding/freezing the app, a hard pm2 restart) the child Chromium
+// process can be left running as an orphan, still holding Chromium's own
+// ProcessSingleton lock on the LocalAuth session directory. Every later
+// reconnect attempt then fails immediately with "The browser is already
+// running for <userDataDir>", which has nothing to do with WhatsApp auth —
+// it's purely Chromium refusing to open a second instance against the same
+// profile folder. Once that happens the bot is stuck in an infinite
+// reconnect loop and can never get far enough to show a fresh pairing code.
+function isBrowserLockError(err) {
+  const msg = String((err && err.message) || err || '');
+  return msg.includes('already running') || msg.includes('ProcessSingleton') || msg.includes('userDataDir');
+}
+
+// Best-effort recovery from that specific failure: kill any lingering
+// Chromium process for our executable, then remove Chromium's own singleton
+// lock artifacts from the session directory. Both steps are safe no-ops if
+// there's nothing to clean up, so this never hurts a normal reconnect.
+function recoverFromBrowserLock() {
+  try {
+    execSync(`pkill -9 -f "${CHROMIUM_PATH}"`, { stdio: 'ignore' });
+    console.log('🧹 Killed lingering Chromium process(es)');
+  } catch {
+    // No matching process, or pkill isn't installed — nothing to clean up.
+  }
+
+  for (const lockFile of ['SingletonLock', 'SingletonSocket', 'SingletonCookie']) {
+    const lockPath = path.join(SESSION_DIR, lockFile);
+    try {
+      if (fs.existsSync(lockPath)) {
+        fs.rmSync(lockPath, { force: true });
+        console.log(`🧹 Removed stale ${lockFile}`);
+      }
+    } catch (e) {
+      console.error(`Could not remove ${lockFile}:`, e.message);
+    }
+  }
+}
+
+function withTimeout(promise, ms) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error('timed out')), ms)),
+  ]);
+}
+
+// Recovery path for the 'auth timeout' rejection handled above. The page is
+// stuck (its JS never finished loading), so we tear the browser down and
+// let the existing reconnect machinery bring up a fresh one — it'll reuse
+// the saved session on disk, so this does not require a new pairing code.
+async function handleAuthTimeout() {
+  if (authTimeoutRecovering) return;
+  authTimeoutRecovering = true;
+  whatsappStarting = false;
+
+  console.log('🔁 Recovering from auth timeout (page got stuck reloading)...');
+  try {
+    // destroy() talks to a page that may itself be unresponsive, so it's
+    // bounded here — if it doesn't finish quickly, fall back to force-killing
+    // the browser process directly so we're never stuck waiting on it.
+    await withTimeout(client.destroy(), 15000);
+  } catch (err) {
+    console.error('Clean destroy did not finish in time, forcing cleanup:', err.message);
+    recoverFromBrowserLock();
+  }
+
+  authTimeoutRecovering = false;
+  scheduleReconnect('auth-timeout');
+}
+
 function scheduleReconnect(reason) {
   console.log('❌ WhatsApp disconnected:', reason);
 
@@ -294,6 +392,10 @@ function scheduleReconnect(reason) {
     } catch (err) {
       console.error('Reconnect failed:', err);
       whatsappStarting = false;
+      if (isBrowserLockError(err)) {
+        console.log('🔒 Detected a stuck browser lock — cleaning up before retrying...');
+        recoverFromBrowserLock();
+      }
       scheduleReconnect('reconnect-failed');
     }
   }, 5000);
@@ -308,6 +410,10 @@ async function startWhatsApp() {
   } catch (err) {
     console.error('❌ WhatsApp initialize failed:', err.message);
     whatsappStarting = false;
+    if (isBrowserLockError(err)) {
+      console.log('🔒 Detected a stuck browser lock — cleaning up before retrying...');
+      recoverFromBrowserLock();
+    }
     setTimeout(startWhatsApp, 10000);
   }
 }
