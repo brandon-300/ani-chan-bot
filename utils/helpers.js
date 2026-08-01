@@ -70,6 +70,23 @@ async function safeGetContact(msg, retries = 2) {
   }
 }
 
+// ─── Generic Retry Wrapper ──────────────────────────────────────────────────
+// Same retry-with-backoff shape as safeGetChat/safeGetQuotedMessage/
+// safeGetContact above, generalized for anything else that can hit a
+// transient failure on an unstable connection — most notably MongoDB
+// operations, which see the same kind of momentary timeout as WhatsApp's own
+// calls do.
+async function withRetry(fn, retries = 2) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (attempt >= retries) throw err;
+      await new Promise(r => setTimeout(r, 800 * (attempt + 1)));
+    }
+  }
+}
+
 // ─── Robust sender display-name resolution ─────────────────────────────────────
 // WhatsApp's "LID" (Linked ID) privacy layer means group participants can
 // show up as "@lid" instead of their phone number, and whatsapp-web.js has a
@@ -231,8 +248,18 @@ async function resolveNameById(client, id) {
   }
   try {
     const contact = await client.getContactById(id);
-    const name = mentionName(contact);
-    if (name && name !== 'Unknown') return name;
+    // Same known whatsapp-web.js bug documented on resolveSenderName above:
+    // getContactById() can misresolve a @lid id into the bot's OWN contact
+    // instead of throwing — which previously showed up here as a real but
+    // completely unrelated name (the bot account's own registered profile
+    // name) for whoever we were actually looking up. Guard against it the
+    // same way: don't trust a contact claiming to be "me" unless the id we
+    // looked up actually was the bot's own.
+    const myId = client?.info?.wid?._serialized;
+    if (!(contact.isMe && id !== myId)) {
+      const name = mentionName(contact);
+      if (name && name !== 'Unknown') return name;
+    }
   } catch (err) {
     // Not fatal — likely a contact the bot can't resolve (left all shared groups, etc).
   }
@@ -274,5 +301,6 @@ module.exports = {
   safeGetChat,
   safeGetQuotedMessage,
   safeGetContact,
+  withRetry,
   resolveSenderName
 };

@@ -1,6 +1,6 @@
 const Group = require('../models/Group');
 const User = require('../models/User');
-const { isAdmin, botIsAdmin, mentionName, isOwner, safeGetChat, safeGetQuotedMessage } = require('../utils/helpers');
+const { isAdmin, botIsAdmin, mentionName, isOwner, safeGetChat, safeGetQuotedMessage, resolveNameById, withRetry } = require('../utils/helpers');
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 async function requireAdmin(msg) {
@@ -180,7 +180,8 @@ module.exports = {
     if (!chat) return;
     if (!chat.isGroup) return msg.reply('❌ Group only.');
 
-    const group = await Group.findOne({ id: chat.id._serialized });
+    const group = await withRetry(() => Group.findOne({ id: chat.id._serialized }))
+      .catch(err => { console.error('groupstats: Group lookup failed:', err.message); return null; });
     const totalMembers = chat.participants.length;
     const admins = chat.participants.filter(p => p.isAdmin || p.isSuperAdmin).length;
 
@@ -350,7 +351,8 @@ module.exports = {
     const text = args.join(' ') || '📢';
     const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
     if (!chat) return;
-    const mentions = chat.participants.map(p => p.id._serialized);
+    const botId = client.info.wid._serialized;
+    const mentions = chat.participants.map(p => p.id._serialized).filter(id => id !== botId);
     const hiddenMentions = mentions.map(() => '‎').join('');
     await chat.sendMessage(text + hiddenMentions, { mentions });
   },
@@ -380,13 +382,23 @@ async tagall(client, msg, args) {
     if (!chat) return;
     if (!chat.isGroup) return msg.reply('❌ Group only.');
 
-    const group = await Group.findOne({ id: chat.id._serialized });
+    const group = await withRetry(() => Group.findOne({ id: chat.id._serialized }))
+      .catch(err => { console.error('activity: Group lookup failed:', err.message); return null; });
     if (!group?.activityLog?.size) return msg.reply('📊 No activity data yet.');
 
-    const sorted = [...(group.activityLog || new Map())].sort((a, b) => b[1] - a[1]).slice(0, 10);
+    const botId = client.info.wid._serialized;
+    const sorted = [...(group.activityLog || new Map())]
+      .filter(([id]) => id !== botId)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10);
+    if (!sorted.length) return msg.reply('📊 No activity data yet.');
+    // Previously showed the raw WhatsApp id (e.g. "2341234567890@c.us") here
+    // instead of the person's actual name.
+    const names = await Promise.all(sorted.map(([id]) => resolveNameById(client, id)));
+
     let text = '📊 *Member Activity*\n\n';
-    sorted.forEach(([id, count], i) => {
-      text += `${i + 1}. ${id} — ${count} messages\n`;
+    sorted.forEach(([, count], i) => {
+      text += `${i + 1}. ${names[i]} — ${count} messages\n`;
     });
     msg.reply(text);
   },
@@ -402,13 +414,18 @@ async tagall(client, msg, args) {
     if (!chat) return;
     if (!chat.isGroup) return msg.reply('❌ Group only.');
 
-    const group = await Group.findOne({ id: chat.id._serialized });
-    const allIds = chat.participants.map(p => p.id._serialized);
+    const group = await withRetry(() => Group.findOne({ id: chat.id._serialized }))
+      .catch(err => { console.error('inactive: Group lookup failed:', err.message); return null; });
+    const botId = client.info.wid._serialized;
+    const allIds = chat.participants.map(p => p.id._serialized).filter(id => id !== botId);
     const log = group?.activityLog || new Map();
 
-    const inactive = allIds.filter(id => !log.has(id) || log.get(id) < 5);
+    const inactive = allIds.filter(id => !log.has(id) || log.get(id) < 5).slice(0, 10);
+    // Same fix as .activity — resolve to real names instead of showing raw ids.
+    const names = await Promise.all(inactive.map(id => resolveNameById(client, id)));
+
     let text = `😴 *Inactive Members* (< 5 messages)\n\n`;
-    inactive.slice(0, 10).forEach((id, i) => { text += `${i + 1}. @${id.replace('@c.us', '')}\n`; });
+    inactive.forEach((id, i) => { text += `${i + 1}. ${names[i]} — ${log.get(id) || 0} messages\n`; });
     msg.reply(text);
   },
 

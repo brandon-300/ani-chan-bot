@@ -5,7 +5,7 @@ const mongoose = require('mongoose');
 const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
-const { safeGetQuotedMessage, safeGetChat, resolveSenderName } = require('./utils/helpers');
+const { safeGetQuotedMessage, safeGetChat, safeGetContact, resolveSenderName, withRetry } = require('./utils/helpers');
 
 // Shared with the LocalAuth session path below and with the browser-lock
 // recovery helpers further down, so both always agree on the same binary
@@ -781,15 +781,24 @@ client.on('group_leave', async (notification) => {
 client.on('message', async (msg) => {
   if (!msg.from.endsWith('@g.us')) return;
 
-  const senderId = msg.author || msg.from;
-
   try {
+    // Raw msg.author/msg.from can be in a different id format (@lid vs
+    // phone-number) than chat.participants[].id._serialized uses — WhatsApp's
+    // internal store can canonicalize ids differently depending on the path
+    // taken to get there. .inactive (and anything else that cross-references
+    // this log against the participant list) needs an exact string match, so
+    // we resolve through getContact() here — the same approach isAdmin()
+    // already relies on for its own participant matching elsewhere in this
+    // codebase — instead of trusting the raw field directly.
+    const contact = await safeGetContact(msg);
+    const senderId = contact.id._serialized;
+
     const Group = require('./models/Group');
-    await Group.findOneAndUpdate(
+    await withRetry(() => Group.findOneAndUpdate(
       { id: msg.from },
       { $inc: { messageCount: 1, [`activityLog.${senderId}`]: 1 } },
       { upsert: true }
-    );
+    ));
   } catch (err) {
     console.error('Activity tracking error:', err.message);
   }

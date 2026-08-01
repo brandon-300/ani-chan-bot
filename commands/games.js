@@ -1,10 +1,8 @@
-const { pick, rand, mentionName, safeGetChat, resolveNameById } = require('../utils/helpers');
+const { pick, mentionName, safeGetChat, resolveNameById } = require('../utils/helpers');
 const tictactoe = require('./games/tictactoe');
 const connect4 = require('./games/connect4');
 const chessGame = require('./games/chess');
-
-// ─── Active Game Sessions ─────────────────────────────────────────────────────
-const battleGames = new Map();  // chatId -> { players, hp }
+const battle = require('./games/battle');
 
 const GREEK_GODS = [
   { name: 'Zeus', domain: 'Sky & Thunder', symbol: '⚡' },
@@ -39,7 +37,7 @@ const AKI_QUESTIONS = [
 ];
 
 module.exports = {
-  battleGames,
+  battleGames: battle.battleGames,
   ttt: tictactoe.ttt,
   tttGames: tictactoe.tttGames,
 
@@ -71,98 +69,25 @@ module.exports = {
     }
 
     // Battle
-    const battleGame = battleGames.get(chatId);
-    if (battleGame && (battleGame.p1.id === playerId || battleGame.p2.id === playerId)) {
-      battleGames.delete(chatId);
-      const opponent = battleGame.p1.id === playerId ? battleGame.p2 : battleGame.p1;
-      return msg.reply(`🚩 *${contact.pushname}* fled the battle.\n🏆 *${opponent.name} wins by forfeit!*`);
+    const battleResult = battle.quitBattle(chatId, playerId);
+    if (battleResult) {
+      return msg.reply(`🚩 *${battleResult.quitterName}* fled the battle.\n🏆 *${battleResult.winnerName} wins by forfeit!*`);
     }
 
     return msg.reply("❌ You're not currently in any game.");
   },
 
   // .startbattle
-  async startbattle(client, msg, args) {
-    const chat = await safeGetChat(msg);
-    if (!chat) return;
-    if (!chat) return;
-    const contact = await msg.getContact();
-    const mentioned = await msg.getMentions();
-
-    if (!mentioned.length) return msg.reply('❌ Usage: .startbattle @user');
-    if (battleGames.has(chat.id._serialized)) return msg.reply('❌ A battle is already happening!');
-
-    const p1 = { id: contact.id._serialized, name: contact.pushname, hp: 100 };
-    const p2 = { id: mentioned[0].id._serialized, name: mentioned[0].pushname, hp: 100 };
-
-    battleGames.set(chat.id._serialized, { p1, p2, turn: p1.id });
-
-    msg.reply(
-      `⚔️ *Battle Start!*\n\n🔵 ${p1.name} — ❤️ ${p1.hp} HP\n🔴 ${p2.name} — ❤️ ${p2.hp} HP\n\n${p1.name}'s turn! Use *.attack*, *.defend*, or *.flee*.`
-    );
-  },
+  startbattle: battle.startbattle,
 
   // .attack
-  async attack(client, msg, args) {
-    const chat = await safeGetChat(msg);
-    if (!chat) return;
-    if (!chat) return;
-    const contact = await msg.getContact();
-    const game = battleGames.get(chat.id._serialized);
-    if (!game) return msg.reply('❌ No active battle. Use .startbattle @user');
-    if (game.turn !== contact.id._serialized) return msg.reply('❌ Not your turn!');
-
-    const dmg = rand(10, 35);
-    const isP1 = game.p1.id === contact.id._serialized;
-    const target = isP1 ? game.p2 : game.p1;
-    const attacker = isP1 ? game.p1 : game.p2;
-
-    target.hp = Math.max(0, target.hp - dmg);
-    game.turn = target.id;
-
-    if (target.hp <= 0) {
-      battleGames.delete(chat.id._serialized);
-      return msg.reply(`⚔️ *${attacker.name}* dealt ${dmg} damage!\n💀 *${target.name}* has been defeated!\n🏆 *Winner: ${attacker.name}*!`);
-    }
-
-    battleGames.set(chat.id._serialized, game);
-    msg.reply(`⚔️ *${attacker.name}* hit ${target.name} for *${dmg} damage*!\n\n🔵 ${game.p1.name}: ❤️ ${game.p1.hp}\n🔴 ${game.p2.name}: ❤️ ${game.p2.hp}\n\n${target.name}'s turn!`);
-  },
+  attack: battle.attack,
 
   // .defend
-  async defend(client, msg, args) {
-    const chat = await safeGetChat(msg);
-    if (!chat) return;
-    if (!chat) return;
-    const contact = await msg.getContact();
-    const game = battleGames.get(chat.id._serialized);
-    if (!game) return msg.reply('❌ No active battle.');
-    if (game.turn !== contact.id._serialized) return msg.reply('❌ Not your turn!');
-
-    const heal = rand(5, 15);
-    const isP1 = game.p1.id === contact.id._serialized;
-    const defender = isP1 ? game.p1 : game.p2;
-    const other = isP1 ? game.p2 : game.p1;
-
-    defender.hp = Math.min(100, defender.hp + heal);
-    game.turn = other.id;
-
-    battleGames.set(chat.id._serialized, game);
-    msg.reply(`🛡️ *${defender.name}* defended and recovered *${heal} HP*!\n\n🔵 ${game.p1.name}: ❤️ ${game.p1.hp}\n🔴 ${game.p2.name}: ❤️ ${game.p2.hp}\n\n${other.name}'s turn!`);
-  },
+  defend: battle.defend,
 
   // .flee
-  async flee(client, msg, args) {
-    const chat = await safeGetChat(msg);
-    if (!chat) return;
-    if (!chat) return;
-    const contact = await msg.getContact();
-    const game = battleGames.get(chat.id._serialized);
-    if (!game) return msg.reply('❌ No active battle.');
-
-    battleGames.delete(chat.id._serialized);
-    msg.reply(`🏃 *${contact.pushname}* fled from the battle! Coward! 😂`);
-  },
+  flee: battle.flee,
 
   // .akinator
   async akinator(client, msg, args) {
