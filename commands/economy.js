@@ -291,7 +291,9 @@ async lottery(client, msg, args) {
     const name = args.join(' ');
     if (!name) return msg.reply('❌ Usage: .setname [name]');
     if (name.length > 30) return msg.reply('❌ Name must be 30 characters or less.');
-    await User.findOrCreate(contact.id._serialized, name);
+    const user = await User.findOrCreate(contact.id._serialized);
+    user.name = name;
+    await user.save();
     msg.reply(`✅ Name set to *${name}*!`);
   },
 

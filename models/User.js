@@ -41,11 +41,21 @@ const UserSchema = new mongoose.Schema({
 });
 
 UserSchema.statics.findOrCreate = async function (id, name) {
-  const update = { $setOnInsert: { id } };
-  if (name) update.$set = { name };
+  // `name` here is only ever a DEFAULT for a brand-new user — most call
+  // sites across the bot pass the caller's live contact.pushname on every
+  // single command purely so a first-time user starts with a sensible
+  // name. Previously this used $set, which applies unconditionally — so
+  // any of those same commands (e.g. viewing .profile) would silently
+  // re-sync an EXISTING user's name back to their live WhatsApp pushname,
+  // undoing .setname every time. $setOnInsert only ever applies on the
+  // initial upsert, so an existing user's name is never touched here. To
+  // explicitly change an existing user's name, set `user.name` directly
+  // and .save() — see .setname in commands/economy.js.
+  const setOnInsert = { id };
+  if (name) setOnInsert.name = name;
   return this.findOneAndUpdate(
     { id },
-    update,
+    { $setOnInsert: setOnInsert },
     { upsert: true, new: true, setDefaultsOnInsert: true }
   );
 };
