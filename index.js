@@ -709,6 +709,18 @@ client.on('message', (msg) => {
       return await msg.reply(`❓ Unknown command: *${PREFIX}${command}*\nType *${PREFIX}menu* to see what's available.`);
     }
 
+    // ── AFK welcome-back ────────────────────────────────────────────────────
+    // Runs for every recognized command, before it executes, so someone
+    // coming back from AFK always sees the welcome-back message first and
+    // their command's own response right after — not the other way around.
+    try {
+      const contact = await safeGetContact(msg);
+      const { _checkAfkReturn } = require('./commands/afk');
+      await _checkAfkReturn(msg, contact.id._serialized);
+    } catch (err) {
+      console.error('AFK check failed:', err.message);
+    }
+
     const isHeavy = HEAVY_COMMANDS.has(command);
 
     if (isHeavy) {
@@ -779,10 +791,23 @@ client.on('group_leave', async (notification) => {
 });
 
 client.on('message', async (msg) => {
-  if (!msg.from.endsWith('@g.us')) return;
-
   try {
-    // Raw msg.author/msg.from can be in a different id format (@lid vs
+    if (!msg.from.endsWith('@g.us')) return;
+
+    // Every other place in this codebase that reads or writes a Group
+    // document (admin.js, anime.js, cards.js, the antilink listener just
+    // below this one) looks it up by chat.id._serialized from
+    // msg.getChat() — this was the one exception, using the raw msg.from
+    // field directly instead. If msg.from ever canonicalizes differently
+    // than chat.id._serialized for this account (the same class of id
+    // inconsistency already found and fixed for senders — see the comment
+    // below), this was silently writing every message's activity into a
+    // completely different, orphaned Group document that nothing else in
+    // the bot ever reads — no errors anywhere, since the write itself
+    // always succeeded, just against the wrong document.
+    const chat = await safeGetChat(msg);
+
+    // Raw msg.author/msg.from can also be in a different id format (@lid vs
     // phone-number) than chat.participants[].id._serialized uses — WhatsApp's
     // internal store can canonicalize ids differently depending on the path
     // taken to get there. .inactive (and anything else that cross-references
@@ -795,7 +820,7 @@ client.on('message', async (msg) => {
 
     const Group = require('./models/Group');
     await withRetry(() => Group.findOneAndUpdate(
-      { id: msg.from },
+      { id: chat.id._serialized },
       { $inc: { messageCount: 1, [`activityLog.${senderId}`]: 1 } },
       { upsert: true }
     ));

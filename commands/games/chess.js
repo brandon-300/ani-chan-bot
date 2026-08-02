@@ -1,6 +1,8 @@
 const { Chess } = require('chess.js');
+const { MessageMedia } = require('whatsapp-web.js');
 const { safeGetChat, resolveNameById } = require('../../utils/helpers');
 const { getBestMove } = require('./chessEngine');
+const { renderBoardImage } = require('./chessBoardImage');
 
 const BOT_NAME = process.env.BOT_NAME || 'Ani-Chan Bot';
 
@@ -35,6 +37,26 @@ function describeGameOver(chess, whiteName, blackName) {
   return '♟️ *Draw* — the 50-move rule.'; // last remaining isDraw() case
 }
 
+// Sends the current position as a board image with `caption`. The board is
+// always oriented to whoever needs to move next — this is a WhatsApp group
+// chat, so there's no way to show two different people two different
+// images of the same message; flipping to the mover's side each turn is
+// the closest equivalent of "each player sees their own perspective" that
+// a single shared message can actually deliver. Falls back to the existing
+// plain-text ASCII board (with the same caption appended) if image
+// rendering fails for any reason, so the game is never blocked by it.
+async function sendBoard(msg, chat, chess, { lastMove, caption } = {}) {
+  try {
+    const perspective = chess.turn();
+    const png = renderBoardImage(chess, { perspective, lastMove });
+    const media = new MessageMedia('image/png', png.toString('base64'), 'chess-board.png');
+    await chat.sendMessage(media, { caption });
+  } catch (err) {
+    console.error('Chess board image render failed, falling back to text board:', err.message);
+    await msg.reply(`${chess.ascii()}\n\n${caption}`);
+  }
+}
+
 module.exports = {
   chessGames,
 
@@ -67,9 +89,9 @@ module.exports = {
         blackName: opponentName,
       });
 
-      return msg.reply(
-        `♟️ *Chess*\n\n♔ White: ${playerName}\n♚ Black: ${opponentName}\n\n${chess.ascii()}\n\nWhite goes first! Use *.move [e2e4]* (from-to format).`
-      );
+      return sendBoard(msg, chat, chess, {
+        caption: `♟️ *Chess*\n\n♔ White: ${playerName}\n♚ Black: ${opponentName}\n\nWhite goes first! Use *.move [e2e4]* (from-to format).`,
+      });
     }
 
     // ── vs bot ────────────────────────────────────────────────────────────
@@ -90,9 +112,9 @@ module.exports = {
       search,
     });
 
-    return msg.reply(
-      `♟️ *Chess vs ${BOT_NAME}* (${difficultyLabel})\n\n♔ White: ${playerName}\n♚ Black: 🤖 ${BOT_NAME}\n\n${chess.ascii()}\n\nYou're White — use *.move [e2e4]* (from-to format) to play! Mention someone instead (.chess @user) to play a person.${slowWarning}`
-    );
+    return sendBoard(msg, chat, chess, {
+      caption: `♟️ *Chess vs ${BOT_NAME}* (${difficultyLabel})\n\n♔ White: ${playerName}\n♚ Black: 🤖 ${BOT_NAME}\n\nYou're White — use *.move [e2e4]* (from-to format) to play! Mention someone instead (.chess @user) to play a person.${slowWarning}`,
+    });
   },
 
   // .move [e2e4] — shared by both PvP and vs-bot games
@@ -115,13 +137,17 @@ module.exports = {
     const moveStr = args[0];
     if (!moveStr) return msg.reply('❌ Usage: .move [e2e4]');
 
-    const result = game.chess.move({ from: moveStr.slice(0, 2), to: moveStr.slice(2, 4), promotion: 'q' });
-    if (!result) return msg.reply('❌ Invalid move!');
+    const moverName = game.chess.turn() === 'w' ? game.whiteName : game.blackName;
+    const humanResult = game.chess.move({ from: moveStr.slice(0, 2), to: moveStr.slice(2, 4), promotion: 'q' });
+    if (!humanResult) return msg.reply('❌ Invalid move!');
 
     // Human move resolved. If the game's over now, report it and stop.
     if (game.chess.isGameOver()) {
       chessGames.delete(chatId);
-      return msg.reply(`${game.chess.ascii()}\n\n${describeGameOver(game.chess, game.whiteName, game.blackName)}`);
+      return sendBoard(msg, chat, game.chess, {
+        lastMove: { from: humanResult.from, to: humanResult.to },
+        caption: `${moverName} played *${humanResult.san}*\n\n${describeGameOver(game.chess, game.whiteName, game.blackName)}`,
+      });
     }
 
     // ── vs bot: it replies with its own move in this same message ─────────
@@ -130,25 +156,34 @@ module.exports = {
       if (!aiMove) {
         // Shouldn't happen — isGameOver() above already ruled out "no moves".
         chessGames.delete(chatId);
-        return msg.reply(`${game.chess.ascii()}\n\n❌ ${BOT_NAME} couldn't find a move — ending the game.`);
+        return sendBoard(msg, chat, game.chess, {
+          lastMove: { from: humanResult.from, to: humanResult.to },
+          caption: `❌ ${BOT_NAME} couldn't find a move — ending the game.`,
+        });
       }
       game.chess.move(aiMove);
+      const aiLastMove = { from: aiMove.from, to: aiMove.to };
 
       if (game.chess.isGameOver()) {
         chessGames.delete(chatId);
-        return msg.reply(
-          `🤖 ${BOT_NAME} plays *${aiMove.san}*\n\n${game.chess.ascii()}\n\n${describeGameOver(game.chess, game.whiteName, game.blackName)}`
-        );
+        return sendBoard(msg, chat, game.chess, {
+          lastMove: aiLastMove,
+          caption: `${moverName} played *${humanResult.san}*\n🤖 ${BOT_NAME} played *${aiMove.san}*\n\n${describeGameOver(game.chess, game.whiteName, game.blackName)}`,
+        });
       }
 
-      return msg.reply(
-        `🤖 ${BOT_NAME} plays *${aiMove.san}*\n\n${game.chess.ascii()}\n\n${game.chess.isCheck() ? '⚠️ Check!\n' : ''}Your turn, ${game.whiteName}!`
-      );
+      return sendBoard(msg, chat, game.chess, {
+        lastMove: aiLastMove,
+        caption: `${moverName} played *${humanResult.san}*\n🤖 ${BOT_NAME} played *${aiMove.san}*\n\n${game.chess.isCheck() ? '⚠️ Check!\n' : ''}Your turn, ${game.whiteName}! Use *.move [e2e4]*.`,
+      });
     }
 
     // ── vs person ───────────────────────────────────────────────────────
     const nextName = game.chess.turn() === 'w' ? game.whiteName : game.blackName;
-    return msg.reply(`${game.chess.ascii()}\n\n${game.chess.isCheck() ? '⚠️ Check!\n' : ''}*${nextName}'s* turn!`);
+    return sendBoard(msg, chat, game.chess, {
+      lastMove: { from: humanResult.from, to: humanResult.to },
+      caption: `${moverName} played *${humanResult.san}*\n\n${game.chess.isCheck() ? '⚠️ Check!\n' : ''}*${nextName}'s* turn! Use *.move [e2e4]*.`,
+    });
   },
 
   // Ends an in-progress game as a forfeit/resignation by `playerId` in
