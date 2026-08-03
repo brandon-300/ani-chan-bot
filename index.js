@@ -554,6 +554,8 @@ const HEAVY_COMMANDS = new Set([
   'ig', 'ttk', 'yt', 'x', 'fb', 'play',
   // converter.js — ffmpeg / media processing
   'sticker', 'take', 'toimg', 'tovid', 'rotate', 'tomp3', 'tovn', 'flip', 'resize', 'tourl',
+  // fun.js — ffmpeg + headless-browser caption rendering
+  'meme',
   // ai.js — external AI/API calls
   'copilot', 'gpt', 'imagine', 'upscale', 'translate', 'transcribe',
   // search.js — external API/scraping calls

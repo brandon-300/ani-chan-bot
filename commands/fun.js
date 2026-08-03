@@ -1,4 +1,65 @@
-const { pick, rand, mentionName } = require('../utils/helpers');
+const { MessageMedia } = require('whatsapp-web.js');
+const ffmpeg = require('fluent-ffmpeg');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+const { pick, rand, mentionName, safeGetChat, safeGetQuotedMessage } = require('../utils/helpers');
+const { renderMemeImage } = require('../utils/memeRender');
+
+// ─── Local media helpers for .meme (image/sticker in -> image/sticker out) ───
+// Same small helpers already used the same way in commands/converter.js —
+// kept local here rather than shared, matching this project's existing
+// pattern of each command file owning its own tiny media-plumbing helpers.
+const TMP = os.tmpdir();
+
+function tmpFile(ext) {
+  return path.join(TMP, `ani-chan_meme_${Date.now()}_${Math.random().toString(36).slice(2)}.${ext}`);
+}
+
+function runFfmpeg(inputPath, outputPath, outputOptions = []) {
+  return new Promise((resolve, reject) => {
+    ffmpeg(inputPath)
+      .outputOptions(outputOptions)
+      .output(outputPath)
+      .on('end', resolve)
+      .on('error', reject)
+      .run();
+  });
+}
+
+function cleanupFiles(...files) {
+  for (const file of files) {
+    try {
+      if (fs.existsSync(file)) fs.unlinkSync(file);
+    } catch {}
+  }
+}
+
+function mimeBase(mime = '') {
+  return mime.split(';')[0].toLowerCase();
+}
+
+function mimeToExt(mime = '') {
+  const map = {
+    'image/jpeg': 'jpg',
+    'image/jpg': 'jpg',
+    'image/png': 'png',
+    'image/webp': 'webp',
+    'image/gif': 'gif',
+  };
+  return map[mimeBase(mime)] || 'png';
+}
+
+async function getMemeTargetMessage(msg) {
+  if (!msg.hasQuotedMsg) return msg;
+  try {
+    const quoted = await safeGetQuotedMessage(msg);
+    return quoted || msg;
+  } catch (err) {
+    console.error('meme: getMemeTargetMessage failed:', err.message);
+    return 'ERROR';
+  }
+}
 
 const TRUTHS = [
   "What's your most embarrassing moment?",
@@ -215,5 +276,100 @@ module.exports = {
     const special = Math.random() > 0.8 ? ' 🃏 *+4 Wild!*' : '';
     const contact = await msg.getContact();
     msg.reply(`🎴 *UNO!*\n\n${contact.pushname} plays: *${card}*${special}\n\nNext player's turn!`);
+  },
+
+  // .meme <text>  |  .meme <top text> | <bottom text>
+  // Reply to a sticker or an image. Bakes bold white/black-outline caption
+  // text onto it, classic meme-generator style — a sticker in gets a
+  // sticker back, an image in gets an image back. Use "|" to split top and
+  // bottom captions; with no "|" the whole text is one caption at the
+  // bottom (matches the single-caption format, e.g. the "type shii" style).
+  async meme(client, msg, args) {
+    const rawText = args.join(' ').trim();
+    if (!rawText) {
+      return msg.reply('❌ Usage: .meme <text>  (reply to a sticker or image)\nTip: use "|" for top + bottom text — .meme top text | bottom text');
+    }
+
+    const targetMsg = await getMemeTargetMessage(msg);
+    if (targetMsg === 'ERROR') return msg.reply('⚠️ WhatsApp connection hiccup — please try again in a moment.');
+    if (!targetMsg.hasMedia) {
+      return msg.reply('❌ Reply to a sticker or image with .meme <text>');
+    }
+
+    const media = await targetMsg.downloadMedia().catch(() => null);
+    if (!media) return msg.reply('❌ Failed to download the media to caption.');
+
+    const base = mimeBase(media.mimetype);
+    const isSticker = base.includes('webp');
+    const isImage = base.startsWith('image');
+    if (!isImage) {
+      return msg.reply('❌ .meme only works on images or stickers right now — reply to one of those.');
+    }
+
+    let topText = '';
+    let bottomText = rawText;
+    if (rawText.includes('|')) {
+      const parts = rawText.split('|');
+      topText = parts[0].trim();
+      bottomText = parts.slice(1).join('|').trim();
+    }
+
+    msg.reply('🎨 Captioning...');
+
+    let sourceBuffer = Buffer.from(media.data, 'base64');
+    let sourceMime = media.mimetype;
+    let stillInputPath = null;
+    let stillOutputPath = null;
+
+    try {
+      // Animated stickers: rather than hand an animated webp straight to a
+      // fresh headless page and hope Chromium settles on a sensible frame,
+      // use ffmpeg to pull one guaranteed still frame first — the same
+      // "-frames:v 1" approach commands/converter.js's .toimg already uses
+      // for the same reason. Static webp/png/jpg skip straight to rendering.
+      if (isSticker) {
+        stillInputPath = tmpFile(mimeToExt(media.mimetype));
+        stillOutputPath = tmpFile('png');
+        fs.writeFileSync(stillInputPath, sourceBuffer);
+        await runFfmpeg(stillInputPath, stillOutputPath, ['-frames:v', '1']);
+        sourceBuffer = fs.readFileSync(stillOutputPath);
+        sourceMime = 'image/png';
+      }
+
+      const composedPng = await renderMemeImage(client, sourceBuffer, sourceMime, { topText, bottomText });
+
+      const chat = await safeGetChat(msg);
+      if (!chat) return;
+
+      if (isSticker) {
+        const pngPath = tmpFile('png');
+        const webpPath = tmpFile('webp');
+        try {
+          fs.writeFileSync(pngPath, composedPng);
+          await runFfmpeg(pngPath, webpPath, [
+            '-vcodec', 'libwebp',
+            '-vf', 'scale=512:512:force_original_aspect_ratio=decrease:flags=lanczos,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=0x00000000,format=rgba',
+            '-preset', 'default',
+            '-q:v', '80',
+          ]);
+          const stickerMedia = new MessageMedia('image/webp', fs.readFileSync(webpPath).toString('base64'));
+          await chat.sendMessage(stickerMedia, {
+            sendMediaAsSticker: true,
+            stickerName: 'AniChan Bot',
+            stickerAuthor: 'Brandon',
+          });
+        } finally {
+          cleanupFiles(pngPath, webpPath);
+        }
+      } else {
+        const outMedia = new MessageMedia('image/png', composedPng.toString('base64'));
+        await chat.sendMessage(outMedia);
+      }
+    } catch (err) {
+      console.error('meme command failed:', err.message);
+      msg.reply('❌ Failed to create meme: ' + err.message);
+    } finally {
+      cleanupFiles(stillInputPath, stillOutputPath);
+    }
   },
 };
