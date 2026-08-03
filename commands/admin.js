@@ -1,6 +1,6 @@
 const Group = require('../models/Group');
 const User = require('../models/User');
-const { isAdmin, botIsAdmin, mentionName, isOwner, safeGetChat, safeGetQuotedMessage, resolveNameById, withRetry } = require('../utils/helpers');
+const { isAdmin, botIsAdmin, mentionName, isOwner, safeGetChat, safeGetQuotedMessage, resolveNameById, withRetry, decodeIdKey } = require('../utils/helpers');
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 async function requireAdmin(msg) {
@@ -387,7 +387,12 @@ async tagall(client, msg, args) {
     if (!group?.activityLog?.size) return msg.reply('📊 No activity data yet.');
 
     const botId = client.info.wid._serialized;
+    // activityLog keys are stored "~"-encoded (see encodeIdKey in
+    // utils/helpers.js — Mongoose's Map type rejects "." in keys outright,
+    // and every WhatsApp id contains one). Decode back to real ids before
+    // comparing to botId or resolving names.
     const sorted = [...(group.activityLog || new Map())]
+      .map(([key, count]) => [decodeIdKey(key), count])
       .filter(([id]) => id !== botId)
       .sort((a, b) => b[1] - a[1])
       .slice(0, 10);
@@ -418,7 +423,11 @@ async tagall(client, msg, args) {
       .catch(err => { console.error('inactive: Group lookup failed:', err.message); return null; });
     const botId = client.info.wid._serialized;
     const allIds = chat.participants.map(p => p.id._serialized).filter(id => id !== botId);
-    const log = group?.activityLog || new Map();
+    // activityLog keys are stored "~"-encoded (see encodeIdKey in
+    // utils/helpers.js — Mongoose's Map type rejects "." in keys outright).
+    // Decode into a real id -> count map before doing any id comparisons.
+    const rawLog = group?.activityLog || new Map();
+    const log = new Map([...rawLog].map(([key, count]) => [decodeIdKey(key), count]));
 
     const inactive = allIds.filter(id => !log.has(id) || log.get(id) < 5).slice(0, 10);
     // Same fix as .activity — resolve to real names instead of showing raw ids.

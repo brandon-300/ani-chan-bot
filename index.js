@@ -5,7 +5,7 @@ const mongoose = require('mongoose');
 const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
-const { safeGetQuotedMessage, safeGetChat, safeGetContact, resolveSenderName, withRetry } = require('./utils/helpers');
+const { safeGetQuotedMessage, safeGetChat, safeGetContact, resolveSenderName, withRetry, encodeIdKey } = require('./utils/helpers');
 
 // Shared with the LocalAuth session path below and with the browser-lock
 // recovery helpers further down, so both always agree on the same binary
@@ -819,11 +819,46 @@ client.on('message', async (msg) => {
     const senderId = contact.id._serialized;
 
     const Group = require('./models/Group');
-    await withRetry(() => Group.findOneAndUpdate(
+
+    // messageCount is a plain top-level Number, so it's always safe to bump
+    // atomically with $inc.
+    //
+    // activityLog is NOT safe to touch the same way. WhatsApp ids like
+    // "234801234567@c.us" contain a literal ".", and Mongo's update-operator
+    // dot-path syntax splits on every "." to address nested fields. Building
+    // the update path as a string — `activityLog.${senderId}` — silently
+    // turned "activityLog.234801234567@c.us" into the nested path
+    // activityLog -> "234801234567@c" -> "us", writing an object like
+    // { us: 19 } instead of a plain number. That corrupts the Map (schema is
+    // `Map of Number`) and made every later .save() on that Group document —
+    // .setrules, antilink toggles, welcome/leave messages, anything — fail
+    // with a "Cast to Number failed ... at path activityLog.$*" validation
+    // error, since Mongoose validates the whole Map on every save.
+    //
+    // Fix: bump messageCount atomically, then update activityLog through
+    // Mongoose's own Map API (group.activityLog.set(...)) and save() the
+    // document instead of a dot-delimited update-path string.
+    //
+    // One more wrinkle: Mongoose's Map type hard-rejects ANY key containing
+    // "." the moment it's fully cast (.set() on a document, or a $set
+    // update) — it throws 'Mongoose maps do not support keys that contain
+    // "."'. That's stricter than what let the original bug's raw $inc path
+    // slip a corrupted entry in, so a real WhatsApp id can never be stored
+    // as a literal Map key at all. encodeIdKey() swaps "." for "~" (which
+    // never appears in a WhatsApp id) before it touches the Map; decode it
+    // back with decodeIdKey() anywhere a key needs to be treated as a real
+    // id again (see .activity/.inactive in commands/admin.js).
+    const group = await withRetry(() => Group.findOneAndUpdate(
       { id: chat.id._serialized },
-      { $inc: { messageCount: 1, [`activityLog.${senderId}`]: 1 } },
-      { upsert: true }
+      { $inc: { messageCount: 1 } },
+      { upsert: true, new: true }
     ));
+
+    const key = encodeIdKey(senderId);
+    const currentCount = group.activityLog.get(key) || 0;
+    group.activityLog.set(key, currentCount + 1);
+    group.markModified('activityLog');
+    await withRetry(() => group.save());
   } catch (err) {
     console.error('Activity tracking error:', err.message);
   }

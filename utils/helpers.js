@@ -229,6 +229,35 @@ function isOwner(id) {
   return id === process.env.OWNER_NUMBER;
 }
 
+// ─── Moderators ──────────────────────────────────────────────────────────────
+// Bot-level moderators, distinct from WhatsApp group admins (isAdmin above) —
+// people the owner trusts bot-wide, across every group, the same way
+// OWNER_NUMBER already works. Configured as a comma-separated list of
+// WhatsApp ids in MOD_NUMBERS; empty/unset means no mods configured yet.
+// The owner always counts as a mod too.
+function getModIds() {
+  return (process.env.MOD_NUMBERS || '').split(',').map(s => s.trim()).filter(Boolean);
+}
+
+function isMod(id) {
+  return isOwner(id) || getModIds().includes(id);
+}
+// ─── Map-Safe Key Encoding ─────────────────────────────────────────────────────
+// Mongoose's Map schema type hard-rejects any key containing "." — it throws
+// 'Mongoose maps do not support keys that contain "."' from checkValidKey()
+// any time a Map value is fully cast (.set() on a document, $set updates).
+// WhatsApp ids like "234801234567@c.us" always contain one, so they can never
+// be used as literal Map keys (activityLog: Map of Number). "~" never appears
+// in a WhatsApp id, so swapping it in for "." is a safe, reversible encoding.
+// Encode before writing an id as a Map key; decode a Map key back before
+// treating it as a real id again (comparing to botId, resolveNameById(), etc).
+function encodeIdKey(id) {
+  return String(id).replace(/\./g, '~');
+}
+function decodeIdKey(key) {
+  return String(key).replace(/~/g, '.');
+}
+
 // ─── Resolve a display name from a raw WhatsApp id ────────────────────────────
 // Guilds (and anything else storing bare ids like leaderId/members[]) only
 // have the WhatsApp id string to go on, not a live Contact object. This
@@ -286,6 +315,8 @@ module.exports = {
   rand,
   pick,
   isAdmin,
+  isMod,
+  getModIds,
   botIsAdmin,
   addXP,
   rollTier,
@@ -302,5 +333,7 @@ module.exports = {
   safeGetQuotedMessage,
   safeGetContact,
   withRetry,
-  resolveSenderName
+  resolveSenderName,
+  encodeIdKey,
+  decodeIdKey
 };

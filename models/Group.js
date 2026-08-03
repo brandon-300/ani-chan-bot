@@ -21,6 +21,7 @@ const GroupSchema = new mongoose.Schema({
   lastDrop: { type: Number, default: 0 },
   messageCount: { type: Number, default: 0 },
   activityLog: { type: Map, of: Number, default: {} }, // userId -> message count
+  rules: { type: String, default: null }, // null = not set yet, per .rules/.setrules
 });
 
 module.exports = mongoose.model('Group', GroupSchema);
