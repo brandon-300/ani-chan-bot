@@ -1,7 +1,7 @@
 const User = require('../models/User');
 const Guild = require('../models/Guild');
 const { CardCatalogue, OwnedCard } = require('../models/Card');
-const { formatNum, formatCooldown, rand, pick, tierEmoji, mentionName, safeGetChat, isOwner, isMod } = require('../utils/helpers');
+const { formatNum, formatCooldown, rand, pick, tierEmoji, mentionName, mentionTag, safeGetChat, isOwner, isMod } = require('../utils/helpers');
 const { battleGames } = require('./games');
 const { checkAchievements, formatUnlockNotice, ACHIEVEMENTS } = require('../utils/achievements');
 
@@ -587,9 +587,13 @@ async lottery(client, msg, args) {
   // .roast
   async roast(client, msg, args) {
     const mentioned = await msg.getMentions();
-    const target = mentioned.length ? `@${mentionName(mentioned[0])}` : 'you';
+    const target = mentioned.length ? `@${mentionTag(mentioned[0])}` : 'you';
     const line = pick(ROAST_LINES);
-    msg.reply(`🔥 *Roasting ${target}*\n\n${line}`);
+    msg.reply(
+      `🔥 *Roasting ${target}*\n\n${line}`,
+      undefined,
+      mentioned.length ? { mentions: [mentioned[0].id._serialized] } : undefined
+    );
   },
 
   // .gamble [amount]

@@ -3,7 +3,7 @@ const { checkAchievements, formatUnlockNotice } = require('../utils/achievements
 const { MessageMedia } = require('whatsapp-web.js');
 const User = require('../models/User');
 const Group = require('../models/Group');
-const { tierEmoji, rollTier, formatNum, pick, mentionName, generateUniqueCode, safeGetChat, cardValue, tierAbove } = require('../utils/helpers');
+const { tierEmoji, rollTier, formatNum, pick, mentionName, mentionTag, generateUniqueCode, safeGetChat, cardValue, tierAbove } = require('../utils/helpers');
 const crypto = require('crypto');
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -756,7 +756,11 @@ if (existing)
     card.timesTraded += 1;
 
     await Promise.all([buyerUser.save(), sellerUser.save(), card.save()]);
-    msg.reply(`✅ Sold *${card.name}* [${card.tier}] to @${mentionName(buyer)} for 💰 ${price}!`);
+    msg.reply(
+      `✅ Sold *${card.name}* [${card.tier}] to @${mentionTag(buyer)} for 💰 ${price}!`,
+      undefined,
+      { mentions: [buyer.id._serialized] }
+    );
   },
 
   // .tc [@user] [your_index] [their_index] — propose a trade (Phase 6: safe
@@ -880,7 +884,11 @@ if (existing)
     if (!trade) return msg.reply('❌ You have no pending trade offers.');
 
     await trade.deleteOne();
-    msg.reply(`❌ ${mentionName(contact)} declined the trade offer.`, undefined, { mentions: [trade.initiatorId] });
+    msg.reply(
+      `❌ ${mentionName(contact)} declined the trade offer with @${trade.initiatorId.split('@')[0]}.`,
+      undefined,
+      { mentions: [trade.initiatorId] }
+    );
   },
 
   // .lendcard — lend your top card to group temporarily

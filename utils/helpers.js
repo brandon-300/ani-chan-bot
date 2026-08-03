@@ -225,6 +225,19 @@ function mentionName(contact) {
   return contact.name || contact.pushname || contact.number || 'Unknown';
 }
 
+// ─── Real WhatsApp @mention text ──────────────────────────────────────────────
+// A message only gets an actual tappable @mention when its TEXT contains "@"
+// followed by the exact digits from the contact's JID (contact.id.user) —
+// that's what WhatsApp itself matches against the separate `mentions` array
+// passed to sendMessage/reply to render the tag. mentionName() above returns
+// a *display* name instead, for read-only text (leaderboards, etc.) — used
+// as "@${mentionName(c)}" it looks like a mention but isn't one, since the
+// digits WhatsApp needs aren't actually there; it just prints as plain text.
+// Use this whenever the goal is a real, tappable mention.
+function mentionTag(contact) {
+  return contact.id.user;
+}
+
 function isOwner(id) {
   return id === process.env.OWNER_NUMBER;
 }
@@ -326,6 +339,7 @@ module.exports = {
   tierAbove,
   cardValue,
   mentionName,
+  mentionTag,
   isOwner,
   resolveNameById,
   generateUniqueCode,

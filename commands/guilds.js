@@ -1,6 +1,6 @@
 const Guild = require('../models/Guild');
 const User = require('../models/User');
-const { formatNum, mentionName, resolveNameById } = require('../utils/helpers');
+const { formatNum, mentionName, mentionTag, resolveNameById } = require('../utils/helpers');
 
 // ─── Shared: leave/kick cleanup ────────────────────────────────────────────────
 // Removes a user from whatever guild they're in and keeps the guild's own
@@ -194,7 +194,11 @@ module.exports = {
 
     guild.pendingInvites.push(target.id._serialized);
     await guild.save();
-    msg.reply(`📨 Invited @${mentionName(target)} to *${guild.name}*! They can type *.guild accept* to join.`);
+    msg.reply(
+      `📨 Invited @${mentionTag(target)} to *${guild.name}*! They can type *.guild accept* to join.`,
+      undefined,
+      { mentions: [target.id._serialized] }
+    );
   },
 
   // .guild accept

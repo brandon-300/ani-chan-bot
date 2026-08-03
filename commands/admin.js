@@ -1,6 +1,6 @@
 const Group = require('../models/Group');
 const User = require('../models/User');
-const { isAdmin, botIsAdmin, mentionName, isOwner, safeGetChat, safeGetQuotedMessage, resolveNameById, withRetry, decodeIdKey } = require('../utils/helpers');
+const { isAdmin, botIsAdmin, mentionName, mentionTag, isOwner, safeGetChat, safeGetQuotedMessage, resolveNameById, withRetry, decodeIdKey } = require('../utils/helpers');
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 async function requireAdmin(msg) {
@@ -110,10 +110,10 @@ async function onJoin(client, notification) {
   if (!recipients.length) return;
 
   let welcomeMsg = group.welcomeMsg || '👋 Welcome to the group, @user!';
-  const tags = recipients.map(c => `@${mentionName(c)}`).join(' ');
+  const tags = recipients.map(c => `@${mentionTag(c)}`).join(' ');
   welcomeMsg = welcomeMsg.replace('@user', tags);
 
-  await chat.sendMessage(welcomeMsg, { mentions: recipients });
+  await chat.sendMessage(welcomeMsg, { mentions: recipients.map(c => c.id._serialized) });
 }
 
 async function onLeave(client, notification) {
@@ -143,10 +143,10 @@ async function onLeave(client, notification) {
   if (!group?.leave) return;
 
   let leaveMsg = group.leaveMsg || '👋 @user has left the group.';
-  const tags = recipients.map(c => `@${mentionName(c)}`).join(' ');
+  const tags = recipients.map(c => `@${mentionTag(c)}`).join(' ');
   leaveMsg = leaveMsg.replace('@user', tags);
 
-  await chat.sendMessage(leaveMsg, { mentions: recipients });
+  await chat.sendMessage(leaveMsg, { mentions: recipients.map(c => c.id._serialized) });
 }
 
 module.exports = {
@@ -166,9 +166,14 @@ module.exports = {
     for (const user of mentioned) {
       try {
         await chat.removeParticipants([user.id._serialized]);
-        msg.reply(`👢 @${mentionName(user)} has been kicked.`);
+        // Note: WhatsApp resolves a mention against who's currently in the
+        // group. This fires right after removal, so — same honest caveat
+        // as everywhere else in this file — it's not fully certain this
+        // renders as a tappable tag versus falling back to plain digits
+        // for someone who's just been removed; best-effort either way.
+        msg.reply(`👢 @${mentionTag(user)} has been kicked.`, undefined, { mentions: [user.id._serialized] });
       } catch {
-        msg.reply(`❌ Could not kick @${mentionName(user)}.`);
+        msg.reply(`❌ Could not kick @${mentionTag(user)}.`, undefined, { mentions: [user.id._serialized] });
       }
     }
   },
@@ -242,13 +247,13 @@ module.exports = {
     const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
     if (!chat) return;
     chat.sendMessage(
-       `⚠️ *Warning* for @${mentionName(target)}\n\nReason: ${reason}\nTotal warns: ${user.warns}/3\n${user.warns >= 3 ? '🔴 Auto-kick threshold reached!' : ''}`,
-      { mentions: [target] }
+       `⚠️ *Warning* for @${mentionTag(target)}\n\nReason: ${reason}\nTotal warns: ${user.warns}/3\n${user.warns >= 3 ? '🔴 Auto-kick threshold reached!' : ''}`,
+      { mentions: [target.id._serialized] }
     );
 
     if (user.warns >= 3 && await botIsAdmin(msg)) {
       await chat.removeParticipants([target.id._serialized]);
-      chat.sendMessage(`👢 @${mentionName(target)} was auto-kicked after 3 warnings.`, { mentions: [target] });
+      chat.sendMessage(`👢 @${mentionTag(target)} was auto-kicked after 3 warnings.`, { mentions: [target.id._serialized] });
     }
   },
 
@@ -261,7 +266,7 @@ module.exports = {
     const user = await User.findOrCreate(mentioned[0].id._serialized);
     user.warns = 0;
     await user.save();
-     msg.reply(`✅ Warnings reset for @${mentionName(mentioned[0])}.`);
+     msg.reply(`✅ Warnings reset for @${mentionTag(mentioned[0])}.`, undefined, { mentions: [mentioned[0].id._serialized] });
   },
 
   // .groupstats
@@ -383,7 +388,7 @@ module.exports = {
     if (!chat) return;
     try {
       await chat.promoteParticipants([mentioned[0].id._serialized]);
-       msg.reply(`⬆️ @${mentionName(mentioned[0])} is now an admin!`);
+       msg.reply(`⬆️ @${mentionTag(mentioned[0])} is now an admin!`, undefined, { mentions: [mentioned[0].id._serialized] });
     } catch {
       msg.reply('❌ Could not promote.');
     }
@@ -401,7 +406,7 @@ module.exports = {
     if (!chat) return;
     try {
       await chat.demoteParticipants([mentioned[0].id._serialized]);
-      msg.reply(`⬇️ @${mentionName(mentioned[0])} is no longer an admin.`);
+      msg.reply(`⬇️ @${mentionTag(mentioned[0])} is no longer an admin.`, undefined, { mentions: [mentioned[0].id._serialized] });
     } catch {
       msg.reply('❌ Could not demote.');
     }
@@ -567,6 +572,6 @@ module.exports.handleBlacklist = async (msg) => {
 
     await msg.delete(true);
     const contact = await msg.getContact();
-    chat.sendMessage(`🚫 @${mentionName(contact)} used a blacklisted word.`, { mentions: [contact] });
+    chat.sendMessage(`🚫 @${mentionTag(contact)} used a blacklisted word.`, { mentions: [contact.id._serialized] });
   } catch {}
 };
