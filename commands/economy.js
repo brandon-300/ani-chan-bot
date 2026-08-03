@@ -1,9 +1,36 @@
 const User = require('../models/User');
 const Guild = require('../models/Guild');
 const { CardCatalogue, OwnedCard } = require('../models/Card');
-const { formatNum, formatCooldown, rand, pick, tierEmoji, mentionName, safeGetChat } = require('../utils/helpers');
+const { formatNum, formatCooldown, rand, pick, tierEmoji, mentionName, safeGetChat, isOwner, isMod } = require('../utils/helpers');
 const { battleGames } = require('./games');
 const { checkAchievements, formatUnlockNotice, ACHIEVEMENTS } = require('../utils/achievements');
+
+// ─── Fancy Unicode text for the .profile card ─────────────────────────────────
+// Generated from plain ASCII at runtime instead of hardcoding the actual
+// glyphs in source — same visual result, but avoids any risk of a
+// mistyped/mis-copied Unicode character sitting invisibly in the file. Both
+// are simple fixed offsets into the "Mathematical Alphanumeric Symbols"
+// Unicode block; doubleStruck has a handful of letters (C, H, N, P, Q, R, Z)
+// that live at their own legacy Letter-like Symbol codepoints instead of the
+// main block, which is just how Unicode assigned them.
+function boldSans(text) {
+  return [...text].map(ch => {
+    const code = ch.codePointAt(0);
+    if (code >= 65 && code <= 90) return String.fromCodePoint(0x1D5D4 + (code - 65));   // A-Z
+    if (code >= 97 && code <= 122) return String.fromCodePoint(0x1D5EE + (code - 97));  // a-z
+    return ch;
+  }).join('');
+}
+function doubleStruck(text) {
+  const legacy = { C: 0x2102, H: 0x210D, N: 0x2115, P: 0x2119, Q: 0x211A, R: 0x211D, Z: 0x2124 };
+  return [...text].map(ch => {
+    if (legacy[ch]) return String.fromCodePoint(legacy[ch]);
+    const code = ch.codePointAt(0);
+    if (code >= 65 && code <= 90) return String.fromCodePoint(0x1D538 + (code - 65));
+    if (code >= 97 && code <= 122) return String.fromCodePoint(0x1D552 + (code - 97));
+    return ch;
+  }).join('');
+}
 
 const SHOP_ITEMS = [
   { name: 'Health Potion', price: 200, emoji: '🧪', effect: 'Restore HP in battles' },
@@ -254,9 +281,18 @@ async lottery(client, msg, args) {
 
   // .profile
   async profile(client, msg, args) {
+    // React first, then reply — a failed reaction (flaky connection) should
+    // never block the actual profile reply.
+    try {
+      await msg.react('👤');
+    } catch (err) {
+      console.error('Profile react failed:', err.message);
+    }
+
     const mentioned = await msg.getMentions();
     const contact = mentioned.length ? mentioned[0] : await msg.getContact();
-    const user = await User.findOrCreate(contact.id._serialized, contact.pushname);
+    const targetId = contact.id._serialized;
+    const user = await User.findOrCreate(targetId, contact.pushname);
 
     let guildLabel = 'None';
     if (user.guildId) {
@@ -271,13 +307,53 @@ async lottery(client, msg, args) {
       }
     }
 
-    msg.reply(
-      `👤 *${user.name}'s Profile*\n\n` +
-      `📛 Name: ${user.name}\n🎂 Age: ${user.age || 'Not set'}\n📝 Bio: ${user.bio}\n` +
-      `⚡ Level: ${user.level} (${user.xp} XP)\n💰 Coins: ${formatNum(user.coins)}\n🔮 Orbs: ${user.orbs}\n` +
-      `🃏 Cards: ${user.cards.length}\n🏰 Guild: ${guildLabel}\n` +
-      `🏅 Title: ${user.profile.title}`
-    );
+    // Role: bot-wide Owner/Mod (see isOwner/isMod in utils/helpers.js) takes
+    // priority over being a WhatsApp admin in whichever group this was sent
+    // in — which only applies at all when this was sent in a group, and only
+    // reflects THAT group, not a bot-wide status.
+    let role = 'User';
+    if (isOwner(targetId)) {
+      role = 'Owner';
+    } else if (isMod(targetId)) {
+      role = 'Mod';
+    } else {
+      const chat = await msg.getChat().catch(() => null);
+      if (chat?.isGroup) {
+        const participant = chat.participants.find(p => p.id._serialized === targetId);
+        if (participant?.isAdmin || participant?.isSuperAdmin) role = 'Admin';
+      }
+    }
+
+    const registered = new Date(user.createdAt)
+      .toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+
+    // No gym-badge or ban system exists yet (Pokémon commands and a
+    // moderation ban are both still on the to-build list) — shown as
+    // fixed defaults for every profile until those land for real.
+    const gymBadges = 'None';
+    const banned = 'No';
+
+    const line = (label, value) => `ꕥ ${boldSans(label)}: ${value}`;
+
+    const card = [
+      `╭━━━★彡 ${doubleStruck('PROFILE')} 彡★━━━╮`,
+      '',
+      line('Name', user.name),
+      line('Age', user.age || 'Not set'),
+      line('Bio', user.bio),
+      line('Registered', registered),
+      line('Role', role),
+      line('Guild', guildLabel),
+      line('Gym Badges', gymBadges),
+      line('Banned', banned),
+      line('Level', `${user.level} (${user.xp} XP)`),
+      line('Coins', formatNum(user.coins)),
+      line('Orbs', user.orbs),
+      line('Cards', user.cards.length),
+      line('Title', user.profile.title),
+    ].join('\n');
+
+    msg.reply(card);
   },
 
 // .edit — show editable fields

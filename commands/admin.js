@@ -23,45 +23,135 @@ async function getOrCreateGroup(chatId) {
   return Group.findOneAndUpdate({ id: chatId }, {}, { upsert: true, new: true });
 }
 
+// ─── Participant snapshot (fallback for empty join/leave recipients) ─────────
+// notification.getRecipients() resolves from WhatsApp's own `recipients`
+// field on the raw event. That's populated reliably when an admin explicitly
+// adds someone ('add') or for a linked-community join ('linked_group_join'),
+// but WhatsApp Web commonly sends it EMPTY for someone joining via invite
+// link ('invite') — a gap in what WhatsApp itself sends, not something a
+// better call on our end can fix directly. That's the concrete reason
+// welcome messages "didn't work" specifically for invite-link joins even
+// though the code looked correct.
+//
+// Workaround: keep our own snapshot of each group's participant list. If the
+// event's own recipients come back empty, diff the chat's current
+// (post-join/leave) participant list against the last snapshot taken for
+// that chat to figure out who actually joined or left, then resolve those
+// ids to Contacts ourselves. Assumes chat.participants already reflects the
+// join/leave by the time the notification fires — true in every case this
+// was checked against, but flagging it since it's WhatsApp Web's internal
+// timing, not something this library or this code controls.
+const lastParticipants = new Map(); // chatId -> Set<participantId>
+
+// Seeds the snapshot for every group the bot is currently in. Called once
+// from index.js's 'ready' handler (same pattern as _initCardDrops in
+// commands/cards.js) so the very first join/leave event for each group
+// already has a baseline to diff against, instead of either treating every
+// existing member as a new joiner or having nothing to compare a leave to.
+async function _seedParticipants(client) {
+  try {
+    const chats = await client.getChats();
+    for (const chat of chats) {
+      if (!chat.isGroup) continue;
+      lastParticipants.set(
+        chat.id._serialized,
+        new Set(chat.participants.map(p => p.id._serialized))
+      );
+    }
+    console.log(`👥 Seeded participant snapshots for ${lastParticipants.size} group(s)`);
+  } catch (err) {
+    console.error('Participant snapshot failed:', err.message);
+  }
+}
+
+// Shared by onJoin/onLeave: returns the affected Contacts, falling back to
+// diffing against the snapshot when the event itself gave us nothing, then
+// always refreshes the snapshot to the chat's current membership so the
+// next join/leave event has an up-to-date baseline — this runs regardless
+// of whether welcome/leave messages are even turned on for this group, so
+// the snapshot never goes stale just because a toggle is off.
+async function resolveJoinLeaveRecipients(client, chat, notification, { isJoin }) {
+  const chatId = chat.id._serialized;
+  const currentIds = chat.participants.map(p => p.id._serialized);
+  const previous = lastParticipants.get(chatId);
+  lastParticipants.set(chatId, new Set(currentIds));
+
+  let recipients = await notification.getRecipients();
+  if (recipients.length || !previous) return recipients;
+
+  const currentSet = new Set(currentIds);
+  const diffIds = isJoin
+    ? currentIds.filter(id => !previous.has(id))
+    : [...previous].filter(id => !currentSet.has(id));
+  if (!diffIds.length) return [];
+
+  const resolved = await Promise.all(
+    diffIds.map(id => client.getContactById(id).catch(() => null))
+  );
+  return resolved.filter(Boolean);
+}
+
 // ─── Welcome/Leave Event Handlers (called from index.js) ─────────────────────
 async function onJoin(client, notification) {
   const chat = await notification.getChat();
+
+  // notification.getContact() resolves to `author` — the person who
+  // PERFORMED the join action, not the person who actually joined. For the
+  // 'add' subtype (an admin adds someone) that's the admin, not the new
+  // member, so this was welcoming the wrong person. resolveJoinLeaveRecipients
+  // always resolves the actual joiner(s), correct for every join path:
+  // admin-add, invite link, or linked-group join (see its comment above for
+  // why the invite-link path specifically needed a fallback beyond just
+  // calling notification.getRecipients() directly).
+  const recipients = await resolveJoinLeaveRecipients(client, chat, notification, { isJoin: true });
+
   const group = await Group.findOne({ id: chat.id._serialized });
   if (!group?.welcome) return;
+  if (!recipients.length) return;
 
-  const contact = await notification.getContact();
-  const name = contact.pushname || contact.number;
   let welcomeMsg = group.welcomeMsg || '👋 Welcome to the group, @user!';
-welcomeMsg = welcomeMsg.replace('@user', `@${mentionName(contact)}`);
+  const tags = recipients.map(c => `@${mentionName(c)}`).join(' ');
+  welcomeMsg = welcomeMsg.replace('@user', tags);
 
-  await chat.sendMessage(welcomeMsg, { mentions: [contact] });
+  await chat.sendMessage(welcomeMsg, { mentions: recipients });
 }
 
 async function onLeave(client, notification) {
   const chat = await notification.getChat();
-  const contact = await notification.getContact();
+
+  // Same author-vs-recipient issue as onJoin above, plus the same
+  // invite-link-style empty-recipients gap can happen on the leave side too
+  // (e.g. someone leaving on their own) — resolveJoinLeaveRecipients covers
+  // both.
+  const recipients = await resolveJoinLeaveRecipients(client, chat, notification, { isJoin: false });
 
   // Guild membership needs to stay in sync whenever someone leaves a
   // WhatsApp group the bot is in — independent of whether this group has
   // leave-messages turned on, so this runs before that check/early-return.
-  try {
-    const { _removeMemberFromGuild } = require('./guilds');
-    await _removeMemberFromGuild(contact.id._serialized);
-  } catch (err) {
-    console.error('Guild cleanup on group_leave failed:', err.message);
+  for (const contact of recipients) {
+    try {
+      const { _removeMemberFromGuild } = require('./guilds');
+      await _removeMemberFromGuild(contact.id._serialized);
+    } catch (err) {
+      console.error('Guild cleanup on group_leave failed:', err.message);
+    }
   }
+
+  if (!recipients.length) return;
 
   const group = await Group.findOne({ id: chat.id._serialized });
   if (!group?.leave) return;
 
   let leaveMsg = group.leaveMsg || '👋 @user has left the group.';
-leaveMsg = leaveMsg.replace('@user', `@${mentionName(contact)}`);
+  const tags = recipients.map(c => `@${mentionName(c)}`).join(' ');
+  leaveMsg = leaveMsg.replace('@user', tags);
 
-  await chat.sendMessage(leaveMsg, { mentions: [contact] });
+  await chat.sendMessage(leaveMsg, { mentions: recipients });
 }
 
 module.exports = {
   commands: { onJoin, onLeave },
+  _seedParticipants,
 
   // .kick @user
   async kick(client, msg, args) {

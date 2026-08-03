@@ -256,6 +256,7 @@ Type *${PREFIX}<command>* to use one.`;
 
 let reconnectTimer = null;
 let cardDropsStarted = false;
+let participantsSeeded = false;
 let whatsappStarting = false;
 let currentState = null;
 let authTimeoutRecovering = false;
@@ -476,6 +477,14 @@ client.on('ready', () => {
     const { _initCardDrops } = require('./commands/cards');
     if (_initCardDrops) {
       _initCardDrops(client).catch(err => console.error('Card drop resume error:', err.message));
+    }
+  }
+
+  if (!participantsSeeded) {
+    participantsSeeded = true;
+    const { _seedParticipants } = require('./commands/admin');
+    if (_seedParticipants) {
+      _seedParticipants(client).catch(err => console.error('Participant snapshot error:', err.message));
     }
   }
 });
@@ -725,9 +734,10 @@ client.on('message', (msg) => {
 
     if (isHeavy) {
       // Heavy commands: reserve a spot in the global queue *first* (that's
-      // the atomic, race-free part — see enqueueHeavyTask), then ack with
-      // the Task ID + the position it actually got, then return right away
-      // so this chat's own message queue isn't blocked waiting on it.
+      // the atomic, race-free part — see enqueueHeavyTask), then return
+      // right away so this chat's own message queue isn't blocked waiting
+      // on it. The actual execution/logging inside the queued task below is
+      // unchanged — only what happens in-chat right here changed.
       const heavyPosition = enqueueHeavyTask(async () => {
         console.log(`Executing command (Task ID: ${taskId})`);
         try {
@@ -743,12 +753,18 @@ client.on('message', (msg) => {
         }
       });
 
+      // No more "Command received / Task ID / position" text sent to the
+      // chat — the queue system itself is unchanged, this position is just
+      // logged now instead of messaged, same as Task ID already is above.
+      console.log(`🕒 Heavy queue position: ${ordinal(heavyPosition)} (Task ID: ${taskId})`);
+
+      // In-chat acknowledgment is now a reaction instead of text: ▶️
+      // specifically for .play (matches the "now queued to play" moment),
+      // ⏳ for every other heavy/queued command.
       try {
-        await msg.reply(
-          `✅ Command received and awaiting processing\n🆔 Task ID: ${taskId}\n👥 Your position at queue: ${ordinal(heavyPosition)}`
-        );
+        await msg.react(command === 'play' ? '▶️' : '⏳');
       } catch (err) {
-        console.error('Failed to send queue acknowledgment:', err.message);
+        console.error('Failed to react to queued command:', err.message);
       }
 
       return;

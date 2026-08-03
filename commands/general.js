@@ -71,11 +71,17 @@ module.exports = {
     msg.reply(`✅ Rules updated:\n\n${text}`);
   },
 
-  // .test — ping/latency check
-  async test(client, msg, args) {
+  // .ping — ping/latency check (was .test — kept as an alias below, both
+  // call this exact same function so nothing that already used .test breaks)
+  async ping(client, msg, args) {
     // msg.timestamp is WhatsApp's own send-time, in seconds
     const latencyMs = Date.now() - msg.timestamp * 1000;
     msg.reply(`🏓 Pong! ${BOT_NAME} is online.\nLatency: ${latencyMs}ms`);
+  },
+
+  // .test — old name for .ping, kept working as an alias to the same function.
+  get test() {
+    return module.exports.ping;
   },
 
   // .stats — bot-wide info (see .groupstats for per-group numbers)
