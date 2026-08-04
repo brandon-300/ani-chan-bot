@@ -1,10 +1,44 @@
 const axios = require('axios');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+const ffmpeg = require('fluent-ffmpeg');
 const { MessageMedia } = require('whatsapp-web.js');
-const OpenAI = require('openai');
 const { safeGetChat, safeGetQuotedMessage } = require('../utils/helpers');
+const gemini = require('../utils/gemini');
+const fishAudio = require('../utils/fishAudio');
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY;
+
+// ─── Small tmp-file / ffmpeg helpers ────────────────────────────────────────
+// Same pattern as commands/converter.js (tmpFile/runFfmpeg/cleanup) — kept as
+// a local, tiny copy here rather than importing from converter.js, since
+// converter.js doesn't currently export them and this is the only other
+// file in the project that needs ffmpeg-based conversion.
+const TMP = os.tmpdir();
+
+function tmpFile(ext) {
+  return path.join(TMP, `ani-chan_${Date.now()}_${Math.random().toString(36).slice(2)}.${ext}`);
+}
+
+function runFfmpeg(inputPath, outputPath, outputOptions = []) {
+  return new Promise((resolve, reject) => {
+    ffmpeg(inputPath)
+      .outputOptions(outputOptions)
+      .output(outputPath)
+      .on('end', resolve)
+      .on('error', reject)
+      .run();
+  });
+}
+
+function cleanup(...files) {
+  for (const file of files) {
+    try {
+      if (fs.existsSync(file)) fs.unlinkSync(file);
+    } catch {}
+  }
+}
 
 // ─── Conversation memory (per chat, clears after 30 min idle) ─────────────────
 const chatHistory = new Map();
@@ -23,100 +57,96 @@ function addToHistory(chatId, role, content) {
   setTimeout(() => chatHistory.delete(chatId), 30 * 60 * 1000);
 }
 
-// ─── Copilot (GPT-4 via OpenAI) ──────────────────────────────────────────────
+// Turns a gemini.js error into the kind of short, actionable WhatsApp reply
+// the old OpenAI-based commands used to give, without swallowing the actual
+// reason (missing key, bad model name, safety block, etc.) — important since
+// Brandon can't always dig through PM2 logs on unstable data.
+function friendlyAiError(err, fallbackLabel) {
+  if (err.code === 'NO_GEMINI_KEY') return '❌ GEMINI_API_KEY is missing from .env.';
+  if (err.code === 'EMPTY_RESPONSE' || err.code === 'EMPTY_IMAGE') return `❌ ${err.message}`;
+  if (err.status === 429) {
+    // Google returns 429 both for "you're calling too fast, back off a bit"
+    // AND for "your project has zero free quota for this model, enable
+    // billing" — same HTTP status, very different fix. The message text is
+    // the only way to tell them apart; retrying helps with the first, not
+    // the second.
+    if (/quota/i.test(err.message)) {
+      return `❌ Gemini rejected this: no free quota available (needs billing enabled on your Google AI Studio project). Retrying won't help.\n\n${err.message}`;
+    }
+    return '❌ Gemini rate limit hit — free tier caps requests per minute/day. Try again shortly.';
+  }
+  console.error(`${fallbackLabel} error:`, err.message);
+  return `❌ ${fallbackLabel} failed: ${err.message}`;
+}
+
 module.exports = {
-  // .copilot [prompt] — full context-aware AI chat
+  // .copilot [prompt] — full context-aware AI chat (Gemini)
   async copilot(client, msg, args) {
     const prompt = args.join(' ');
     if (!prompt) return msg.reply('❌ Usage: .copilot [your message]');
 
     const chat = await safeGetChat(msg);
     if (!chat) return;
-    if (!chat) return;
     msg.reply('🤖 Thinking...');
 
     try {
       const history = getHistory(chat.id._serialized);
-      addToHistory(chat.id._serialized, 'user', prompt);
 
-      const response = await openai.chat.completions.create({
-        model: 'gpt-4o',
-        messages: [
-          {
-            role: 'system',
-            content: `You are Ani-Chan Bot, a helpful, witty, and friendly WhatsApp bot assistant. Keep responses concise and WhatsApp-friendly (no markdown headers, use *bold* for emphasis).`,
-          },
-          ...history,
-        ],
-        max_tokens: 800,
+      const reply = await gemini.generateText({
+        systemPrompt: 'You are Ani-Chan Bot, a helpful, witty, and friendly WhatsApp bot assistant. Keep responses concise and WhatsApp-friendly (no markdown headers, use *bold* for emphasis).',
+        history,
+        prompt,
+        maxOutputTokens: 800,
       });
 
-      const reply = response.choices[0].message.content;
+      addToHistory(chat.id._serialized, 'user', prompt);
       addToHistory(chat.id._serialized, 'assistant', reply);
       msg.reply(reply);
     } catch (err) {
-      msg.reply('❌ Copilot failed. Check your OpenAI API key.');
+      msg.reply(friendlyAiError(err, 'Copilot'));
     }
   },
 
-  // .gpt [prompt] — single-turn GPT (no history)
+  // .gpt [prompt] — single-turn AI reply (Gemini, no history)
   async gpt(client, msg, args) {
     const prompt = args.join(' ');
     if (!prompt) return msg.reply('❌ Usage: .gpt [your question]');
 
     msg.reply('💭 Processing...');
     try {
-      const response = await openai.chat.completions.create({
-        model: 'gpt-4o-mini',
-        messages: [
-          {
-            role: 'system',
-            content: 'You are a helpful assistant. Keep responses short and WhatsApp-friendly.',
-          },
-          { role: 'user', content: prompt },
-        ],
-        max_tokens: 600,
+      const reply = await gemini.generateText({
+        systemPrompt: 'You are a helpful assistant. Keep responses short and WhatsApp-friendly.',
+        prompt,
+        maxOutputTokens: 600,
       });
-
-      msg.reply(response.choices[0].message.content);
+      msg.reply(reply);
     } catch (err) {
-      msg.reply('❌ GPT failed. Check your OpenAI API key.');
+      msg.reply(friendlyAiError(err, 'GPT'));
     }
   },
 
-  // .imagine [prompt] — AI image generation with DALL-E 3
+  // .imagine [prompt] — AI image generation (Gemini 2.5 Flash Image / "Nano Banana")
   async imagine(client, msg, args) {
     const prompt = args.join(' ');
     if (!prompt) return msg.reply('❌ Usage: .imagine [image description]');
 
     msg.reply('🎨 Generating image...');
     try {
-const response = await openai.images.generate({
-        model: 'gpt-image-1',
-        prompt,
-        n: 1,
-        size: '1024x1024',
-        quality: 'high',
-      });
+      const { base64, mimeType } = await gemini.generateImage(prompt);
+      const ext = mimeType.includes('png') ? 'png' : 'jpg';
+      const media = new MessageMedia(mimeType, base64, `imagine.${ext}`);
 
-      const b64 = response.data[0].b64_json;
-      const media = new MessageMedia('image/png', b64, 'imagine.png');
       const chat = await safeGetChat(msg);
-    if (!chat) return;
       if (!chat) return;
       await chat.sendMessage(media, { caption: `🎨 *Imagine:* ${prompt}` });
-} catch (err) {
-      console.error('Imagine error:', err.status, err.code, err.message);
-      if (err.code === 'content_policy_violation') {
-        msg.reply('❌ Prompt violates content policy. Try a different description.');
-      } else {
-        msg.reply('❌ Image generation failed. Check your OpenAI API key.');
-      }
+    } catch (err) {
+      msg.reply(friendlyAiError(err, 'Image generation'));
     }
   },
 
-  // .upscale — upscale a replied-to image using RapidAPI
-async upscale(client, msg, args) {
+  // .upscale — upscale a replied-to image using RapidAPI (unchanged — not an
+  // OpenAI/Gemini call, no need to touch this one)
+  async upscale(client, msg, args) {
     const quoted = await safeGetQuotedMessage(msg).catch(() => null);
     const targetMsg = quoted || msg;
 
@@ -150,7 +180,6 @@ async upscale(client, msg, args) {
 
       const upscaledMedia = new MessageMedia('image/jpeg', res.data.result_base64);
       const chat = await safeGetChat(msg);
-    if (!chat) return;
       if (!chat) return;
       await chat.sendMessage(upscaledMedia, { caption: '✅ Image upscaled 2x!' });
     } catch (err) {
@@ -159,7 +188,7 @@ async upscale(client, msg, args) {
     }
   },
 
-  // .translate [lang] [text] — translate text
+  // .translate [lang] [text] — translate text (Gemini)
   async translate(client, msg, args) {
     const lang = args[0];
     const text = args.slice(1).join(' ');
@@ -174,26 +203,18 @@ async upscale(client, msg, args) {
 
     msg.reply('🌍 Translating...');
     try {
-      const response = await openai.chat.completions.create({
-        model: 'gpt-4o-mini',
-        messages: [
-          {
-            role: 'system',
-            content: `Translate the following text to ${lang}. Return ONLY the translated text, nothing else.`,
-          },
-          { role: 'user', content: toTranslate },
-        ],
-        max_tokens: 500,
+      const translated = await gemini.generateText({
+        systemPrompt: `Translate the following text to ${lang}. Return ONLY the translated text, nothing else.`,
+        prompt: toTranslate,
+        maxOutputTokens: 500,
       });
-
-      const translated = response.choices[0].message.content;
       msg.reply(`🌍 *Translation (${lang})*\n\n${translated}`);
     } catch (err) {
-      msg.reply('❌ Translation failed.');
+      msg.reply(friendlyAiError(err, 'Translation'));
     }
   },
 
-  // .transcribe — transcribe a voice note using Whisper
+  // .transcribe — transcribe a voice note (Gemini multimodal, replaces Whisper)
   async transcribe(client, msg, args) {
     const quoted = await safeGetQuotedMessage(msg).catch(() => null);
     const targetMsg = quoted || msg;
@@ -207,32 +228,68 @@ async upscale(client, msg, args) {
         return msg.reply('❌ Please reply to a voice note or audio file.');
       }
 
-      const audioBuffer = Buffer.from(media.data, 'base64');
-
-      // Use OpenAI Whisper
-      const { Readable } = require('stream');
-      const FormData = require('form-data');
-      const form = new FormData();
-
-      const stream = Readable.from(audioBuffer);
-      stream.path = 'audio.ogg';
-      form.append('file', stream, { filename: 'audio.ogg', contentType: media.mimetype });
-      form.append('model', 'whisper-1');
-
-      const res = await axios.post('https://api.openai.com/v1/audio/transcriptions', form, {
-        headers: {
-          ...form.getHeaders(),
-          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-        },
+      const text = await gemini.transcribeAudio({
+        base64Audio: media.data,
+        mimeType: media.mimetype,
       });
 
-      msg.reply(`🎙️ *Transcription*\n\n${res.data.text}`);
- } catch (err) {
-  console.error('TRANSCRIBE ERROR:', err.response?.data || err.message || err);
+      msg.reply(`🎙️ *Transcription*\n\n${text}`);
+    } catch (err) {
+      msg.reply(friendlyAiError(err, 'Transcription'));
+    }
+  },
 
-  msg.reply(
-    `❌ Transcription failed.\n\n${JSON.stringify(err.response?.data || err.message)}`
-   );
-  }
- },
+  // .tts [text] — text-to-speech via Fish Audio, sent back as a WhatsApp
+  // voice note. Reply to a message with .tts (no args) to speak that
+  // message's text instead of typing it again.
+  async tts(client, msg, args) {
+    const typed = args.join(' ');
+    const quoted = await safeGetQuotedMessage(msg).catch(() => null);
+    const text = typed || quoted?.body;
+
+    if (!text) return msg.reply('❌ Usage: .tts [text]\nOr reply to a text message with .tts');
+    if (text.length > 800) return msg.reply('❌ Keep it under 800 characters for now — long TTS jobs are slow on Fish Audio\'s free tier.');
+
+    msg.reply('🔊 Generating speech...');
+
+    let mp3Path, oggPath;
+    try {
+      const mp3Buffer = await fishAudio.synthesizeSpeech(text);
+
+      mp3Path = tmpFile('mp3');
+      oggPath = tmpFile('ogg');
+      fs.writeFileSync(mp3Path, mp3Buffer);
+
+      // Convert to ogg/opus — same ffmpeg settings commands/converter.js
+      // uses for .tovn — so it plays as a proper WhatsApp voice note
+      // instead of showing up as a generic audio file attachment.
+      await runFfmpeg(mp3Path, oggPath, [
+        '-vn',
+        '-c:a', 'libopus',
+        '-b:a', '64k',
+        '-vbr', 'on',
+        '-f', 'ogg',
+      ]);
+
+      const voiceData = fs.readFileSync(oggPath).toString('base64');
+      const voiceMedia = new MessageMedia('audio/ogg', voiceData);
+
+      const chat = await safeGetChat(msg);
+      if (!chat) return;
+      await chat.sendMessage(voiceMedia, { sendAudioAsVoice: true });
+    } catch (err) {
+      if (err.code === 'NO_FISH_KEY' || err.code === 'NO_FISH_VOICE') {
+        msg.reply(`❌ ${err.message}`);
+      } else if (err.status === 402) {
+        msg.reply('❌ Fish Audio TTS failed: out of credits/quota on your Fish Audio account.');
+      } else if (err.status === 401) {
+        msg.reply('❌ Fish Audio TTS failed: invalid FISH_API_KEY.');
+      } else {
+        console.error('TTS error:', err.message);
+        msg.reply(`❌ TTS failed: ${err.message}`);
+      }
+    } finally {
+      cleanup(mp3Path, oggPath);
+    }
+  },
 };

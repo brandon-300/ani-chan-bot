@@ -608,7 +608,7 @@ const HEAVY_COMMANDS = new Set([
   // fun.js — ffmpeg + headless-browser caption rendering
   'meme',
   // ai.js — external AI/API calls
-  'copilot', 'gpt', 'imagine', 'upscale', 'translate', 'transcribe',
+  'copilot', 'gpt', 'imagine', 'upscale', 'translate', 'transcribe', 'tts',
   // search.js — external API/scraping calls
   'pinterest', 'sauce', 'wallpaper', 'lyrics',
 ]);
