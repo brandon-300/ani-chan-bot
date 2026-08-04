@@ -4,7 +4,7 @@ const path = require('path');
 const os = require('os');
 const ffmpeg = require('fluent-ffmpeg');
 const { MessageMedia } = require('whatsapp-web.js');
-const { safeGetChat, safeGetQuotedMessage } = require('../utils/helpers');
+const { safeGetChat, safeGetQuotedMessage, resolveSenderName } = require('../utils/helpers');
 const gemini = require('../utils/gemini');
 const fishAudio = require('../utils/fishAudio');
 
@@ -57,6 +57,41 @@ function addToHistory(chatId, role, content) {
   setTimeout(() => chatHistory.delete(chatId), 30 * 60 * 1000);
 }
 
+// ─── Marin Kitagawa persona ─────────────────────────────────────────────────
+// Shared system prompt for the conversational AI commands (.copilot, .gpt,
+// .voice). Deliberately NOT used for .translate or .transcribe — those need
+// to stay literal/neutral to do their job correctly, a persona would just
+// get in the way of an accurate translation or transcript.
+const MARIN_SYSTEM_PROMPT = `You are Marin Kitagawa from "My Dress-Up Darling", acting as AniChan's AI assistant on WhatsApp.
+
+Personality:
+- Cheerful, energetic, playful, and expressive.
+- Loves anime, manga, cosplay, games, and Japanese pop culture.
+- Occasionally teases the user in a light tsundere way, but never insults or belittles them.
+- Calls the user "(user's name + kun)" naturally when it fits the conversation.
+- Gets excited when talking about anime or anything nerdy.
+- Uses emojis sparingly to make conversations feel lively.
+
+Behavior:
+- Be friendly, helpful, and knowledgeable.
+- Give accurate answers even while staying in character.
+- Keep replies concise and easy to read on WhatsApp.
+- Use *bold* for emphasis instead of Markdown headings.
+- If the user asks about programming, science, or other technical topics, answer professionally while keeping Marin's playful personality.
+- Never break character unless the user specifically asks you to.
+
+You are AniChan's AI personality. Your goal is to make chatting feel like talking to Marin Kitagawa while still being genuinely useful.`;
+
+// Appends the sender's display name to the base persona so Marin can
+// naturally call them "<name>-kun" per the personality spec above, without
+// forcing a name onto every single reply if resolution comes back empty.
+// resolveSenderName() never throws (it has its own internal try/catch and
+// falls back to the raw WhatsApp id), so this is safe to call unguarded.
+function buildMarinSystemPrompt(senderName) {
+  if (!senderName) return MARIN_SYSTEM_PROMPT;
+  return `${MARIN_SYSTEM_PROMPT}\n\nThe person you're talking to is named "${senderName}". You can address them as "${senderName}-kun" when it feels natural — don't force it into every reply.`;
+}
+
 // Turns a gemini.js error into the kind of short, actionable WhatsApp reply
 // the old OpenAI-based commands used to give, without swallowing the actual
 // reason (missing key, bad model name, safety block, etc.) — important since
@@ -79,27 +114,97 @@ function friendlyAiError(err, fallbackLabel) {
   return `❌ ${fallbackLabel} failed: ${err.message}`;
 }
 
-module.exports = {
-  // .copilot [prompt] — full context-aware AI chat (Gemini)
-  async copilot(client, msg, args) {
-    const prompt = args.join(' ');
-    if (!prompt) return msg.reply('❌ Usage: .copilot [your message]');
+// ─── Shared multimodal input resolution for .copilot / .gpt ────────────────
+// Figures out what the user is actually asking for:
+//  - plain typed args only                     -> { prompt: <args> }
+//  - reply to an image (+ required typed args)  -> { prompt: <args>, image: {...} }
+//  - reply to a voice note (+ optional args)     -> { prompt: <transcript [+ args]> }
+//  - reply to anything else / no quoted message  -> falls back to typed args
+//  - reply to an image with NO typed args        -> { error: '...usage...' }
+// Returns { error } OR { prompt, image } (image is null when there isn't one).
+async function resolveMultimodalInput(msg, args) {
+  const typed = args.join(' ').trim();
+  const quoted = await safeGetQuotedMessage(msg).catch(() => null);
 
+  if (!quoted || !quoted.hasMedia) {
+    return { prompt: typed, image: null };
+  }
+
+  let media;
+  try {
+    media = await quoted.downloadMedia();
+  } catch (err) {
+    return { error: '❌ Could not download the replied-to media — it may have expired. Try re-sending it and replying again.' };
+  }
+
+  if (!media?.data) {
+    return { error: '❌ Could not download the replied-to media — it may have expired. Try re-sending it and replying again.' };
+  }
+
+  const mimetype = media.mimetype || '';
+
+  if (mimetype.includes('image')) {
+    if (!typed) {
+      return { error: '❌ Reply to an image AND tell me what to do with it, e.g. *.copilot describe this image*' };
+    }
+    return { prompt: typed, image: { base64: media.data, mimeType: mimetype } };
+  }
+
+  if (mimetype.includes('audio') || mimetype.includes('ogg')) {
+    let transcript;
+    try {
+      transcript = await gemini.transcribeAudio({ base64Audio: media.data, mimeType: mimetype });
+    } catch (err) {
+      return { error: friendlyAiError(err, 'Transcription') };
+    }
+    const prompt = typed ? `${transcript}\n\n(${typed})` : transcript;
+    return { prompt, image: null };
+  }
+
+  // Some other quoted media type (video, document, sticker, etc.) — not
+  // supported as AI input, fall back to whatever was typed.
+  return { prompt: typed, image: null };
+}
+
+module.exports = {
+  // .copilot [prompt] — full context-aware AI chat (Gemini). Also works
+  // replying to a voice note (transcribed and used as the prompt) or an
+  // image (analyzed with Gemini vision — you must also say what to do
+  // with it, e.g. ".copilot what anime is this from").
+  async copilot(client, msg, args) {
     const chat = await safeGetChat(msg);
     if (!chat) return;
+
+    const resolved = await resolveMultimodalInput(msg, args);
+    if (resolved.error) return msg.reply(resolved.error);
+    if (!resolved.prompt) {
+      return msg.reply('❌ Usage: .copilot [your message]\nOr reply to a voice note with .copilot, or reply to an image with .copilot [what to do with it]');
+    }
+
     msg.reply('🤖 Thinking...');
 
     try {
       const history = getHistory(chat.id._serialized);
+      const senderName = await resolveSenderName(msg, client);
+      const systemPrompt = buildMarinSystemPrompt(senderName);
 
-      const reply = await gemini.generateText({
-        systemPrompt: 'You are Ani-Chan Bot, a helpful, witty, and friendly WhatsApp bot assistant. Keep responses concise and WhatsApp-friendly (no markdown headers, use *bold* for emphasis).',
-        history,
-        prompt,
-        maxOutputTokens: 800,
-      });
+      const reply = resolved.image
+        ? await gemini.generateVision({
+            systemPrompt,
+            history,
+            prompt: resolved.prompt,
+            base64Image: resolved.image.base64,
+            mimeType: resolved.image.mimeType,
+            maxOutputTokens: 800,
+          })
+        : await gemini.generateText({
+            systemPrompt,
+            history,
+            prompt: resolved.prompt,
+            maxOutputTokens: 800,
+          });
 
-      addToHistory(chat.id._serialized, 'user', prompt);
+      addToHistory(chat.id._serialized, 'user', resolved.prompt);
       addToHistory(chat.id._serialized, 'assistant', reply);
       msg.reply(reply);
     } catch (err) {
@@ -107,21 +212,123 @@ module.exports = {
     }
   },
 
-  // .gpt [prompt] — single-turn AI reply (Gemini, no history)
+  // .gpt [prompt] — single-turn AI reply (Gemini, no history). Same quoted
+  // voice-note/image handling as .copilot, minus conversation memory.
   async gpt(client, msg, args) {
-    const prompt = args.join(' ');
-    if (!prompt) return msg.reply('❌ Usage: .gpt [your question]');
+    const resolved = await resolveMultimodalInput(msg, args);
+    if (resolved.error) return msg.reply(resolved.error);
+    if (!resolved.prompt) {
+      return msg.reply('❌ Usage: .gpt [your question]\nOr reply to a voice note with .gpt, or reply to an image with .gpt [what to do with it]');
+    }
 
     msg.reply('💭 Processing...');
     try {
-      const reply = await gemini.generateText({
-        systemPrompt: 'You are a helpful assistant. Keep responses short and WhatsApp-friendly.',
-        prompt,
-        maxOutputTokens: 600,
-      });
+      const senderName = await resolveSenderName(msg, client);
+      const systemPrompt = buildMarinSystemPrompt(senderName);
+
+      const reply = resolved.image
+        ? await gemini.generateVision({
+            systemPrompt,
+            prompt: resolved.prompt,
+            base64Image: resolved.image.base64,
+            mimeType: resolved.image.mimeType,
+            maxOutputTokens: 600,
+          })
+        : await gemini.generateText({
+            systemPrompt,
+            prompt: resolved.prompt,
+            maxOutputTokens: 600,
+          });
+
       msg.reply(reply);
     } catch (err) {
       msg.reply(friendlyAiError(err, 'GPT'));
+    }
+  },
+
+  // .voice [optional extra instruction] — reply to a voice note with .voice
+  // to get a spoken answer back. Transcribes the voice note (Gemini),
+  // answers it in character using the same per-chat history as .copilot,
+  // then speaks the answer back as a WhatsApp voice note (Fish Audio TTS).
+  // Any typed args after .voice are treated as an extra instruction tacked
+  // onto the transcript, same as .copilot/.gpt do for quoted voice notes.
+  async voice(client, msg, args) {
+    const quoted = await safeGetQuotedMessage(msg).catch(() => null);
+    if (!quoted || !quoted.hasMedia) {
+      return msg.reply('❌ Reply to a voice note with .voice (you can add extra instructions after the command too)');
+    }
+
+    let media;
+    try {
+      media = await quoted.downloadMedia();
+    } catch (err) {
+      return msg.reply('❌ Could not download the replied-to voice note — it may have expired. Try re-sending it and replying again.');
+    }
+
+    const mimetype = media?.mimetype || '';
+    if (!media?.data || (!mimetype.includes('audio') && !mimetype.includes('ogg'))) {
+      return msg.reply('❌ Reply to a voice note with .voice');
+    }
+
+    const chat = await safeGetChat(msg);
+    if (!chat) return;
+
+    msg.reply('🎙️ Listening...');
+
+    let mp3Path, oggPath;
+    try {
+      const transcript = await gemini.transcribeAudio({ base64Audio: media.data, mimeType: mimetype });
+      const typed = args.join(' ').trim();
+      const prompt = typed ? `${transcript}\n\n(${typed})` : transcript;
+
+      const history = getHistory(chat.id._serialized);
+      const senderName = await resolveSenderName(msg, client);
+      const systemPrompt = buildMarinSystemPrompt(senderName);
+
+      const reply = await gemini.generateText({
+        systemPrompt,
+        history,
+        prompt,
+        maxOutputTokens: 800,
+      });
+
+      addToHistory(chat.id._serialized, 'user', prompt);
+      addToHistory(chat.id._serialized, 'assistant', reply);
+
+      const mp3Buffer = await fishAudio.synthesizeSpeech(reply);
+
+      mp3Path = tmpFile('mp3');
+      oggPath = tmpFile('ogg');
+      fs.writeFileSync(mp3Path, mp3Buffer);
+
+      // Same ffmpeg settings .tts uses for its mp3 -> ogg/opus conversion,
+      // so it plays as a proper WhatsApp voice note.
+      await runFfmpeg(mp3Path, oggPath, [
+        '-vn',
+        '-c:a', 'libopus',
+        '-b:a', '64k',
+        '-vbr', 'on',
+        '-f', 'ogg',
+      ]);
+
+      const voiceData = fs.readFileSync(oggPath).toString('base64');
+      const voiceMedia = new MessageMedia('audio/ogg', voiceData);
+      await chat.sendMessage(voiceMedia, { sendAudioAsVoice: true });
+    } catch (err) {
+      // Fish Audio-specific failures need their own messages (same as
+      // .tts); anything else (Gemini transcription/text errors) goes
+      // through the shared friendlyAiError() handling.
+      if (err.code === 'NO_FISH_KEY' || err.code === 'NO_FISH_VOICE') {
+        msg.reply(`❌ ${err.message}`);
+      } else if (err.status === 402) {
+        msg.reply('❌ Fish Audio TTS failed: out of credits/quota on your Fish Audio account.');
+      } else if (err.status === 401) {
+        msg.reply('❌ Fish Audio TTS failed: invalid FISH_API_KEY.');
+      } else {
+        msg.reply(friendlyAiError(err, 'Voice'));
+      }
+    } finally {
+      cleanup(mp3Path, oggPath);
     }
   },
 

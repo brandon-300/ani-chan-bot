@@ -236,7 +236,7 @@ const MENU_SECTIONS = [
     emoji: '🤖',
     title: 'AI',
     items: [
-      '.copilot', '.gpt', '.imagine', '.upscale',
+      '.copilot', '.gpt', '.voice', '.imagine', '.upscale',
       '.translate / tt', '.transcribe / tb', '.ocr', '.tldr', '.tts',
     ],
   },
@@ -608,7 +608,7 @@ const HEAVY_COMMANDS = new Set([
   // fun.js — ffmpeg + headless-browser caption rendering
   'meme',
   // ai.js — external AI/API calls
-  'copilot', 'gpt', 'imagine', 'upscale', 'translate', 'transcribe', 'tts',
+  'copilot', 'gpt', 'voice', 'imagine', 'upscale', 'translate', 'transcribe', 'tts',
   // search.js — external API/scraping calls
   'pinterest', 'sauce', 'wallpaper', 'lyrics',
 ]);

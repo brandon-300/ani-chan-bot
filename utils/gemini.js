@@ -21,6 +21,10 @@ const BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
 // against your actual key first and set GEMINI_TEXT_MODEL / GEMINI_IMAGE_MODEL
 // in .env to whatever it reports as working. gemini-3.1-flash-lite is what
 // Google was steering new keys toward as of when this was written.
+//
+// NOTE: TEXT_MODEL is also used for vision (image-input) requests below in
+// generateVision() — Gemini's generateContent endpoint accepts image parts
+// on the same text models, there's no separate "vision model" to configure.
 const TEXT_MODEL = process.env.GEMINI_TEXT_MODEL || 'gemini-3.1-flash-lite';
 
 // Image generation model. Google's newer image models (gemini-3.1-flash-image
@@ -48,6 +52,26 @@ function extractApiErrorMessage(err) {
     err.message ||
     'Unknown Gemini API error'
   );
+}
+
+// Shared by generateText/generateVision — both send back the same
+// { candidates: [{ content: { parts: [...] }, finishReason }] } shape, so
+// the "pull the text out, or explain why there isn't any" logic is common.
+function extractTextOrThrow(res) {
+  const candidate = res.data?.candidates?.[0];
+  const text = candidate?.content?.parts?.map(p => p.text || '').join('').trim();
+
+  if (!text) {
+    // Most common cause: the prompt (or image) tripped Gemini's safety
+    // filters, which comes back as a candidate with no parts and a
+    // finishReason instead of an HTTP error.
+    const reason = candidate?.finishReason;
+    const err = new Error(reason ? `Gemini returned no text (finishReason: ${reason})` : 'Gemini returned an empty response');
+    err.code = 'EMPTY_RESPONSE';
+    throw err;
+  }
+
+  return text;
 }
 
 // ─── Text generation (single-turn or with history) ─────────────────────────
@@ -81,25 +105,70 @@ async function generateText({ systemPrompt, history = [], prompt, maxOutputToken
       }
     );
 
-    const candidate = res.data?.candidates?.[0];
-    const text = candidate?.content?.parts?.map(p => p.text || '').join('').trim();
-
-    if (!text) {
-      // Most common cause: the prompt tripped Gemini's safety filters, which
-      // comes back as a candidate with no parts and a finishReason instead
-      // of an HTTP error.
-      const reason = candidate?.finishReason;
-      const err = new Error(reason ? `Gemini returned no text (finishReason: ${reason})` : 'Gemini returned an empty response');
-      err.code = 'EMPTY_RESPONSE';
-      throw err;
-    }
-
-    return text;
+    return extractTextOrThrow(res);
   } catch (err) {
     if (err.code === 'EMPTY_RESPONSE') throw err;
     const msg = extractApiErrorMessage(err);
     const wrapped = new Error(`Gemini text generation failed: ${msg}`);
     wrapped.code = 'GEMINI_TEXT_ERROR';
+    wrapped.status = err.response?.status;
+    throw wrapped;
+  }
+}
+
+// ─── Vision (image + text prompt) ───────────────────────────────────────────
+// Used when .copilot/.gpt/.voice are used replying to an image — sends the
+// image as an inlineData part alongside the text prompt in the same
+// generateContent call that generateText() uses for plain text. history (if
+// any) stays plain text, same shape/mapping as generateText — only the
+// newest turn carries the image, since Gemini doesn't need the image
+// re-sent on every follow-up message to keep the thread coherent.
+async function generateVision({ systemPrompt, history = [], prompt, base64Image, mimeType, maxOutputTokens = 800 }) {
+  assertKey();
+
+  if (!base64Image) {
+    const err = new Error('generateVision called without an image');
+    err.code = 'NO_IMAGE_DATA';
+    throw err;
+  }
+
+  const contents = history.map(h => ({
+    role: h.role === 'assistant' ? 'model' : 'user',
+    parts: [{ text: h.content }],
+  }));
+
+  contents.push({
+    role: 'user',
+    parts: [
+      { text: prompt },
+      { inlineData: { mimeType: mimeType || 'image/jpeg', data: base64Image } },
+    ],
+  });
+
+  const body = {
+    contents,
+    generationConfig: { maxOutputTokens },
+  };
+  if (systemPrompt) {
+    body.systemInstruction = { parts: [{ text: systemPrompt }] };
+  }
+
+  try {
+    const res = await axios.post(
+      `${BASE_URL}/${TEXT_MODEL}:generateContent`,
+      body,
+      {
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': GEMINI_API_KEY },
+        timeout: REQUEST_TIMEOUT_MS,
+      }
+    );
+
+    return extractTextOrThrow(res);
+  } catch (err) {
+    if (err.code === 'EMPTY_RESPONSE') throw err;
+    const msg = extractApiErrorMessage(err);
+    const wrapped = new Error(`Gemini vision analysis failed: ${msg}`);
+    wrapped.code = 'GEMINI_VISION_ERROR';
     wrapped.status = err.response?.status;
     throw wrapped;
   }
@@ -201,4 +270,4 @@ async function transcribeAudio({ base64Audio, mimeType }) {
   }
 }
 
-module.exports = { generateText, generateImage, transcribeAudio };
+module.exports = { generateText, generateVision, generateImage, transcribeAudio };
