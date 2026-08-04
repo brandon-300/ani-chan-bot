@@ -125,131 +125,182 @@ const aliases = {
   quit: 'quitgame',
 };
 
+// ─── Menu content ───────────────────────────────────────────────────────────
+// Data-driven on purpose: one array entry per category, one string per
+// command. To add/remove a command from the menu later, edit an array below
+// — no need to touch any string-building logic.
+//
+// NOTE: a handful of entries here (currently: .bots, .memories, .elb,
+// .estats, .guilds, .pmenu, and the newer entries inside CARDS/ECONOMY/
+// GAMES/FUN/DOWNLOADERS/SEARCH/AI/CONVERTER/ANIME SFW/ANIME NSFW/ADMIN
+// marked "planned") are on the roadmap but don't have a handler wired up
+// in commands/ yet — they'll reply "❓ Unknown command" until built. They're
+// listed now so the menu doesn't need another rewrite once they land.
+const MENU_SECTIONS = [
+  {
+    emoji: '⚙️',
+    title: 'GENERAL',
+    items: ['.rules', '.setrules', '.test', '.stats', '.mods', '.owner', '.bots', '.url', '.otp', '.memories'],
+  },
+  {
+    emoji: '🎴',
+    title: 'CARDS',
+    items: [
+      '.cards', '.card', '.ci / cardinfo', '.si', '.ss',
+      '.clb', '.vlb', '.tlb', '.sslb', '.mclb', '.slb',
+      '.deck', '.col', '.cardshop', '.sellc', '.rc', '.vs', '.claim',
+      '.sc', '.tc', '.accepttrade', '.declinetrade',
+      '.lendcard / lc', '.fuse', '.wishlist', '.wishlb',
+      '.auction', '.submit', '.myauc', '.remauc', '.listauc',
+      '.stardust', '.anticamp',
+      '.cg', '.tier', '.cs', '.myseries', '.fusion', '.resell', '.bid',
+    ],
+  },
+  {
+    emoji: '💰',
+    title: 'ECONOMY',
+    items: [
+      '.balance / bal', '.orbs', '.ebal', '.daily',
+      '.withdraw / wd', '.deposit / dep', '.donate',
+      '.lottery', '.lotterylist', '.rich', '.richg',
+      '.profile / p', '.edit', '.bio', '.setname', '.setage',
+      '.inventory / inv', '.use', '.sell', '.buy', '.shop',
+      '.dig', '.fish', '.leaderboard / lb', '.stlb', '.achievements / ach',
+      '.roast', '.gamble', '.beg', '.loan', '.mycds', '.afk',
+      '.rename', '.transactions', '.rob', '.shame', '.myshame', '.heist',
+    ],
+  },
+  {
+    emoji: '🎮',
+    title: 'GAMES',
+    items: [
+      '.ttt', '.quitgame', '.c4', '.drop', '.chess', '.move',
+      '.startbattle', '.attack', '.defend', '.flee',
+      '.akinator / aki', '.greekgod / gg', '.wcg', '.aquiz',
+    ],
+  },
+  {
+    emoji: '🎉',
+    title: 'EVENTS',
+    items: ['.elb', '.estats'],
+  },
+  {
+    emoji: '🏰',
+    title: 'GUILDS',
+    items: [
+      '.guilds', '.guild info', '.guild create', '.guild invite',
+      '.guild accept', '.guild decline', '.guild emblem',
+      '.guild leave', '.guild disband', '.guild members', '.guild remove',
+    ],
+  },
+  {
+    emoji: '🎰',
+    title: 'GAMBLE',
+    items: ['.slots', '.cf', '.dice', '.db', '.dp', '.roulette', '.horse', '.bj', '.rr'],
+  },
+  {
+    emoji: '🐉',
+    title: 'POKÉMON',
+    items: ['.pmenu'],
+  },
+  {
+    emoji: '🎭',
+    title: 'INTERACTION',
+    items: [
+      '.hug', '.kiss', '.slap', '.wave', '.pat', '.dance', '.sad', '.smile',
+      '.laugh', '.lick', '.punch', '.jihad', '.crusade', '.kill', '.bonk',
+      '.fuck', '.tickle', '.shrug', '.wank', '.kidnap',
+    ],
+  },
+  {
+    emoji: '😂',
+    title: 'FUN',
+    items: [
+      '.gay', '.lesbian', '.simp', '.ship', '.skill', '.duality', '.gen',
+      '.pov', '.social', '.relation', '.pp', '.wouldyourather / wyr',
+      '.joke', '.truth', '.dare', '.td', '.uno', '.meme',
+      '.shootmeme', '.coolmeme', '.sadmeme', '.triggered', '.couplepp',
+    ],
+  },
+  {
+    emoji: '⬇️',
+    title: 'DOWNLOADERS',
+    items: ['.ig', '.ttk', '.yt', '.x', '.fb', '.play', '.anime', '.manga', '.manhwa', '.novel'],
+  },
+  {
+    emoji: '🔍',
+    title: 'SEARCH',
+    items: ['.pinterest / pint', '.sauce / reverseimg', '.wallpaper', '.lyrics', '.igstalk', '.shazam'],
+  },
+  {
+    emoji: '🤖',
+    title: 'AI',
+    items: [
+      '.copilot', '.gpt', '.imagine', '.upscale',
+      '.translate / tt', '.transcribe / tb', '.ocr', '.tldr', '.tts',
+    ],
+  },
+  {
+    emoji: '🔄',
+    title: 'CONVERTER',
+    items: [
+      '.sticker / s', '.take', '.toimg', '.tovid', '.tomp3', '.tovn',
+      '.rotate', '.flip', '.resize', '.tourl', '.carbon', '.fancy',
+    ],
+  },
+  {
+    emoji: '🌸',
+    title: 'ANIME SFW',
+    items: [
+      '.waifu', '.neko', '.maid', '.mori-calliope', '.raiden-shogun',
+      '.oppai', '.selfies', '.uniform', '.kamisato-ayaka',
+      '.yuri', '.yaoi', '.cosplay',
+    ],
+  },
+  {
+    emoji: '🔞',
+    title: 'ANIME NSFW',
+    items: [
+      '.nsfw on/off', '.milf', '.ass', '.hentai', '.oral', '.ecchi',
+      '.paizuri', '.ero', '.ehentai', '.nhentai', '.gelbooru',
+    ],
+  },
+  {
+    emoji: '🛡️',
+    title: 'ADMIN',
+    items: [
+      '.kick', '.delete', '.antilink', '.antilink action', '.antism',
+      '.warn', '.resetwarn', '.groupstats / gs', '.welcome', '.setwelcome',
+      '.leave', '.setleave', '.purge', '.blacklist', '.promote', '.demote',
+      '.mute', '.unmute', '.hidetag', '.tagall', '.activity', '.active',
+      '.inactive', '.open', '.close', '.news',
+    ],
+  },
+  {
+    emoji: '🐾',
+    title: 'PETS',
+    items: ['.pet', '.pet adopt', '.pet feed', '.pet play', '.pet name'],
+  },
+  {
+    emoji: '📬',
+    title: 'FEEDBACK',
+    items: ['.feedback'],
+  },
+];
+
 async function sendQuickMenu(msg) {
-  const menu = `👋 *${BOT_NAME}* — Command Menu
-Prefix: *${PREFIX}*
+  const header =
+`╭━━★彡 *${BOT_NAME}* 彡★━━╮
+┃  𖤓 Prefix: ${PREFIX}
+┃  𖤓 Commands: ${Object.keys(commands).length}
+╰━━━━━━━━━━━━━╯`;
 
-🛡️ *ADMIN & MODERATION* (group admins)
-▸ kick @user — remove a member
-▸ delete — delete a replied message
-▸ antilink — toggle link auto-removal
-▸ antilink action [warn/kick] — set the punishment
-▸ antism on/off — anti-spam toggle
-▸ warn @user [reason] / resetwarn @user
-▸ groupstats — group activity summary
-▸ welcome on/off, setwelcome [msg] — greet new members (@user placeholder)
-▸ leave on/off, setleave [msg] — announce members leaving
-▸ purge [count] — bulk-delete recent messages
-▸ blacklist add/remove/list — auto-kick blacklisted numbers
-▸ promote/demote @user — group admin status
-▸ mute/unmute — lock/unlock the group
-▸ hidetag [msg] / tagall [msg] — mention everyone
-▸ activity, active, inactive — member activity stats
-▸ open/close — allow/restrict who can send messages
+  const body = MENU_SECTIONS.map(section => {
+    const lines = section.items.map(item => `┣ ✦ ${item}`).join('\n');
+    return `*${section.emoji} ${section.title} ${section.emoji}*\n${lines}\n┗━━━━━━━━━━━`;
+  }).join('\n\n');
 
-🤖 *AI*
-▸ copilot [prompt] — AI chat that remembers your convo
-▸ gpt [prompt] — one-off AI answer, no memory
-▸ imagine [prompt] — generate an image
-▸ upscale — sharpen a replied-to image
-▸ translate [lang] [text]
-▸ transcribe — voice note → text
-
-🔍 *SEARCH*
-▸ pinterest [query]
-▸ sauce (reverseimg) — reverse image search, reply to an image
-▸ wallpaper [query]
-▸ lyrics [song]
-
-⬇️ *DOWNLOAD*
-▸ ig / ttk / yt / x / fb [url] — Instagram / TikTok / YouTube / X / Facebook
-▸ play [song] — search + download audio from YouTube
-
-💰 *ECONOMY*
-▸ balance (bal), orbs, ebal @user — check coins / premium currency
-▸ daily — daily reward
-▸ withdraw (wd) / deposit (dep) [amt] — bank ↔ wallet
-▸ donate @user [amt]
-▸ lottery, gamble [amt], beg
-▸ rich / richg — richest globally / in this group
-▸ profile (p), edit, bio [text], setname [name], setage [age]
-▸ inventory (inv), use/sell/buy [item], shop
-▸ dig, fish — earn coins/items
-▸ leaderboard (lb) — top earners
-▸ achievements (ach) — your unlocked/locked achievements
-
-🎰 *GAMBLING*
-▸ slots [amt] — 3-reel slot machine
-▸ cf [amt] — coin flip, 50/50
-▸ dice [amt] — dice roll
-▸ db [amt] — double or bust, high risk/reward
-▸ dp [amt] — double or pass, lower risk/reward
-▸ roulette [amt] [bet] — casino roulette
-▸ horse [horse#] [amt] — horse race betting
-
-🎴 *CARD COLLECTION*
-▸ cards on/off — toggle card drops in this group (admin)
-▸ card [i] — quick view of one card from your collection
-▸ ci [name] [tier] (cardinfo) — look up a card
-▸ si [name] — series info · ss [series] — cards you own from it
-▸ deck / deck add [i] / deck remove [i] / deck clear — your battle deck (max 5) · col / col [n] / col page [n] — your full collection
-▸ claim [id] — claim a dropped card or buy from shop
-▸ cardshop, sellc [i] [price], rc [i] — sell/list your cards
-▸ sc @user [i] [price] — sell a card directly to someone
-▸ tc @user [your i] [their i] — propose a trade
-▸ accepttrade / declinetrade — respond to a pending trade
-▸ lendcard — lend your top card to the group temporarily
-▸ fuse [i1] [i2] [i3] — combine 3 same-tier cards for a chance at the next tier up
-▸ wishlist add/remove [name], wishlist — track characters you want · wishlb — leaderboard
-▸ vs — battle another player with your decks
-▸ auction (listauc), submit [id] [amt], myauc, remauc [id] — card auctions
-▸ stardust, anticamp — misc card-game utilities
-📊 Leaderboards: clb (most cards) · vlb (highest value) · tlb (highest tier) · sslb (most SS/SSS) · mclb (best series completion) · slb (series-specific)
-
-🏰 *GUILDS*
-▸ guild info / create [name] / invite @user / accept / decline / emblem [emoji] / leave / disband
-▸ guild members / remove [name] — leader only
-
-🎮 *GAMES*
-▸ ttt — tic-tac-toe · c4, drop [col] — connect 4
-▸ chess, move [e.g. e2e4] — chess
-▸ startbattle, attack, defend, flee — turn-based battle game
-▸ akinator (aki), greekgod (gg) — guessing games
-▸ wcg — group "would you rather"
-
-🎉 *FUN & SOCIAL*
-▸ ship @user1 @user2 — compatibility %
-▸ joke, truth, dare, td (random), uno
-▸ skill, duality, gen, pov, social, relation, pp, gay, lesbian, simp — random social generators
-▸ wouldyourather (wyr)
-
-🎭 *REACTIONS* [@user]
-▸ hug, kiss, slap, wave, pat, dance, sad, smile, laugh, lick, punch, tickle, shrug, kidnap, bonk, jihad, crusade, kill, wank, fuck — send a themed reaction gif
-
-🐾 *PETS*
-▸ pet — view your pet
-▸ pet adopt [type] / feed / play / name [name]
-
-🖼️ *ANIME IMAGES*
-▸ waifu, neko, maid, oppai, selfies, uniform — random anime character pics
-
-🖼️ *MEDIA*
-▸ sticker (s) — image/gif/video → sticker
-▸ take [pack] [author] — save sticker pack/author info, reply to a sticker
-▸ toimg — sticker → image · tovid — gif → video · tomp3 — video/audio → mp3
-▸ rotate [deg] / flip / resize [WxH] — image edits
-▸ tourl — upload replied media, get a link back
-
-📬 *FEEDBACK*
-▸ feedback [message] — send a message straight to my creator
-
-🔞 *NSFW* (18+, off by default — admin: .nsfw on to enable in this group)
-▸ milf, ass, hentai, oral, ecchi, paizuri, ero
-▸ ehentai / nhentai [tag or code] — links out
-
-🔀 *Shortcuts*: bal→balance · wd→withdraw · dep→deposit · p→profile · inv→inventory · lb→leaderboard · s→sticker · lc→lendcard · gs→groupstats · aki→akinator · gg→greekgod · wyr→wouldyourather · pint→pinterest · reverseimg→sauce · tt→translate · tb→transcribe
-
-Type *${PREFIX}<command>* to use one.`;
+  const menu = `${header}\n\n${body}\n\nType *${PREFIX}<command>* to use one.`;
 
   await msg.reply(menu);
 }
