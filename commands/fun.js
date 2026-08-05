@@ -16,13 +16,25 @@ function tmpFile(ext) {
   return path.join(TMP, `ani-chan_meme_${Date.now()}_${Math.random().toString(36).slice(2)}.${ext}`);
 }
 
+// Captures ffmpeg's full stderr (not just the tail fluent-ffmpeg puts in
+// err.message) and attaches it to the rejected error as err.ffmpegStderr.
+// This matters specifically for diagnosing .meme failures: fluent-ffmpeg's
+// default error message is only the last line or two of ffmpeg's own
+// output — usually just the generic progress summary ("frame=0 ...
+// Conversion failed!") — which hides the actual decode error further up
+// the log (the line that would say *why* ffmpeg produced 0 frames).
 function runFfmpeg(inputPath, outputPath, outputOptions = []) {
   return new Promise((resolve, reject) => {
+    const stderrLines = [];
     ffmpeg(inputPath)
       .outputOptions(outputOptions)
       .output(outputPath)
+      .on('stderr', line => stderrLines.push(line))
       .on('end', resolve)
-      .on('error', reject)
+      .on('error', err => {
+        err.ffmpegStderr = stderrLines.join('\n');
+        reject(err);
+      })
       .run();
   });
 }
@@ -59,6 +71,97 @@ async function getMemeTargetMessage(msg) {
     console.error('meme: getMemeTargetMessage failed:', err.message);
     return 'ERROR';
   }
+}
+
+// ─── .meme source fetch (download + still-frame extraction), with retry ────
+// Brandon's connection (unstable Airtel/MTN mobile data) can hand
+// downloadMedia() back a truncated/corrupted file without throwing — the
+// call just resolves with a shorter-than-expected buffer. ffmpeg then
+// correctly reports 0 frames decoded ("frame=0 ... Conversion failed!"),
+// which is exactly the symptom in the bug report, and explains both parts
+// of it: animated stickers (bigger files, more to truncate) failing most
+// often, and even some static stickers (still not immune) failing
+// occasionally.
+//
+// UNCERTAINTY: this is the most likely explanation given the environment
+// and the symptom pattern ("only a handful work"), but it isn't 100%
+// confirmed from the log alone — fluent-ffmpeg's default error only
+// surfaces the last line or two of ffmpeg's stderr, so the actual decoder
+// error that would prove or disprove this was never visible. runFfmpeg()
+// above now captures and attaches the FULL ffmpeg stderr to the error
+// (err.ffmpegStderr), and the catch block in meme() below logs it — so if
+// this retry+validation fix doesn't fully resolve it, the next pm2 log
+// will show the real decode error instead of just the summary line, and
+// we can pin down the actual cause (e.g. this ffmpeg build genuinely
+// lacking full animated-webp decode support) with certainty instead of
+// guessing again.
+const MEME_SOURCE_RETRIES = 1; // 1 retry = 2 attempts total
+
+async function fetchMemeSource(targetMsg) {
+  let lastErr;
+
+  for (let attempt = 0; attempt <= MEME_SOURCE_RETRIES; attempt++) {
+    let stillInputPath = null;
+    let stillOutputPath = null;
+
+    try {
+      const media = await targetMsg.downloadMedia();
+      if (!media?.data) throw new Error('downloadMedia() returned no data');
+
+      const buffer = Buffer.from(media.data, 'base64');
+      // A real WhatsApp image/sticker is never this small — a buffer this
+      // tiny is a strong signal of a truncated download rather than a
+      // genuinely broken file, and ffmpeg would only fail on it anyway.
+      if (buffer.length < 200) {
+        throw new Error(`downloaded file looks truncated (${buffer.length} bytes)`);
+      }
+
+      const base = mimeBase(media.mimetype);
+      const isSticker = base.includes('webp');
+      const isImage = base.startsWith('image');
+
+      if (!isImage) {
+        const err = new Error('Reply is not an image or sticker');
+        err.code = 'NOT_IMAGE';
+        throw err; // no point retrying — a different file type won't change on re-download
+      }
+
+      if (!isSticker) {
+        return { buffer, mimetype: media.mimetype, isSticker: false };
+      }
+
+      // Animated stickers: pull one guaranteed still frame via ffmpeg
+      // instead of handing an animated webp straight to a fresh headless
+      // page — the same "-frames:v 1" approach commands/converter.js's
+      // .toimg already uses for the same reason. Static webp/png/jpg skip
+      // straight to rendering (handled by the `if (!isSticker)` return
+      // above already covering non-webp images; static webp still needs
+      // this same still-frame pass since -frames:v 1 is harmless on a
+      // single-frame input too).
+      stillInputPath = tmpFile(mimeToExt(media.mimetype));
+      stillOutputPath = tmpFile('png');
+      fs.writeFileSync(stillInputPath, buffer);
+      await runFfmpeg(stillInputPath, stillOutputPath, ['-frames:v', '1']);
+
+      return { buffer: fs.readFileSync(stillOutputPath), mimetype: 'image/png', isSticker: true };
+    } catch (err) {
+      if (err.code === 'NOT_IMAGE') throw err;
+
+      lastErr = err;
+      console.error(
+        `meme: source-fetch attempt ${attempt + 1}/${MEME_SOURCE_RETRIES + 1} failed:`,
+        err.message,
+        err.ffmpegStderr ? `\nffmpeg stderr:\n${err.ffmpegStderr}` : ''
+      );
+      if (attempt < MEME_SOURCE_RETRIES) {
+        await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+      }
+    } finally {
+      cleanupFiles(stillInputPath, stillOutputPath);
+    }
+  }
+
+  throw lastErr;
 }
 
 const TRUTHS = [
@@ -296,16 +399,6 @@ module.exports = {
       return msg.reply('❌ Reply to a sticker or image with .meme <text>');
     }
 
-    const media = await targetMsg.downloadMedia().catch(() => null);
-    if (!media) return msg.reply('❌ Failed to download the media to caption.');
-
-    const base = mimeBase(media.mimetype);
-    const isSticker = base.includes('webp');
-    const isImage = base.startsWith('image');
-    if (!isImage) {
-      return msg.reply('❌ .meme only works on images or stickers right now — reply to one of those.');
-    }
-
     let topText = '';
     let bottomText = rawText;
     if (rawText.includes('|')) {
@@ -316,60 +409,63 @@ module.exports = {
 
     msg.reply('🎨 Captioning...');
 
-    let sourceBuffer = Buffer.from(media.data, 'base64');
-    let sourceMime = media.mimetype;
-    let stillInputPath = null;
-    let stillOutputPath = null;
+    // Download (+ still-frame extraction for animated stickers) with
+    // retry — see fetchMemeSource()'s comment above for why this exists.
+    let source;
+    try {
+      source = await fetchMemeSource(targetMsg);
+    } catch (err) {
+      if (err.code === 'NOT_IMAGE') {
+        return msg.reply('❌ .meme only works on images or stickers right now — reply to one of those.');
+      }
+      console.error(
+        'meme: could not fetch/prepare source image after retrying:',
+        err.message,
+        err.ffmpegStderr ? `\nffmpeg stderr:\n${err.ffmpegStderr}` : ''
+      );
+      return msg.reply(
+        '❌ Could not read that sticker/image after retrying — it likely downloaded incompletely over a slow connection. Try again, or forward the sticker to yourself and resend it before using .meme on it.'
+      );
+    }
+
+    let pngPath = null;
+    let webpPath = null;
 
     try {
-      // Animated stickers: rather than hand an animated webp straight to a
-      // fresh headless page and hope Chromium settles on a sensible frame,
-      // use ffmpeg to pull one guaranteed still frame first — the same
-      // "-frames:v 1" approach commands/converter.js's .toimg already uses
-      // for the same reason. Static webp/png/jpg skip straight to rendering.
-      if (isSticker) {
-        stillInputPath = tmpFile(mimeToExt(media.mimetype));
-        stillOutputPath = tmpFile('png');
-        fs.writeFileSync(stillInputPath, sourceBuffer);
-        await runFfmpeg(stillInputPath, stillOutputPath, ['-frames:v', '1']);
-        sourceBuffer = fs.readFileSync(stillOutputPath);
-        sourceMime = 'image/png';
-      }
-
-      const composedPng = await renderMemeImage(client, sourceBuffer, sourceMime, { topText, bottomText });
+      const composedPng = await renderMemeImage(client, source.buffer, source.mimetype, { topText, bottomText });
 
       const chat = await safeGetChat(msg);
       if (!chat) return;
 
-      if (isSticker) {
-        const pngPath = tmpFile('png');
-        const webpPath = tmpFile('webp');
-        try {
-          fs.writeFileSync(pngPath, composedPng);
-          await runFfmpeg(pngPath, webpPath, [
-            '-vcodec', 'libwebp',
-            '-vf', 'scale=512:512:force_original_aspect_ratio=decrease:flags=lanczos,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=0x00000000,format=rgba',
-            '-preset', 'default',
-            '-q:v', '80',
-          ]);
-          const stickerMedia = new MessageMedia('image/webp', fs.readFileSync(webpPath).toString('base64'));
-          await chat.sendMessage(stickerMedia, {
-            sendMediaAsSticker: true,
-            stickerName: 'AniChan Bot',
-            stickerAuthor: 'Brandon',
-          });
-        } finally {
-          cleanupFiles(pngPath, webpPath);
-        }
+      if (source.isSticker) {
+        pngPath = tmpFile('png');
+        webpPath = tmpFile('webp');
+        fs.writeFileSync(pngPath, composedPng);
+        await runFfmpeg(pngPath, webpPath, [
+          '-vcodec', 'libwebp',
+          '-vf', 'scale=512:512:force_original_aspect_ratio=decrease:flags=lanczos,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=0x00000000,format=rgba',
+          '-preset', 'default',
+          '-q:v', '80',
+        ]);
+        const stickerMedia = new MessageMedia('image/webp', fs.readFileSync(webpPath).toString('base64'));
+        await chat.sendMessage(stickerMedia, {
+          sendMediaAsSticker: true,
+          stickerName: 'AniChan Bot',
+          stickerAuthor: 'Brandon',
+        });
       } else {
         const outMedia = new MessageMedia('image/png', composedPng.toString('base64'));
         await chat.sendMessage(outMedia);
       }
     } catch (err) {
-      console.error('meme command failed:', err.message);
+      console.error(
+        'meme command failed:',
+        err.message,
+        err.ffmpegStderr ? `\nffmpeg stderr:\n${err.ffmpegStderr}` : ''
+      );
       msg.reply('❌ Failed to create meme: ' + err.message);
     } finally {
-      cleanupFiles(stillInputPath, stillOutputPath);
+      cleanupFiles(pngPath, webpPath);
     }
   },
 };
