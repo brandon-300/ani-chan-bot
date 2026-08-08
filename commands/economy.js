@@ -333,6 +333,15 @@ async lottery(client, msg, args) {
     const gymBadges = 'None';
     const banned = 'No';
 
+    // BUGFIX (Aug 2026): this used to read user.cards.length — a field
+    // that's declared on the User schema but that nothing in the codebase
+    // ever writes to (not .claim, not .sc, not .tc/accepttrade), so it was
+    // permanently stuck at 0 regardless of how many cards someone actually
+    // owned. The real source of truth for ownership is the OwnedCard
+    // collection (same place .col and .cg read from), so count from there
+    // instead.
+    const cardCount = await OwnedCard.countDocuments({ ownerId: targetId });
+
     const line = (label, value) => `ꕥ ${boldSans(label)}: ${value}`;
 
     const card = [
@@ -349,7 +358,7 @@ async lottery(client, msg, args) {
       line('Level', `${user.level} (${user.xp} XP)`),
       line('Coins', formatNum(user.coins)),
       line('Orbs', user.orbs),
-      line('Cards', user.cards.length),
+      line('Cards', cardCount),
       line('Title', user.profile.title),
     ].join('\n');
 
@@ -458,7 +467,12 @@ async lottery(client, msg, args) {
         for (const c of picks) {
           await OwnedCard.create({
             ownerId: contact.id._serialized,
-            catalogueId: c._id,
+            // catalogueId must be the 6-char CardCatalogue.cardId, not the
+            // Mongo _id — every join (.col, .cg, .ci) looks cards up via
+            // `CardCatalogue.findOne({ cardId: owned.catalogueId })`, so
+            // storing c._id here silently broke images/series lookups for
+            // anything pulled from a Card Pack specifically.
+            catalogueId: c.cardId,
             name: c.name,
             series: c.series,
             tier: c.tier,

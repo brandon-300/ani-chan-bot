@@ -173,21 +173,32 @@ async function addXP(userId, amount) {
 }
 
 // ─── Card Tier Roll ───────────────────────────────────────────────────────────
-// Drop rates:
-//   C   70%
-//   B   20%
-//   A   7.5%
-//   S   2%
-//   SS  0.4%
-//   SSS 0.1%  (ultra-rare, above SS)
+// Cumulative drop-rate thresholds, single source of truth for rollTier() below
+// AND for the .tier command (commands/cards.js), which displays these odds to
+// users. Exported (rather than kept as private magic numbers inside rollTier)
+// specifically so that command can never show a stale percentage if these
+// thresholds ever change — it always derives what it prints from this table.
+//   C   70%    (0   - 70)
+//   B   20%    (70  - 90)
+//   A   7.5%   (90  - 97.5)
+//   S   2%     (97.5- 99.5)
+//   SS  0.4%   (99.5- 99.9)
+//   SSS 0.1%   (99.9-100)  (ultra-rare, above SS)
+const TIER_DROP_RATES = [
+  { tier: 'C', cumulative: 70 },
+  { tier: 'B', cumulative: 90 },
+  { tier: 'A', cumulative: 97.5 },
+  { tier: 'S', cumulative: 99.5 },
+  { tier: 'SS', cumulative: 99.9 },
+  { tier: 'SSS', cumulative: 100 },
+];
+
 function rollTier() {
   const r = Math.random() * 100;
-  if (r < 70) return 'C';
-  if (r < 90) return 'B';
-  if (r < 97.5) return 'A';
-  if (r < 99.5) return 'S';
-  if (r < 99.9) return 'SS';
-  return 'SSS';
+  for (const { tier, cumulative } of TIER_DROP_RATES) {
+    if (r < cumulative) return tier;
+  }
+  return TIER_DROP_RATES[TIER_DROP_RATES.length - 1].tier; // r === 100 edge case
 }
 
 // ─── Tier Emoji ───────────────────────────────────────────────────────────────
@@ -335,6 +346,7 @@ module.exports = {
   rollTier,
   tierEmoji,
   TIER_VALUES,
+  TIER_DROP_RATES,
   TIER_ORDER,
   tierAbove,
   cardValue,

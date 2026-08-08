@@ -38,6 +38,17 @@ const CardCatalogueSchema = new mongoose.Schema({
 
 // ─── User-Owned Card Instance ─────────────────────────────────────────────────
 const OwnedCardSchema = new mongoose.Schema({
+  // BUGFIX (Aug 2026): this field was completely absent from the schema even
+  // though every command in commands/cards.js (.claim, .sc, .tc/accepttrade,
+  // shop purchases) and commands/economy.js (.use "Card Pack") reads and
+  // writes it. Mongoose's default `strict: true` behavior silently drops any
+  // field that isn't declared here on .create()/.save() — so ownerId was
+  // NEVER actually being persisted to MongoDB. Adding it here is what
+  // actually makes ownership persist.
+  ownerId: {
+    type: String,
+    index: true
+  },
 catalogueId: {
     type: String,
     ref: 'CardCatalogue'
@@ -92,9 +103,27 @@ const TradeRequestSchema = new mongoose.Schema({
   partnerCardId: { type: mongoose.Schema.Types.ObjectId, ref: 'OwnedCard', required: true },
 }, { timestamps: true });
 
+// ─── Catalogue Auto-Growth State ──────────────────────────────────────────────
+// Singleton doc (always _id: 'singleton') tracking the background AniList
+// discovery job — see runDiscoveryBatch()/_initCatalogueGrowth() in
+// commands/cardmanager.js and the .autoexpand command. `page` is the AniList
+// Page cursor to resume from next run, so repeated runs work through
+// progressively less-popular anime over time instead of re-scanning the same
+// top titles forever (already-seen characters get skipped via anilistId
+// dedup either way, but advancing the cursor gets to new ones faster).
+const CatalogueGrowthStateSchema = new mongoose.Schema({
+  _id: { type: String, default: 'singleton' },
+  enabled: { type: Boolean, default: false },
+  page: { type: Number, default: 1 },
+  totalAdded: { type: Number, default: 0 },
+  lastRunAt: { type: Date, default: null },
+  lastError: { type: String, default: null },
+});
+
 module.exports = {
   CardCatalogue: mongoose.model('CardCatalogue', CardCatalogueSchema),
   OwnedCard: mongoose.model('OwnedCard', OwnedCardSchema),
   Auction: mongoose.model('Auction', AuctionSchema),
   TradeRequest: mongoose.model('TradeRequest', TradeRequestSchema),
+  CatalogueGrowthState: mongoose.model('CatalogueGrowthState', CatalogueGrowthStateSchema),
 };

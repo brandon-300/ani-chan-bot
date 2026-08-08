@@ -71,14 +71,48 @@ function extractTextOrThrow(res) {
     throw err;
   }
 
+  if (candidate.finishReason === 'MAX_TOKENS') {
+    // The reply IS truncated, but there's still usable text — better to
+    // return the partial answer than throw. Logged so it's visible in
+    // pm2 logs instead of silently handing back a cut-off reply. See the
+    // maxOutputTokens comment on generateText/generateVision below for why
+    // this happens even on models with minimal thinking.
+    console.warn(`Gemini: response hit MAX_TOKENS and was truncated (${text.length} chars returned). Consider raising maxOutputTokens for this call.`);
+  }
+
   return text;
+}
+
+// Gemini 3.x models (gemini-3.1-flash-lite included) run an internal
+// "thinking" pass before writing the visible answer, and — per Google's
+// docs — thinking tokens and output tokens are BOTH drawn from the same
+// maxOutputTokens budget. Flash-Lite already defaults to the lowest
+// available thinkingLevel ("minimal"), but "minimal doesn't guarantee
+// thinking is off — the model may reason very minimally for complex
+// tasks" (Google's wording), and things like solving a math problem in a
+// photo count as exactly that kind of complex task. Pinning thinkingLevel
+// explicitly (rather than relying on the implicit per-model default) is
+// cheap insurance: if GEMINI_TEXT_MODEL ever gets swapped to a fuller
+// non-Lite Flash model (plausible given how often Google has been
+// restricting model access — see the TEXT_MODEL comment above), that
+// model's default thinking level is "medium", not "minimal", which would
+// eat noticeably more of the budget and make truncation worse, not better.
+function buildGenerationConfig(maxOutputTokens) {
+  return {
+    maxOutputTokens,
+    thinkingConfig: { thinkingLevel: 'minimal' },
+  };
 }
 
 // ─── Text generation (single-turn or with history) ─────────────────────────
 // history: array of { role: 'user' | 'assistant', content: string } — the
 // same shape ai.js already keeps in its chatHistory Map. Gemini calls the
 // assistant role "model", so it gets remapped here.
-async function generateText({ systemPrompt, history = [], prompt, maxOutputTokens = 800 }) {
+//
+// maxOutputTokens default raised from the original 800 to 2048 — 800 was
+// tight enough that even minimal thinking + a genuinely detailed answer
+// (e.g. solving a math problem) could hit MAX_TOKENS and cut off mid-reply.
+async function generateText({ systemPrompt, history = [], prompt, maxOutputTokens = 2048 }) {
   assertKey();
 
   const contents = history.map(h => ({
@@ -89,7 +123,7 @@ async function generateText({ systemPrompt, history = [], prompt, maxOutputToken
 
   const body = {
     contents,
-    generationConfig: { maxOutputTokens },
+    generationConfig: buildGenerationConfig(maxOutputTokens),
   };
   if (systemPrompt) {
     body.systemInstruction = { parts: [{ text: systemPrompt }] };
@@ -123,7 +157,7 @@ async function generateText({ systemPrompt, history = [], prompt, maxOutputToken
 // any) stays plain text, same shape/mapping as generateText — only the
 // newest turn carries the image, since Gemini doesn't need the image
 // re-sent on every follow-up message to keep the thread coherent.
-async function generateVision({ systemPrompt, history = [], prompt, base64Image, mimeType, maxOutputTokens = 800 }) {
+async function generateVision({ systemPrompt, history = [], prompt, base64Image, mimeType, maxOutputTokens = 2048 }) {
   assertKey();
 
   if (!base64Image) {
@@ -147,7 +181,7 @@ async function generateVision({ systemPrompt, history = [], prompt, base64Image,
 
   const body = {
     contents,
-    generationConfig: { maxOutputTokens },
+    generationConfig: buildGenerationConfig(maxOutputTokens),
   };
   if (systemPrompt) {
     body.systemInstruction = { parts: [{ text: systemPrompt }] };
@@ -240,7 +274,7 @@ async function transcribeAudio({ base64Audio, mimeType }) {
         ],
       },
     ],
-    generationConfig: { maxOutputTokens: 800 },
+    generationConfig: buildGenerationConfig(2048),
   };
 
   try {
@@ -253,13 +287,7 @@ async function transcribeAudio({ base64Audio, mimeType }) {
       }
     );
 
-    const text = res.data?.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('').trim();
-    if (!text) {
-      const err = new Error('Gemini returned an empty transcription');
-      err.code = 'EMPTY_RESPONSE';
-      throw err;
-    }
-    return text;
+    return extractTextOrThrow(res);
   } catch (err) {
     if (err.code === 'EMPTY_RESPONSE') throw err;
     const msg = extractApiErrorMessage(err);

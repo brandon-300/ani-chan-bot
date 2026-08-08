@@ -123,6 +123,8 @@ const aliases = {
   tt: 'translate',
   tb: 'transcribe',
   quit: 'quitgame',
+  fusion: 'fuse',
+  bid: 'submit',
 };
 
 // ─── Menu content ───────────────────────────────────────────────────────────
@@ -219,7 +221,6 @@ const MENU_SECTIONS = [
       '.gay', '.lesbian', '.simp', '.ship', '.skill', '.duality', '.gen',
       '.pov', '.social', '.relation', '.pp', '.wouldyourather / wyr',
       '.joke', '.truth', '.dare', '.td', '.uno', '.meme',
-      '.shootmeme', '.coolmeme', '.sadmeme', '.triggered', '.couplepp',
     ],
   },
   {
@@ -308,6 +309,7 @@ async function sendQuickMenu(msg) {
 let reconnectTimer = null;
 let cardDropsStarted = false;
 let participantsSeeded = false;
+let catalogueGrowthStarted = false;
 let whatsappStarting = false;
 let currentState = null;
 let authTimeoutRecovering = false;
@@ -538,6 +540,14 @@ client.on('ready', () => {
       _seedParticipants(client).catch(err => console.error('Participant snapshot error:', err.message));
     }
   }
+
+  if (!catalogueGrowthStarted) {
+    catalogueGrowthStarted = true;
+    const { _initCatalogueGrowth } = require('./commands/cardmanager');
+    if (_initCatalogueGrowth) {
+      _initCatalogueGrowth(client).catch(err => console.error('Catalogue auto-growth resume error:', err.message));
+    }
+  }
 });
 
 // ─── Task ID + activity tracking (for detailed console logging) ───────────────
@@ -611,6 +621,8 @@ const HEAVY_COMMANDS = new Set([
   'copilot', 'gpt', 'voice', 'imagine', 'upscale', 'translate', 'transcribe', 'tts',
   // search.js — external API/scraping calls
   'pinterest', 'sauce', 'wallpaper', 'lyrics',
+  // cardmanager.js — multi-call AniList lookups / background-batch triggers / bulk DB repair
+  'backfillimages', 'bulkadd', 'autoexpand', 'repairlinks',
 ]);
 
 // ─── Global serial queue for heavy commands ────────────────────────────────────
@@ -654,6 +666,30 @@ async function runHeavyQueue() {
   heavyBusy = false;
 }
 
+// ─── Auto AI-reply classification ──────────────────────────────────────────
+// Used below to decide whether an un-prefixed reply to the bot should be
+// treated as an implicit .copilot / .voice command. See the comment at the
+// call site for the full rule.
+//
+// Only three reply "kinds" are recognized as AI input: a plain text reply,
+// an image reply, or a voice/audio reply — either a recorded voice note
+// (ptt) or a regular uploaded audio file (audio), both treated the same
+// way. Anything else — sticker, video, document, location, contact card,
+// etc. — comes back 'other', and index.js does nothing with it (no
+// auto-command, no auto-menu). That last part matters: previously ANY
+// reply to the bot, sticker included, popped the full command menu, which
+// is the behavior this replaces.
+function classifyReplyKind(msg) {
+  if (msg.type === 'chat' && !msg.hasMedia && (msg.body || '').trim()) return 'text';
+  if (msg.type === 'image' && msg.hasMedia) return 'image';
+  if ((msg.type === 'ptt' || msg.type === 'audio') && msg.hasMedia) return 'voice';
+  return 'other';
+}
+
+function isVoiceNoteMessage(msg) {
+  return !!msg && msg.hasMedia && (msg.type === 'ptt' || msg.type === 'audio');
+}
+
 // Per-chat command queue
 const commandQueues = new Map();
 
@@ -695,26 +731,51 @@ client.on('message', (msg) => {
       return;
     }
 
+    let command;
+    let args;
+
     if (!body.startsWith(PREFIX)) {
+      // Explicit @mention of the bot always shows the menu — unchanged,
+      // and takes priority even if the person is also replying to something.
       const mentionsBot = msg.mentionedIds &&
         msg.mentionedIds.includes(client.info.wid._serialized);
-
-      let repliedToBot = false;
-      if (!mentionsBot && msg.hasQuotedMsg) {
-        const quoted = await safeGetQuotedMessage(msg).catch(() => null);
-        repliedToBot = quoted ? quoted.fromMe : false;
-      }
-
-      if (mentionsBot || repliedToBot) {
+      if (mentionsBot) {
         return await sendQuickMenu(msg);
       }
-      return;
+
+      if (!msg.hasQuotedMsg) return;
+
+      const quoted = await safeGetQuotedMessage(msg).catch(() => null);
+      if (!quoted || !quoted.fromMe) return;
+
+      // ── Auto .copilot / .voice on replies to the bot ──────────────────
+      // Replying directly to a message the bot sent — with text, an
+      // image, or a voice note/audio file — is now treated as an implicit
+      // AI command, no ".copilot"/".gpt" typing required:
+      //   - Reply to a VOICE NOTE or AUDIO FILE the bot sent -> .voice (stays spoken)
+      //   - Reply to anything else the bot sent -> .copilot
+      // Any other reply type (sticker, video, document, etc.) is ignored —
+      // no auto-command, no menu.
+      const replyKind = classifyReplyKind(msg);
+      if (replyKind === 'other') return;
+
+      const typed = (msg.body || '').trim();
+      // A voice-note reply has no caption/body — resolveMultimodalInput()
+      // in ai.js handles an empty typed value fine there (it just uses the
+      // transcript as the whole prompt). An image reply DOES need some
+      // text ("what should I do with this image"), so give it a generic
+      // default instead of erroring out when the person sent it uncaptioned.
+      args = typed
+        ? typed.split(/\s+/)
+        : (replyKind === 'image' ? ['Take', 'a', 'look', 'and', 'respond', 'naturally.'] : []);
+
+      command = isVoiceNoteMessage(quoted) ? 'voice' : 'copilot';
+    } else {
+      args = body.slice(PREFIX.length).trim().split(/\s+/);
+      command = args.shift().toLowerCase();
+
+      if (aliases[command]) command = aliases[command];
     }
-
-    const args = body.slice(PREFIX.length).trim().split(/\s+/);
-    let command = args.shift().toLowerCase();
-
-    if (aliases[command]) command = aliases[command];
 
     // ── Task ID + logging context ──────────────────────────────────────────
     // Assigned as soon as we know a command was *attempted*, whether or not

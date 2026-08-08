@@ -3,10 +3,21 @@ const { checkAchievements, formatUnlockNotice } = require('../utils/achievements
 const { MessageMedia } = require('whatsapp-web.js');
 const User = require('../models/User');
 const Group = require('../models/Group');
-const { tierEmoji, rollTier, formatNum, pick, mentionName, mentionTag, generateUniqueCode, safeGetChat, cardValue, tierAbove } = require('../utils/helpers');
+const { tierEmoji, rollTier, formatNum, pick, mentionName, mentionTag, generateUniqueCode, safeGetChat, cardValue, tierAbove, TIER_DROP_RATES } = require('../utils/helpers');
 const crypto = require('crypto');
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+// Same escaping used by utils/memeRender.js's HTML-rendering path — needed
+// here too now that .cg (below) builds an HTML grid via client.pupBrowser.
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 async function getUserCards(userId) {
   const cards = await OwnedCard.find({ ownerId: userId });
   return cards.sort((a, b) => cardValue(b.tier) - cardValue(a.tier) || a.name.localeCompare(b.name));
@@ -1130,5 +1141,321 @@ if (existing)
       `✨ *Fusion Success!*\n\nConsumed: ${consumedList}\n\nReceived: ${tierEmoji(resultCatalogue.tier)} *${resultCatalogue.name}* [${resultCatalogue.tier}]` +
       luckyNote + formatUnlockNotice(unlocked)
     );
+  },
+
+  // .resell [index] — instant sell to the bot for guaranteed coins (50% of
+  // tier value — same resale-discount convention as .sell in economy.js).
+  // Distinct from .sellc, which lists a card on the *player* marketplace and
+  // waits for a buyer at whatever price you set; .resell has no buyer, no
+  // waiting, and no listing to remove later, but pays less.
+  async resell(client, msg, args) {
+    const contact = await msg.getContact();
+    const index = parseInt(args[0]);
+    if (!index || index < 1) {
+      return msg.reply('❌ Usage: .resell [index]\n\nUse *.col* to see your collection with numbered positions.\n\nInstantly sells to the bot for 50% of tier value — no buyer needed. Use *.sellc* instead if you want a shot at full value from another player.');
+    }
+
+    const card = await getCardByIndex(contact.id._serialized, index);
+    if (!card) {
+      const total = (await getUserCards(contact.id._serialized)).length;
+      return msg.reply(`❌ No card at position ${index}. You have ${total} card(s) — try *.col*.`);
+    }
+    if (card.isForSale) return msg.reply('❌ This card is currently listed in the shop — remove it with *.rc* first.');
+    if (card.isLent) return msg.reply('❌ This card is currently lent out — get it back before reselling it.');
+
+    const resellPrice = Math.floor(cardValue(card.tier) * 0.5);
+    const user = await User.findOrCreate(contact.id._serialized);
+
+    await OwnedCard.deleteOne({ _id: card._id });
+    user.coins += resellPrice;
+    await user.save();
+
+    msg.reply(`✅ Resold *${card.name}* [${card.tier}] to the bot for 💰 ${resellPrice} coins.\n\nThis card is gone for good — use *.sellc* instead next time if you want a shot at full value from another player.`);
+  },
+
+  // .tier — shows the rarity tier list with real drop odds (read straight
+  // from TIER_DROP_RATES in helpers.js, so this can never drift out of sync
+  // with what rollTier() actually does) and coin value per tier.
+  // .tier [letter] — browse every catalogue card in that tier, with a
+  // claimed/available marker per card.
+  async tier(client, msg, args) {
+    const arg = args[0]?.toUpperCase();
+    const VALID_TIERS = TIER_DROP_RATES.map(t => t.tier);
+
+    if (!arg) {
+      let text = `🎴 *Tier List*\n\n`;
+      let prevCumulative = 0;
+      TIER_DROP_RATES.forEach(({ tier, cumulative }) => {
+        const odds = (cumulative - prevCumulative).toFixed(1).replace(/\.0$/, '');
+        text += `${tierEmoji(tier)} *${tier}* — Drop chance: ${odds}% • Value: 💰 ${cardValue(tier).toLocaleString()}\n`;
+        prevCumulative = cumulative;
+      });
+      text += `\nUse *.tier [letter]* to browse every card in a tier, e.g. *.tier SSS*`;
+      return msg.reply(text);
+    }
+
+    if (!VALID_TIERS.includes(arg)) {
+      return msg.reply(`❌ "${arg}" isn't a valid tier. Valid tiers: ${VALID_TIERS.join(', ')}`);
+    }
+
+    const TIER_BROWSE_LIMIT = 30;
+    const catalogueCards = await CardCatalogue.find({ tier: arg }).sort({ name: 1 });
+    if (!catalogueCards.length) return msg.reply(`❌ No cards exist in tier ${arg} yet.`);
+
+    const claimedIds = await OwnedCard.distinct('catalogueId');
+    const claimedSet = new Set(claimedIds);
+
+    let text = `${tierEmoji(arg)} *Tier ${arg}* (${catalogueCards.length} card${catalogueCards.length === 1 ? '' : 's'}, 💰 ${cardValue(arg).toLocaleString()} each)\n\n`;
+    catalogueCards.slice(0, TIER_BROWSE_LIMIT).forEach(c => {
+      const status = c.cardId && claimedSet.has(c.cardId) ? '🔒' : '💎';
+      text += `${status} ${c.name} — ${c.series}\n`;
+    });
+    if (catalogueCards.length > TIER_BROWSE_LIMIT) {
+      text += `\n...and ${catalogueCards.length - TIER_BROWSE_LIMIT} more.`;
+    }
+    text += `\n💎 = available to claim  🔒 = already claimed`;
+    msg.reply(text);
+  },
+
+  // .cs [name or series] — search the catalogue by name OR series, returning
+  // a list of matches. Distinct from .ci/.cardinfo, which does an exact-ish
+  // findOne() lookup for one card's full detail view — .cs is for "I don't
+  // remember the exact name" browsing across multiple results.
+  async cs(client, msg, args) {
+    const query = args.join(' ').trim();
+    if (!query) return msg.reply('❌ Usage: .cs [name or series]\n\nSearches both card names and series. Use *.ci [name]* for full details on one card.');
+
+    const CS_LIMIT = 25;
+    let regex;
+    try {
+      regex = new RegExp(query, 'i');
+    } catch {
+      return msg.reply('❌ That search text isn\'t valid — try removing special characters like ( ) [ ] * +.');
+    }
+
+    const matches = await CardCatalogue.find({ $or: [{ name: regex }, { series: regex }] })
+      .sort({ tier: -1, name: 1 })
+      .limit(CS_LIMIT);
+
+    if (!matches.length) return msg.reply(`❌ No cards found matching "${query}".`);
+
+    const claimedIds = await OwnedCard.distinct('catalogueId');
+    const claimedSet = new Set(claimedIds);
+
+    let text = `🔍 *Search: "${query}"* (${matches.length}${matches.length === CS_LIMIT ? '+' : ''} result${matches.length === 1 ? '' : 's'})\n\n`;
+    matches.forEach(c => {
+      const status = c.cardId && claimedSet.has(c.cardId) ? '🔒' : '💎';
+      text += `${status} ${tierEmoji(c.tier)} *${c.name}* [${c.tier}] — ${c.series}\n`;
+    });
+    text += `\nUse *.ci [name]* for full details on a specific card.`;
+    msg.reply(text);
+  },
+
+  // .myseries — overview of every series you own at least one card from,
+  // with owned/total counts and completion %. Distinct from .ss [series],
+  // which needs you to already know/type the exact series name and just
+  // lists your cards from it with no completion context.
+  async myseries(client, msg, args) {
+    const contact = await msg.getContact();
+    const userId = contact.id._serialized;
+
+    const owned = await OwnedCard.find({ ownerId: userId });
+    if (!owned.length) return msg.reply('❌ You have no cards yet. Wait for one to drop and use *.claim*!');
+
+    const bySeries = new Map();
+    owned.forEach(c => {
+      const key = c.series || 'Unknown';
+      if (!bySeries.has(key)) bySeries.set(key, []);
+      bySeries.get(key).push(c);
+    });
+
+    const seriesNames = [...bySeries.keys()];
+    const totals = await CardCatalogue.aggregate([
+      { $match: { series: { $in: seriesNames } } },
+      { $group: { _id: '$series', total: { $sum: 1 } } },
+    ]);
+    const totalBySeriesName = new Map(totals.map(t => [t._id, t.total]));
+
+    const rows = seriesNames
+      .map(name => {
+        const ownedCount = bySeries.get(name).length;
+        const total = totalBySeriesName.get(name) || ownedCount;
+        return { name, owned: ownedCount, total };
+      })
+      .sort((a, b) => (b.owned / b.total) - (a.owned / a.total) || b.owned - a.owned);
+
+    let text = `📚 *Your Series* (${rows.length})\n\n`;
+    rows.forEach(r => {
+      const pct = r.total ? Math.round((r.owned / r.total) * 100) : 100;
+      const complete = r.owned >= r.total ? ' ✅' : '';
+      text += `${r.name} — ${r.owned}/${r.total} (${pct}%)${complete}\n`;
+    });
+    text += `\nUse *.ss [series]* to see your cards from one series, or *.si [series]* for the full catalogue.`;
+    msg.reply(text);
+  },
+
+  // .cg [page] — visual grid image of your collection, rendered as an HTML
+  // page and screenshotted via the same already-running Chromium instance
+  // whatsapp-web.js keeps open for the WhatsApp session (client.pupBrowser)
+  // — same technique utils/memeRender.js uses, for the same reason: this
+  // project deliberately has no canvas/sharp/jimp dependency (sharp already
+  // failed to install as a native binary on this Termux/Android setup — see
+  // the note at the top of commands/games/chessBoardImage.js), so reusing
+  // the browser that's already open costs zero new npm installs.
+  //
+  // Card art loads directly from each card's catalogue imageUrl (AniList),
+  // over whatever network the phone has at render time — given how unstable
+  // that can get, every image tile has an onerror fallback (a plain
+  // tier-colored tile) so one slow/broken image never breaks the whole grid,
+  // and the overall render has a hard timeout so a bad connection fails
+  // loudly with a clear error instead of hanging the command queue.
+  //
+  // UNTESTED against the real device — this is the first command in the
+  // project compositing MULTIPLE external network images into one grid via
+  // Puppeteer (memeRender.js only ever handles one attached image). Please
+  // test with a small collection first and share the pm2 logs either way —
+  // if page.setContent's timeout or the network proves too unreliable in
+  // practice, the fix is almost certainly just lowering CG_PER_PAGE/timeout,
+  // not a rewrite.
+  async cg(client, msg, args) {
+    if (!client.pupBrowser) {
+      return msg.reply('❌ Card grid needs the WhatsApp browser session, which isn\'t ready yet — try again in a moment.');
+    }
+
+    const contact = await msg.getContact();
+    const userId = contact.id._serialized;
+    const cards = await getUserCards(userId); // already sorted: tier desc, then name
+    if (!cards.length) return msg.reply('❌ You have no cards yet. Wait for one to drop and use *.claim*!');
+
+    const CG_COLS = 3;
+    const CG_PER_PAGE = 9;
+    const CG_CELL_W = 190;
+    const CG_CELL_H = 250;
+    const CG_TIMEOUT_MS = 20000;
+    const TIER_COLORS = { C: '#9e9e9e', B: '#4caf50', A: '#2196f3', S: '#ffc107', SS: '#ff9800', SSS: '#f44336' };
+
+    const totalPages = Math.max(1, Math.ceil(cards.length / CG_PER_PAGE));
+    let page = parseInt(args[0]) || 1;
+    if (page < 1) page = 1;
+    if (page > totalPages) page = totalPages;
+
+    const startIdx = (page - 1) * CG_PER_PAGE;
+    const pageCards = cards.slice(startIdx, startIdx + CG_PER_PAGE);
+
+    const catalogueIds = [...new Set(pageCards.map(c => c.catalogueId).filter(Boolean))];
+    const catalogues = catalogueIds.length
+      ? await CardCatalogue.find({ cardId: { $in: catalogueIds } })
+      : [];
+    const imageByCatalogueId = new Map(catalogues.map(c => [c.cardId, c.imageUrl]));
+
+    msg.reply(`🖼️ Rendering your card grid (page ${page}/${totalPages})...`);
+
+    const cells = pageCards.map((c, i) => ({
+      index: startIdx + i + 1,
+      name: c.name,
+      tier: c.tier,
+      imageUrl: (c.catalogueId && imageByCatalogueId.get(c.catalogueId)) || '',
+    }));
+
+    const rows = Math.ceil(cells.length / CG_COLS);
+    const width = CG_COLS * CG_CELL_W;
+    const height = rows * CG_CELL_H + 70; // + header
+
+    const cellsHtml = cells.map(c => {
+      const color = TIER_COLORS[c.tier] || '#9e9e9e';
+      if (c.imageUrl) {
+        // Had a saved URL — if THIS still shows a fallback tile after
+        // rendering, the URL itself failed to load (network/CDN issue), not
+        // a missing-data issue. Distinct fallback text + a data attribute
+        // the load-stats check below reads, so the two failure modes never
+        // look identical.
+        return `
+      <div class="cell">
+        <div class="imgwrap" style="border-color:${color}">
+          <img src="${escapeHtml(c.imageUrl)}" data-had-url="1" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">
+          <div class="fallback" style="display:none;background:${color}">
+            <div>${c.tier}</div><div class="fallback-note">⚠️ load failed</div>
+          </div>
+        </div>
+        <div class="label">
+          <span class="tierpill" style="background:${color}">${c.tier}</span>
+          <span class="name">#${c.index} ${escapeHtml(c.name)}</span>
+        </div>
+      </div>`;
+      }
+      return `
+      <div class="cell">
+        <div class="imgwrap" style="border-color:${color}">
+          <div class="fallback" style="display:flex;background:${color}">
+            <div>${c.tier}</div><div class="fallback-note">no image saved</div>
+          </div>
+        </div>
+        <div class="label">
+          <span class="tierpill" style="background:${color}">${c.tier}</span>
+          <span class="name">#${c.index} ${escapeHtml(c.name)}</span>
+        </div>
+      </div>`;
+    }).join('');
+
+    const html = `<!DOCTYPE html>
+<html>
+<head>
+<style>
+  html, body { margin: 0; padding: 0; background: #1a1a1a; font-family: Arial, Helvetica, sans-serif; }
+  .header { color: #fff; text-align: center; padding: 14px 0 6px; font-size: 20px; font-weight: 900; }
+  .grid { display: grid; grid-template-columns: repeat(${CG_COLS}, ${CG_CELL_W}px); justify-content: center; }
+  .cell { width: ${CG_CELL_W}px; height: ${CG_CELL_H}px; box-sizing: border-box; padding: 6px; position: relative; }
+  .imgwrap { width: 100%; height: 74%; border-radius: 8px; border: 3px solid; overflow: hidden; position: relative; background: #000; }
+  .imgwrap img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .fallback { width: 100%; height: 100%; flex-direction: column; align-items: center; justify-content: center; color: #fff; font-size: 28px; font-weight: 900; gap: 4px; }
+  .fallback-note { font-size: 11px; font-weight: 600; opacity: .85; }
+  .label { display: flex; align-items: center; justify-content: center; gap: 6px; margin-top: 7px; }
+  .tierpill { color: #fff; font-weight: 900; font-size: 14px; padding: 2px 8px; border-radius: 6px; flex-shrink: 0; text-shadow: 0 1px 2px rgba(0,0,0,.6); }
+  .name { color: #fff; font-size: 13px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 120px; }
+</style>
+</head>
+<body>
+  <div class="header">🎴 Card Grid — Page ${page}/${totalPages}</div>
+  <div class="grid">${cellsHtml}</div>
+</body>
+</html>`;
+
+    const page_ = await client.pupBrowser.newPage();
+    try {
+      await page_.setViewport({ width, height, deviceScaleFactor: 1 });
+      await page_.setContent(html, { waitUntil: 'load', timeout: CG_TIMEOUT_MS });
+
+      // window's 'load' event only fires once every <img> has settled
+      // (loaded or errored), so this reading is reliable right after
+      // setContent resolves — no extra wait needed.
+      const loadStats = await page_.evaluate(() => {
+        const imgs = Array.from(document.querySelectorAll('img[data-had-url]'));
+        let loaded = 0, failedToLoad = 0;
+        imgs.forEach(img => {
+          if (img.complete && img.naturalWidth > 0) loaded++;
+          else failedToLoad++;
+        });
+        return { loaded, failedToLoad };
+      });
+
+      const buffer = await page_.screenshot({ type: 'png' });
+
+      const media = new MessageMedia('image/png', buffer.toString('base64'), 'cardgrid.png');
+      const chat = await safeGetChat(msg);
+      if (!chat) return;
+
+      const noUrlCount = cells.filter(c => !c.imageUrl).length;
+      const statusParts = [`${loadStats.loaded}/${cells.length} loaded`];
+      if (loadStats.failedToLoad) statusParts.push(`${loadStats.failedToLoad} had a saved image but failed to load (network/CDN issue)`);
+      if (noUrlCount) statusParts.push(`${noUrlCount} have no image saved (.backfillimages or .editcard)`);
+
+      const caption = `🎴 *Card Grid — Page ${page}/${totalPages}*\n${statusParts.join(' • ')}\n\nUse *.cg ${page < totalPages ? page + 1 : 1}* for the next page, or *.card [index]* to view one card in detail.`;
+      await chat.sendMessage(media, { caption });
+    } catch (err) {
+      console.error('Card grid render error:', err.message);
+      msg.reply('❌ Card grid render failed (likely a network timeout loading card art). Try again, or use *.col* for a text list in the meantime.');
+    } finally {
+      await page_.close().catch(() => {});
+    }
   },
 };
