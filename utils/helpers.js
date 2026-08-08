@@ -157,19 +157,35 @@ async function botIsAdmin(msg) {
 }
 
 // ─── XP & Level ──────────────────────────────────────────────────────────────
+// XP granted per action. Numbers are a starting point — tune freely, nothing
+// else needs to change since every caller reads from this one table.
+const XP_REWARDS = {
+  claim: 20,
+  shopBuy: 15,
+  trade: 10,
+  fusion: 30,
+  daily: 25,
+};
+
+// BUGFIX (Aug 2026): the level-up branch used to `return` before ever calling
+// user.save() — so every level-up computed correctly in memory and then
+// silently discarded itself. Only the no-level-up path actually persisted.
+// Also switched the single `if` to a `while` so a big enough XP grant can
+// correctly carry a user through more than one level in one call, instead of
+// only ever advancing one level per call regardless of how much XP came in.
 async function addXP(userId, amount) {
   const user = await User.findOne({ id: userId });
-  if (!user) return;
+  if (!user) return { levelUp: false };
   user.xp += amount;
-  const nextLevel = user.level * 100;
-  if (user.xp >= nextLevel) {
-    user.xp -= nextLevel;
+  let levelUp = false;
+  while (user.xp >= user.level * 100) {
+    user.xp -= user.level * 100;
     user.level += 1;
     user.coins += user.level * 200;
-    return { levelUp: true, level: user.level };
+    levelUp = true;
   }
   await user.save();
-  return { levelUp: false };
+  return { levelUp, level: user.level };
 }
 
 // ─── Card Tier Roll ───────────────────────────────────────────────────────────
@@ -343,6 +359,7 @@ module.exports = {
   getModIds,
   botIsAdmin,
   addXP,
+  XP_REWARDS,
   rollTier,
   tierEmoji,
   TIER_VALUES,

@@ -622,7 +622,7 @@ const HEAVY_COMMANDS = new Set([
   // search.js — external API/scraping calls
   'pinterest', 'sauce', 'wallpaper', 'lyrics',
   // cardmanager.js — multi-call AniList lookups / background-batch triggers / bulk DB repair
-  'backfillimages', 'bulkadd', 'autoexpand', 'repairlinks',
+  'backfillimages', 'bulkadd', 'autoexpand', 'repairlinks', 'purgeorphans',
 ]);
 
 // ─── Global serial queue for heavy commands ────────────────────────────────────

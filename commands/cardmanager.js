@@ -462,16 +462,35 @@ module.exports = {
   },
 
   // .delcard <card id>
+  // .delcard <card id> [force] — deletes a catalogue entry. If anyone has
+  // already claimed a copy, deleting the template out from under them would
+  // leave those OwnedCard docs pointing at nothing (exactly what .repairlinks
+  // flags as "no catalogue row named X exists" — a permanent orphan, since
+  // there's nothing left to re-link to). Refuses by default when copies
+  // exist; "force" deletes the catalogue entry AND every claimed copy of it.
   async delcard(client, msg, args) {
     if (!(await checkOwner(msg))) return;
 
-    const id = args.join(' ').trim().toUpperCase();
-    if (!id) return msg.reply('Usage:\n.delcard <card id>');
+    const id = args[0]?.trim().toUpperCase();
+    const force = (args[1] || '').toLowerCase() === 'force';
+    if (!id) return msg.reply('Usage:\n.delcard <card id> [force]');
 
-    const deleted = await CardCatalogue.findOneAndDelete({ cardId: id });
-    if (!deleted) return msg.reply('❌ Card not found. Use the 6-character card ID (see .cardstats or .ci to look one up).');
+    const target = await CardCatalogue.findOne({ cardId: id });
+    if (!target) return msg.reply('❌ Card not found. Use the 6-character card ID (see .cardstats or .ci to look one up).');
 
-    msg.reply(`🗑 Deleted card:\n${deleted.name} [${deleted.cardId}]`);
+    const ownedCount = await OwnedCard.countDocuments({ catalogueId: id });
+    if (ownedCount > 0 && !force) {
+      return msg.reply(
+        `⚠️ *${target.name}* [${id}] has ${ownedCount} claimed copy/copies out there.\n\n` +
+        `Deleting the catalogue entry deletes those claimed copies too — there's nothing left for them to point to otherwise.\n\n` +
+        `Run *.delcard ${id} force* to delete both.`
+      );
+    }
+
+    if (ownedCount > 0) await OwnedCard.deleteMany({ catalogueId: id });
+    await CardCatalogue.deleteOne({ cardId: id });
+
+    msg.reply(`🗑 Deleted card:\n${target.name} [${id}]${ownedCount > 0 ? `\n📦 Also removed ${ownedCount} claimed copy/copies.` : ''}`);
   },
 
   // .editcard <card id> <field> <value>
@@ -908,5 +927,42 @@ module.exports = {
     if (owned.length === REPAIR_LIMIT) reply += `\n\n📦 Checked the first ${REPAIR_LIMIT} owned cards — run *.repairlinks* again if you have more.`;
 
     msg.reply(reply.slice(0, 4000));
+  },
+
+  // .purgeorphans [confirm] — removes OwnedCard copies whose catalogue entry
+  // is genuinely gone (deleted by the old .delcard, before it cascaded —
+  // see the fix above). This is exactly the "no catalogue row named X
+  // exists" case .repairlinks reports and can't fix on its own, since there's
+  // nothing left to re-link to. Preview-only by default; add "confirm" to
+  // actually delete, since this permanently removes whatever collectible
+  // those copies represented.
+  async purgeorphans(client, msg, args) {
+    if (!(await checkOwner(msg))) return;
+
+    const confirm = (args[0] || '').toLowerCase() === 'confirm';
+    const owned = await OwnedCard.find().limit(200);
+
+    const orphans = [];
+    for (const card of owned) {
+      const resolved = card.catalogueId ? await CardCatalogue.findOne({ cardId: card.catalogueId }) : null;
+      if (resolved) continue;
+      const byName = await CardCatalogue.findOne({ name: card.name });
+      if (byName) continue; // .repairlinks can fix this one — not a true orphan
+      orphans.push(card);
+    }
+
+    if (!orphans.length) return msg.reply('✅ No orphaned owned cards found.');
+
+    if (!confirm) {
+      const preview = orphans.slice(0, 30).map(c => `• ${c.name} [code ${c.code || 'none'}]`).join('\n');
+      return msg.reply(
+        `⚠️ Found ${orphans.length} owned card(s) whose catalogue entry no longer exists:\n\n${preview}` +
+        (orphans.length > 30 ? `\n...and ${orphans.length - 30} more` : '') +
+        `\n\nThis permanently removes the players' copies too — run *.purgeorphans confirm* to actually delete them.`
+      );
+    }
+
+    await OwnedCard.deleteMany({ _id: { $in: orphans.map(c => c._id) } });
+    msg.reply(`🗑 Removed ${orphans.length} orphaned owned card(s).`);
   },
 };

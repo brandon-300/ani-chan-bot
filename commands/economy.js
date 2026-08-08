@@ -1,9 +1,28 @@
 const User = require('../models/User');
 const Guild = require('../models/Guild');
 const { CardCatalogue, OwnedCard } = require('../models/Card');
-const { formatNum, formatCooldown, rand, pick, tierEmoji, mentionName, mentionTag, safeGetChat, isOwner, isMod } = require('../utils/helpers');
+const { formatNum, formatCooldown, rand, pick, tierEmoji, mentionName, mentionTag, safeGetChat, isOwner, isMod, addXP, XP_REWARDS } = require('../utils/helpers');
 const { battleGames } = require('./games');
 const { checkAchievements, formatUnlockNotice, ACHIEVEMENTS } = require('../utils/achievements');
+const { checkTitle, formatTitleUnlockNotice, titleLabel, TITLES } = require('../utils/titles');
+
+// Owner-gate for the testing command below — same pattern as
+// commands/cardmanager.js's checkOwner. Reuses the isOwner already imported
+// above.
+async function checkOwner(msg) {
+  const contact = await msg.getContact();
+  if (!isOwner(contact.id._serialized)) {
+    await msg.reply('❌ Only the bot owner can use this command.');
+    return false;
+  }
+  return true;
+}
+
+// Simple block-style progress bar for .level/.xp.
+function xpProgressBar(current, max, length = 12) {
+  const filled = Math.max(0, Math.min(length, Math.round((current / max) * length)));
+  return '█'.repeat(filled) + '░'.repeat(length - filled);
+}
 
 // ─── Fancy Unicode text for the .profile card ─────────────────────────────────
 // Generated from plain ASCII at runtime instead of hardcoding the actual
@@ -172,8 +191,11 @@ module.exports = {
     }
 
     const unlocked = await checkAchievements(contact.id._serialized);
+    const xpResult = await addXP(contact.id._serialized, XP_REWARDS.daily);
+    const newTitle = await checkTitle(contact.id._serialized);
+    const xpLine = `\n⭐ +${XP_REWARDS.daily} XP${xpResult.levelUp ? ` — 🎉 Level up! You're now level ${xpResult.level}!` : ''}`;
     msg.reply(
-      `🎁 *Daily Reward!*\n\n💰 +${reward} coins${orbReward ? '\n🔮 +1 orb (bonus!)' : ''}\n\nTotal: ${formatNum(updated.coins)} coins` + formatUnlockNotice(unlocked)
+      `🎁 *Daily Reward!*\n\n💰 +${reward} coins${orbReward ? '\n🔮 +1 orb (bonus!)' : ''}\n\nTotal: ${formatNum(updated.coins)} coins` + xpLine + formatUnlockNotice(unlocked) + formatTitleUnlockNotice(newTitle)
     );
   },
 
@@ -293,6 +315,13 @@ async lottery(client, msg, args) {
     const contact = mentioned.length ? mentioned[0] : await msg.getContact();
     const targetId = contact.id._serialized;
     const user = await User.findOrCreate(targetId, contact.pushname);
+    // Recheck in case the level changed since the title was last set (same
+    // safety-net idea as .achievements re-checking on view). checkTitle
+    // saves against its own fresh copy of the user, so if it changed
+    // anything, mirror that onto the local `user` object too — otherwise
+    // the profile below would print the title this same call just replaced.
+    const refreshedTitle = await checkTitle(targetId);
+    if (refreshedTitle) user.profile.title = titleLabel(refreshedTitle);
 
     let guildLabel = 'None';
     if (user.guildId) {
@@ -679,5 +708,67 @@ async lottery(client, msg, args) {
   // .ach alias
   async ach(client, msg, args) {
     return module.exports.achievements(client, msg, args);
+  },
+
+  // .level / .xp — current level, XP progress toward the next level, current
+  // title, and how far off the next title tier is. Add @mention to check
+  // someone else's.
+  async level(client, msg, args) {
+    const mentioned = await msg.getMentions();
+    const contact = mentioned.length ? mentioned[0] : await msg.getContact();
+    const targetId = contact.id._serialized;
+    const user = await User.findOrCreate(targetId, contact.pushname);
+
+    const needed = user.level * 100;
+    const bar = xpProgressBar(user.xp, needed);
+    const pct = Math.floor((user.xp / needed) * 100);
+
+    const nextTitle = TITLES.find(t => t.minLevel > user.level);
+    const nextTitleLine = nextTitle
+      ? `\n🔒 Next title: ${nextTitle.emoji} ${nextTitle.name} at level ${nextTitle.minLevel} (${nextTitle.minLevel - user.level} to go)`
+      : `\n👑 You've hit the highest title tier!`;
+
+    msg.reply(
+      `⚡ *Level ${user.level}*${mentioned.length ? ` — ${contact.pushname}` : ''}\n\n` +
+      `${bar} ${pct}%\n` +
+      `${user.xp} / ${needed} XP\n\n` +
+      `🎖️ Title: ${user.profile.title}` +
+      nextTitleLine,
+      undefined,
+      mentioned.length ? { mentions: [targetId] } : undefined
+    );
+  },
+
+  // .xp alias
+  async xp(client, msg, args) {
+    return module.exports.level(client, msg, args);
+  },
+
+  // .addxp <amount> [@mention] — owner-only. Grants XP directly so you can
+  // verify level-ups and title unlocks immediately, instead of repeatedly
+  // claiming/daily-ing to accumulate enough naturally.
+  async addxp(client, msg, args) {
+    if (!(await checkOwner(msg))) return;
+
+    const amount = parseInt(args[0]);
+    if (!amount || amount <= 0) {
+      return msg.reply('Usage:\n.addxp <amount> [@mention]\n\nGrants XP directly — testing tool for checking level-ups and title unlocks.');
+    }
+
+    const mentioned = await msg.getMentions();
+    const contact = mentioned.length ? mentioned[0] : await msg.getContact();
+    const targetId = contact.id._serialized;
+    await User.findOrCreate(targetId, contact.pushname);
+
+    const xpResult = await addXP(targetId, amount);
+    const newTitle = await checkTitle(targetId);
+
+    msg.reply(
+      `🧪 Granted ${amount} XP to @${targetId.split('@')[0]}.\n` +
+      `${xpResult.levelUp ? `🎉 Leveled up to *${xpResult.level}*!` : `Still level ${xpResult.level}.`}` +
+      formatTitleUnlockNotice(newTitle),
+      undefined,
+      { mentions: [targetId] }
+    );
   },
 };

@@ -1,9 +1,10 @@
 const { CardCatalogue, OwnedCard, Auction, TradeRequest } = require('../models/Card');
 const { checkAchievements, formatUnlockNotice } = require('../utils/achievements');
+const { checkTitle, formatTitleUnlockNotice } = require('../utils/titles');
 const { MessageMedia } = require('whatsapp-web.js');
 const User = require('../models/User');
 const Group = require('../models/Group');
-const { tierEmoji, rollTier, formatNum, pick, mentionName, mentionTag, generateUniqueCode, safeGetChat, cardValue, tierAbove, TIER_DROP_RATES } = require('../utils/helpers');
+const { tierEmoji, rollTier, formatNum, pick, mentionName, mentionTag, generateUniqueCode, safeGetChat, cardValue, tierAbove, TIER_DROP_RATES, addXP, XP_REWARDS } = require('../utils/helpers');
 const crypto = require('crypto');
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -685,8 +686,11 @@ ${tierEmoji(card.tier)} Tier: ${card.tier}
       shopCard.timesTraded += 1;
       await shopCard.save();
       await user.save();
+      const xpResult = await addXP(contact.id._serialized, XP_REWARDS.shopBuy);
       const unlocked = await checkAchievements(contact.id._serialized);
-      return msg.reply(`✅ You bought *${shopCard.name}* [${shopCard.tier}]!` + formatUnlockNotice(unlocked));
+      const newTitle = await checkTitle(contact.id._serialized);
+      const xpLine = `\n⭐ +${XP_REWARDS.shopBuy} XP${xpResult.levelUp ? ` — 🎉 Level up! You're now level ${xpResult.level}!` : ''}`;
+      return msg.reply(`✅ You bought *${shopCard.name}* [${shopCard.tier}]!` + xpLine + formatUnlockNotice(unlocked) + formatTitleUnlockNotice(newTitle));
     }
 
 // Drop claim
@@ -740,7 +744,10 @@ if (existing)
     );
 
     const unlocked = await checkAchievements(contact.id._serialized);
-    msg.reply(`✅ *${contact.pushname}* claimed ${tierEmoji(catalogue.tier)} *${catalogue.name}* [${catalogue.tier}]!` + formatUnlockNotice(unlocked));
+    const xpResult = await addXP(contact.id._serialized, XP_REWARDS.claim);
+    const newTitle = await checkTitle(contact.id._serialized);
+    const xpLine = `\n⭐ +${XP_REWARDS.claim} XP${xpResult.levelUp ? ` — 🎉 Level up! You're now level ${xpResult.level}!` : ''}`;
+    msg.reply(`✅ *${contact.pushname}* claimed ${tierEmoji(catalogue.tier)} *${catalogue.name}* [${catalogue.tier}]!` + xpLine + formatUnlockNotice(unlocked) + formatTitleUnlockNotice(newTitle));
   },
 
   // .sc [@user] [index] [price] — sell card to a user
@@ -863,15 +870,26 @@ if (existing)
     await User.updateOne({ id: trade.initiatorId }, { $inc: { tradesCompleted: 1 } });
     await User.updateOne({ id: trade.partnerId }, { $inc: { tradesCompleted: 1 } });
 
+    const [initiatorXp, partnerXp] = await Promise.all([
+      addXP(trade.initiatorId, XP_REWARDS.trade),
+      addXP(trade.partnerId, XP_REWARDS.trade)
+    ]);
+
     const [initiatorUnlocks, partnerUnlocks] = await Promise.all([
       checkAchievements(trade.initiatorId),
       checkAchievements(trade.partnerId)
     ]);
+    const [initiatorTitle, partnerTitle] = await Promise.all([
+      checkTitle(trade.initiatorId),
+      checkTitle(trade.partnerId)
+    ]);
 
     let text =
-      `✅ *Trade Complete!*\n\n@${trade.initiatorId.split('@')[0]} ➜ ${tierEmoji(myCard.tier)} ${myCard.name}\n@${trade.partnerId.split('@')[0]} ➜ ${tierEmoji(theirCard.tier)} ${theirCard.name}`;
-    if (initiatorUnlocks.length) text += `\n\n@${trade.initiatorId.split('@')[0]}${formatUnlockNotice(initiatorUnlocks)}`;
-    if (partnerUnlocks.length) text += `\n\n@${trade.partnerId.split('@')[0]}${formatUnlockNotice(partnerUnlocks)}`;
+      `✅ *Trade Complete!*\n\n@${trade.initiatorId.split('@')[0]} ➜ ${tierEmoji(myCard.tier)} ${myCard.name}\n@${trade.partnerId.split('@')[0]} ➜ ${tierEmoji(theirCard.tier)} ${theirCard.name}\n\n⭐ Both sides +${XP_REWARDS.trade} XP`;
+    if (initiatorXp.levelUp) text += `\n🎉 @${trade.initiatorId.split('@')[0]} leveled up to ${initiatorXp.level}!`;
+    if (partnerXp.levelUp) text += `\n🎉 @${trade.partnerId.split('@')[0]} leveled up to ${partnerXp.level}!`;
+    if (initiatorUnlocks.length || initiatorTitle) text += `\n\n@${trade.initiatorId.split('@')[0]}${formatUnlockNotice(initiatorUnlocks)}${formatTitleUnlockNotice(initiatorTitle)}`;
+    if (partnerUnlocks.length || partnerTitle) text += `\n\n@${trade.partnerId.split('@')[0]}${formatUnlockNotice(partnerUnlocks)}${formatTitleUnlockNotice(partnerTitle)}`;
 
     msg.reply(
       text,
@@ -1135,11 +1153,14 @@ if (existing)
     });
 
     const unlocked = await checkAchievements(userId);
+    const xpResult = await addXP(userId, XP_REWARDS.fusion);
+    const newTitle = await checkTitle(userId);
     const luckyNote = lucky ? '\n\n🍀 *Lucky!* Jumped two tiers instead of one!' : '';
+    const xpLine = `\n⭐ +${XP_REWARDS.fusion} XP${xpResult.levelUp ? ` — 🎉 Level up! You're now level ${xpResult.level}!` : ''}`;
 
     msg.reply(
       `✨ *Fusion Success!*\n\nConsumed: ${consumedList}\n\nReceived: ${tierEmoji(resultCatalogue.tier)} *${resultCatalogue.name}* [${resultCatalogue.tier}]` +
-      luckyNote + formatUnlockNotice(unlocked)
+      luckyNote + xpLine + formatUnlockNotice(unlocked) + formatTitleUnlockNotice(newTitle)
     );
   },
 
