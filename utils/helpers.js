@@ -1,6 +1,33 @@
 const User = require('../models/User');
 
 // ─── Format Numbers ───────────────────────────────────────────────────────────
+// ─── Fancy Unicode text (used by .profile, .feedback, etc.) ──────────────────
+// Generated from plain ASCII at runtime instead of hardcoding the actual
+// glyphs in source — same visual result, but avoids any risk of a
+// mistyped/mis-copied Unicode character sitting invisibly in the file. Both
+// are simple fixed offsets into the "Mathematical Alphanumeric Symbols"
+// Unicode block; doubleStruck has a handful of letters (C, H, N, P, Q, R, Z)
+// that live at their own legacy Letter-like Symbol codepoints instead of the
+// main block, which is just how Unicode assigned them.
+function boldSans(text) {
+  return [...text].map(ch => {
+    const code = ch.codePointAt(0);
+    if (code >= 65 && code <= 90) return String.fromCodePoint(0x1D5D4 + (code - 65));   // A-Z
+    if (code >= 97 && code <= 122) return String.fromCodePoint(0x1D5EE + (code - 97));  // a-z
+    return ch;
+  }).join('');
+}
+function doubleStruck(text) {
+  const legacy = { C: 0x2102, H: 0x210D, N: 0x2115, P: 0x2119, Q: 0x211A, R: 0x211D, Z: 0x2124 };
+  return [...text].map(ch => {
+    if (legacy[ch]) return String.fromCodePoint(legacy[ch]);
+    const code = ch.codePointAt(0);
+    if (code >= 65 && code <= 90) return String.fromCodePoint(0x1D538 + (code - 65));
+    if (code >= 97 && code <= 122) return String.fromCodePoint(0x1D552 + (code - 97));
+    return ch;
+  }).join('');
+}
+
 function formatNum(n) {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
@@ -265,8 +292,23 @@ function mentionTag(contact) {
   return contact.id.user;
 }
 
+// WhatsApp's LID privacy layer means the same account can arrive under two
+// different ids depending on context — its normal phone-based JID, or a
+// "@lid" id — and there's no guarantee a message from the owner always
+// carries the same one (same underlying whatsapp-web.js quirk documented on
+// resolveSenderName above, just biting a raw id comparison here instead of a
+// display name). A single OWNER_NUMBER can't cover both, so this also
+// checks an optional OWNER_IDS env var — a comma-separated list of any other
+// ids that should also count as the owner. To find the exact id to add: run
+// any command that logs the sender id (.feedback does) from the affected
+// chat, then check pm2 logs for the full id it printed.
+function ownerIds() {
+  const extra = (process.env.OWNER_IDS || '').split(',').map(s => s.trim()).filter(Boolean);
+  return [process.env.OWNER_NUMBER, ...extra].filter(Boolean);
+}
+
 function isOwner(id) {
-  return id === process.env.OWNER_NUMBER;
+  return ownerIds().includes(id);
 }
 
 // ─── Moderators ──────────────────────────────────────────────────────────────
@@ -350,6 +392,8 @@ async function generateUniqueCode(Model, field = 'code') {
 }
 
 module.exports = {
+  boldSans,
+  doubleStruck,
   formatNum,
   formatCooldown,
   rand,

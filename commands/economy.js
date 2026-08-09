@@ -1,10 +1,75 @@
 const User = require('../models/User');
 const Guild = require('../models/Guild');
 const { CardCatalogue, OwnedCard } = require('../models/Card');
-const { formatNum, formatCooldown, rand, pick, tierEmoji, mentionName, mentionTag, safeGetChat, isOwner, isMod, addXP, XP_REWARDS } = require('../utils/helpers');
+const { formatNum, formatCooldown, rand, pick, tierEmoji, mentionName, mentionTag, safeGetChat, safeGetQuotedMessage, isOwner, isMod, addXP, XP_REWARDS, boldSans, doubleStruck, encodeIdKey } = require('../utils/helpers');
 const { battleGames } = require('./games');
 const { checkAchievements, formatUnlockNotice, ACHIEVEMENTS } = require('../utils/achievements');
 const { checkTitle, formatTitleUnlockNotice, titleLabel, TITLES } = require('../utils/titles');
+const { MessageMedia } = require('whatsapp-web.js');
+const ffmpeg = require('fluent-ffmpeg');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+const { uploadToCloud, deleteFromCloud, isCloudConfigured } = require('../utils/cloudinary');
+
+// ─── Profile pictures (.setpic) ───────────────────────────────────────────────
+// Processed locally with ffmpeg (resize/recompress), then uploaded to
+// Cloudinary — nothing but the resulting URL + public_id goes in MongoDB, so
+// this stays well clear of the 512MB Mongo storage cap regardless of how
+// many users set a picture. Local files here are pure scratch space (input
+// download + ffmpeg output) and get deleted right after upload.
+const TMP = os.tmpdir();
+
+function tmpFile(ext) {
+  return path.join(TMP, `ani-chan_setpic_${Date.now()}_${Math.random().toString(36).slice(2)}.${ext}`);
+}
+
+function runFfmpeg(inputPath, outputPath, outputOptions = []) {
+  return new Promise((resolve, reject) => {
+    ffmpeg(inputPath)
+      .outputOptions(outputOptions)
+      .output(outputPath)
+      .on('end', resolve)
+      .on('error', reject)
+      .run();
+  });
+}
+
+function cleanupFiles(...files) {
+  for (const file of files) {
+    try {
+      if (fs.existsSync(file)) fs.unlinkSync(file);
+    } catch {}
+  }
+}
+
+// Resolves either a directly-attached image (.setpic sent as the image's own
+// caption) or a reply to one (.setpic sent as a reply to an earlier image) —
+// same pattern commands/converter.js uses for .sticker.
+async function getTargetMessage(msg) {
+  if (!msg.hasQuotedMsg) return msg;
+  try {
+    const quoted = await safeGetQuotedMessage(msg);
+    return quoted || msg;
+  } catch (err) {
+    console.error('getTargetMessage: quoted message fetch failed:', err.message);
+    return 'ERROR';
+  }
+}
+
+function mimeToExt(mime = '') {
+  const m = mime.split(';')[0].toLowerCase();
+  const map = {
+    'image/jpeg': 'jpg',
+    'image/jpg': 'jpg',
+    'image/png': 'png',
+    'image/webp': 'webp',
+    'image/gif': 'gif',
+    'image/heic': 'heic',
+    'image/heif': 'heif',
+  };
+  return map[m] || 'jpg';
+}
 
 // Owner-gate for the testing command below — same pattern as
 // commands/cardmanager.js's checkOwner. Reuses the isOwner already imported
@@ -22,33 +87,6 @@ async function checkOwner(msg) {
 function xpProgressBar(current, max, length = 12) {
   const filled = Math.max(0, Math.min(length, Math.round((current / max) * length)));
   return '█'.repeat(filled) + '░'.repeat(length - filled);
-}
-
-// ─── Fancy Unicode text for the .profile card ─────────────────────────────────
-// Generated from plain ASCII at runtime instead of hardcoding the actual
-// glyphs in source — same visual result, but avoids any risk of a
-// mistyped/mis-copied Unicode character sitting invisibly in the file. Both
-// are simple fixed offsets into the "Mathematical Alphanumeric Symbols"
-// Unicode block; doubleStruck has a handful of letters (C, H, N, P, Q, R, Z)
-// that live at their own legacy Letter-like Symbol codepoints instead of the
-// main block, which is just how Unicode assigned them.
-function boldSans(text) {
-  return [...text].map(ch => {
-    const code = ch.codePointAt(0);
-    if (code >= 65 && code <= 90) return String.fromCodePoint(0x1D5D4 + (code - 65));   // A-Z
-    if (code >= 97 && code <= 122) return String.fromCodePoint(0x1D5EE + (code - 97));  // a-z
-    return ch;
-  }).join('');
-}
-function doubleStruck(text) {
-  const legacy = { C: 0x2102, H: 0x210D, N: 0x2115, P: 0x2119, Q: 0x211A, R: 0x211D, Z: 0x2124 };
-  return [...text].map(ch => {
-    if (legacy[ch]) return String.fromCodePoint(legacy[ch]);
-    const code = ch.codePointAt(0);
-    if (code >= 65 && code <= 90) return String.fromCodePoint(0x1D538 + (code - 65));
-    if (code >= 97 && code <= 122) return String.fromCodePoint(0x1D552 + (code - 97));
-    return ch;
-  }).join('');
 }
 
 const SHOP_ITEMS = [
@@ -390,6 +428,19 @@ async lottery(client, msg, args) {
       line('Cards', cardCount),
       line('Title', user.profile.title),
     ].join('\n');
+
+    // If they've set a profile picture (.setpic), send it as an actual
+    // image with the card as the caption — otherwise fall back to the plain
+    // text version, same as it's always worked.
+    if (user.profile.picUrl) {
+      try {
+        const media = await MessageMedia.fromUrl(user.profile.picUrl, { unsafeMime: true });
+        const chat = await safeGetChat(msg);
+        return await chat.sendMessage(media, { caption: card });
+      } catch (err) {
+        console.error('profile pic send failed, falling back to text:', err.message);
+      }
+    }
 
     msg.reply(card);
   },
@@ -770,5 +821,77 @@ async lottery(client, msg, args) {
       undefined,
       { mentions: [targetId] }
     );
+  },
+
+  // .setpic — reply to a photo (or send one with .setpic as the caption) to
+  // set it as your profile picture. Downscaled/recompressed with ffmpeg
+  // (already a project dependency via .sticker) to a fixed 512x512 JPEG —
+  // keeps it small and consistent regardless of what format/size came in,
+  // without needing sharp/jimp/canvas, none of which build on this Termux
+  // setup. Saved to disk under data/profile_pics/, overwriting any previous
+  // picture; only the file path is stored in Mongo.
+  async setpic(client, msg, args) {
+    if (!isCloudConfigured()) {
+      return msg.reply('⚠️ Profile pictures aren\'t set up yet — Cloudinary credentials are missing from .env. Ask the bot owner to finish setup.');
+    }
+
+    const targetMsg = await getTargetMessage(msg);
+    if (targetMsg === 'ERROR') return msg.reply('⚠️ WhatsApp connection hiccup — please try again in a moment.');
+    if (!targetMsg.hasMedia) {
+      return msg.reply('❌ Reply to a photo with .setpic (or send a photo with .setpic as the caption).');
+    }
+
+    const media = await targetMsg.downloadMedia().catch(() => null);
+    if (!media) return msg.reply('❌ Failed to download that image — try again.');
+    if (!media.mimetype.startsWith('image/')) {
+      return msg.reply('❌ That\'s not an image — .setpic only works on photos.');
+    }
+
+    const contact = await msg.getContact();
+    const userId = contact.id._serialized;
+    await User.findOrCreate(userId, contact.pushname);
+
+    await msg.reply('🖼️ Processing and uploading your profile picture...');
+
+    const inputExt = mimeToExt(media.mimetype);
+    const inputPath = tmpFile(inputExt);
+    const outputPath = tmpFile('jpg');
+
+    try {
+      fs.writeFileSync(inputPath, Buffer.from(media.data, 'base64'));
+      await runFfmpeg(inputPath, outputPath, [
+        '-vf', 'scale=512:512:force_original_aspect_ratio=decrease,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=white',
+        '-frames:v', '1', // in case it's an animated image — just take the first frame
+        '-q:v', '4',      // JPEG quality, roughly equivalent to ~80%
+      ]);
+
+      const { url, publicId } = await uploadToCloud(outputPath, {
+        folder: 'anichan/profile_pics',
+        publicId: encodeIdKey(userId), // same id every time -> overwrites their old picture instead of piling up
+        resourceType: 'image',
+      });
+
+      await User.updateOne({ id: userId }, { $set: { 'profile.picUrl': url, 'profile.picPublicId': publicId } });
+      msg.reply('✅ Profile picture updated! Check it with .profile.');
+    } catch (err) {
+      console.error('setpic error:', err.message);
+      msg.reply('❌ Could not set that as your profile picture — try again in a moment.');
+    } finally {
+      cleanupFiles(inputPath, outputPath);
+    }
+  },
+
+  // .removepic — clears your profile picture, if you have one set.
+  async removepic(client, msg, args) {
+    const contact = await msg.getContact();
+    const userId = contact.id._serialized;
+    const user = await User.findOrCreate(userId, contact.pushname);
+
+    if (!user.profile.picUrl) return msg.reply('❌ You don\'t have a profile picture set.');
+
+    await deleteFromCloud(user.profile.picPublicId);
+    await User.updateOne({ id: userId }, { $set: { 'profile.picUrl': '', 'profile.picPublicId': '' } });
+
+    msg.reply('🗑 Profile picture removed.');
   },
 };

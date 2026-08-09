@@ -32,6 +32,12 @@ const UserSchema = new mongoose.Schema({
   profile: {
     title: { type: String, default: '🌸 New Adventurer' },
     badge: { type: String, default: '' },
+    // Cloudinary-hosted profile picture (see commands/economy.js's
+    // .setpic). picUrl is the permanent HTTPS URL sent back to WhatsApp via
+    // MessageMedia.fromUrl; picPublicId is Cloudinary's own id for the file,
+    // needed to delete/overwrite it later. Empty strings mean none set.
+    picUrl: { type: String, default: '' },
+    picPublicId: { type: String, default: '' },
   },
   campCount: { type: Number, default: 0 },      // for anticamp
   achievements: { type: [String], default: [] }, // unlocked achievement ids
