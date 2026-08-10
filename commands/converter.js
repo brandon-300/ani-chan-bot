@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { safeGetChat, safeGetQuotedMessage } = require('../utils/helpers');
+const { BOT_NAME } = require('../utils/config');
 
 const TMP = os.tmpdir();
 
@@ -143,7 +144,7 @@ module.exports = {
       if (!chat) return;
       await chat.sendMessage(stickerMedia, {
         sendMediaAsSticker: true,
-        stickerName: 'AniChan Bot',
+        stickerName: BOT_NAME,
         stickerAuthor: 'Brandon',
       });
     } catch (err) {
@@ -155,7 +156,7 @@ module.exports = {
 
   // .take — save sticker metadata (pack name, author)
   async take(client, msg, args) {
-    const packName = args[0] || 'AniChan Bot';
+    const packName = args[0] || BOT_NAME;
     const authorName = args[1] || 'Brandon';
 
     const targetMsg = await getTargetMessage(msg);

@@ -2,6 +2,7 @@ const User = require('../models/User');
 const Guild = require('../models/Guild');
 const { CardCatalogue, OwnedCard } = require('../models/Card');
 const { formatNum, formatCooldown, rand, pick, tierEmoji, mentionName, mentionTag, safeGetChat, safeGetQuotedMessage, isOwner, isMod, addXP, XP_REWARDS, boldSans, doubleStruck, encodeIdKey } = require('../utils/helpers');
+const { BOT_NAME } = require('../utils/config');
 const { battleGames } = require('./games');
 const { checkAchievements, formatUnlockNotice, ACHIEVEMENTS } = require('../utils/achievements');
 const { checkTitle, formatTitleUnlockNotice, titleLabel, TITLES } = require('../utils/titles');
@@ -595,7 +596,7 @@ async lottery(client, msg, args) {
 
   // .shop
   async shop(client, msg, args) {
-    let text = `🛍️ *Ani-Chan Bot Shop*\n\n`;
+    let text = `🛍️ *${BOT_NAME} Shop*\n\n`;
     SHOP_ITEMS.forEach((item, i) => {
       text += `${i + 1}. ${item.emoji} *${item.name}*\n   💰 ${item.price} coins — ${item.effect}\n\n`;
     });

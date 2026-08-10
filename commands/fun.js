@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { pick, rand, mentionName, safeGetChat, safeGetQuotedMessage } = require('../utils/helpers');
+const { BOT_NAME } = require('../utils/config');
 const { renderMemeImage, renderAnimatedMemeFrames } = require('../utils/memeRender');
 
 // ─── Local media helpers for .meme (image/sticker in -> image/sticker out) ───
@@ -267,7 +268,7 @@ async function sendAnimatedMemeSticker(client, chat, source, topText, bottomText
   const stickerMedia = new MessageMedia('image/webp', webpBuffer.toString('base64'));
   await chat.sendMessage(stickerMedia, {
     sendMediaAsSticker: true,
-    stickerName: 'AniChan Bot',
+    stickerName: BOT_NAME,
     stickerAuthor: 'Brandon',
   });
 }
@@ -573,7 +574,7 @@ module.exports = {
         const stickerMedia = new MessageMedia('image/webp', fs.readFileSync(webpPath).toString('base64'));
         await chat.sendMessage(stickerMedia, {
           sendMediaAsSticker: true,
-          stickerName: 'AniChan Bot',
+          stickerName: BOT_NAME,
           stickerAuthor: 'Brandon',
         });
       } else {

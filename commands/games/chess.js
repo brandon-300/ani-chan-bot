@@ -3,8 +3,7 @@ const { MessageMedia } = require('whatsapp-web.js');
 const { safeGetChat, resolveNameById } = require('../../utils/helpers');
 const { getBestMove } = require('./chessEngine');
 const { renderBoardImage } = require('./chessBoardImage');
-
-const BOT_NAME = process.env.BOT_NAME || 'Ani-Chan Bot';
+const { BOT_NAME } = require('../../utils/config');
 
 // ─── Active Game Sessions ─────────────────────────────────────────────────────
 // chatId -> { chess, mode: 'pvp' | 'bot', white, black, whiteName, blackName, search }

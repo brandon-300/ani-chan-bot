@@ -820,17 +820,10 @@ client.on('message', (msg) => {
       return await msg.reply(`❓ Unknown command: *${PREFIX}${command}*\nType *${PREFIX}menu* to see what's available.`);
     }
 
-    // ── AFK welcome-back ────────────────────────────────────────────────────
-    // Runs for every recognized command, before it executes, so someone
-    // coming back from AFK always sees the welcome-back message first and
-    // their command's own response right after — not the other way around.
-    try {
-      const contact = await safeGetContact(msg);
-      const { _checkAfkReturn } = require('./commands/afk');
-      await _checkAfkReturn(msg, contact.id._serialized);
-    } catch (err) {
-      console.error('AFK check failed:', err.message);
-    }
+    // NOTE: AFK welcome-back used to be checked right here (command-only).
+    // It's now a standalone client.on('message', ...) listener further down
+    // — see the "AFK welcome-back" section near the AFK-mention listener —
+    // so it fires for every message the person sends, not just commands.
 
     const isHeavy = HEAVY_COMMANDS.has(command);
 
@@ -1061,6 +1054,32 @@ client.on('message', async (msg) => {
     await _checkAfkMentions(client, msg);
   } catch (err) {
     console.error('AFK mention check error:', err.message);
+  }
+});
+
+// ── AFK welcome-back ──────────────────────────────────────────────────────
+// BUGFIX (Aug 2026): this used to be checked only from inside the main
+// dispatch listener above, right before a recognized command executed — so
+// coming back from AFK only welcomed the person back if their first message
+// happened to be a command (or an implicit .copilot/.voice reply to
+// something the BOT itself sent). A plain reply to whoever @-mentioned them
+// while they were away — the most common way someone actually comes back —
+// isn't a command and isn't a reply to the bot, so it fell straight through
+// and welcome-back never fired at all.
+//
+// Now a standalone listener, same pattern as the AFK-mention listener right
+// above and the activity-tracking/antilink listeners further up: it runs for
+// EVERY message the person sends — any text, any reply target (or none),
+// group or DM, command or not — so they're welcomed back the moment they
+// show up again, no matter who or what they replied to.
+client.on('message', async (msg) => {
+  try {
+    if (msg.fromMe) return;
+    const contact = await safeGetContact(msg);
+    const { _checkAfkReturn } = require('./commands/afk');
+    await _checkAfkReturn(msg, contact.id._serialized);
+  } catch (err) {
+    console.error('AFK welcome-back check failed:', err.message);
   }
 });
 
