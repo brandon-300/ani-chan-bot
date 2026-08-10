@@ -6,6 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
 const { safeGetQuotedMessage, safeGetChat, safeGetContact, resolveSenderName, withRetry, encodeIdKey } = require('./utils/helpers');
+const { BOT_NAME } = require('./utils/config');
 
 // Shared with the LocalAuth session path below and with the browser-lock
 // recovery helpers further down, so both always agree on the same binary
@@ -88,7 +89,6 @@ if (process.env.BOT_NUMBER) {
 const client = new Client(clientOptions);
 
 const PREFIX = process.env.BOT_PREFIX || '.';
-const BOT_NAME = process.env.BOT_NAME || 'Ani-Chan Bot';
 
 const commands = {};
 const commandDir = path.join(__dirname, 'commands');
