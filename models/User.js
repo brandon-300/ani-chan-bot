@@ -24,10 +24,24 @@ const UserSchema = new mongoose.Schema({
   pet: {
     name: { type: String, default: null },
     type: { type: String, default: null },
-    hunger: { type: Number, default: 100 },
+    // Rarity tier of the adopted pet — 'C'/'B'/'A'/'S'/'SS'/'SSS', same
+    // scale as card tiers (see utils/helpers.js TIER_DROP_RATES). null for
+    // any pet adopted before the rarity system existed; commands/pets.js
+    // handles that gracefully (just omits the rarity tag when displaying).
+    rarity: { type: String, default: null },
+    // hunger = how HUNGRY the pet is (0 = full, 100 = starving). Rises over
+    // time since lastFed; .pet feed lowers it. (happiness is the opposite
+    // convention — 100 = happy — which matches its name, so it's untouched.)
+    hunger: { type: Number, default: 0 },
     happiness: { type: Number, default: 100 },
     lastFed: { type: Number, default: 0 },
     lastPlayed: { type: Number, default: 0 },
+    // False for any pet whose stored `hunger` value predates the hunger-
+    // direction fix (still using the old "100 = full" meaning). The
+    // migratePetHunger.js script flips those old values once and sets this
+    // true; commands/pets.js also sets it true on every fresh .pet adopt,
+    // since new pets are created correctly from the start.
+    hungerMigrated: { type: Boolean, default: false },
   },
   profile: {
     title: { type: String, default: '🌸 New Adventurer' },

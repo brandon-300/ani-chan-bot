@@ -132,17 +132,19 @@ const aliases = {
 // command. To add/remove a command from the menu later, edit an array below
 // — no need to touch any string-building logic.
 //
-// NOTE: a handful of entries here (currently: .bots, .memories, .elb,
-// .estats, .guilds, .pmenu, and the newer entries inside CARDS/ECONOMY/
-// GAMES/FUN/DOWNLOADERS/SEARCH/AI/CONVERTER/ANIME SFW/ANIME NSFW/ADMIN
-// marked "planned") are on the roadmap but don't have a handler wired up
-// in commands/ yet — they'll reply "❓ Unknown command" until built. They're
-// listed now so the menu doesn't need another rewrite once they land.
+// AUDITED (Aug 2026): every entry below was checked against the actual
+// loaded `commands` object — nothing here is a placeholder for something
+// unbuilt. Owner-only admin tools (card catalogue management like
+// .addcard/.mergecards/.repairlinks, the .addxp testing command, etc.) are
+// deliberately left off — this menu is the public command list. When a new
+// command is added, add it here in the same pass; when one changes name or
+// gets removed, update/remove its entry here too, so this never drifts out
+// of sync with reality again.
 const MENU_SECTIONS = [
   {
     emoji: '⚙️',
     title: 'GENERAL',
-    items: ['.rules', '.setrules', '.test', '.stats', '.mods', '.owner', '.bots', '.url', '.otp', '.memories'],
+    items: ['.rules', '.setrules', '.ping', '.stats', '.mods', '.owner', '.url', '.otp', '.afk'],
   },
   {
     emoji: '🎴',
@@ -152,10 +154,10 @@ const MENU_SECTIONS = [
       '.clb', '.vlb', '.tlb', '.sslb', '.mclb', '.slb',
       '.deck', '.col', '.cardshop', '.sellc', '.rc', '.vs', '.claim',
       '.sc', '.tc', '.accepttrade', '.declinetrade',
-      '.lendcard / lc', '.fuse', '.wishlist', '.wishlb',
-      '.auction', '.submit', '.myauc', '.remauc', '.listauc',
+      '.lendcard / lc', '.fuse / fusion', '.wishlist', '.wishlb',
+      '.auction', '.submit / bid', '.myauc', '.remauc', '.listauc',
       '.stardust', '.anticamp',
-      '.cg', '.tier', '.cs', '.myseries', '.fusion', '.resell', '.bid',
+      '.cg', '.tier', '.cs', '.myseries', '.resell',
     ],
   },
   {
@@ -164,12 +166,12 @@ const MENU_SECTIONS = [
     items: [
       '.balance / bal', '.orbs', '.ebal', '.daily',
       '.withdraw / wd', '.deposit / dep', '.donate',
-      '.lottery', '.lotterylist', '.rich', '.richg',
+      '.lottery', '.rich', '.richg',
       '.profile / p', '.edit', '.bio', '.setname', '.setage',
+      '.setpic', '.removepic',
       '.inventory / inv', '.use', '.sell', '.buy', '.shop',
-      '.dig', '.fish', '.leaderboard / lb', '.stlb', '.achievements / ach',
-      '.roast', '.gamble', '.beg', '.loan', '.mycds', '.afk',
-      '.rename', '.transactions', '.rob', '.shame', '.myshame', '.heist',
+      '.dig', '.fish', '.leaderboard / lb', '.achievements / ach',
+      '.level / xp', '.roast', '.gamble', '.beg',
     ],
   },
   {
@@ -178,19 +180,14 @@ const MENU_SECTIONS = [
     items: [
       '.ttt', '.quitgame', '.c4', '.drop', '.chess', '.move',
       '.startbattle', '.attack', '.defend', '.flee',
-      '.akinator / aki', '.greekgod / gg', '.wcg', '.aquiz',
+      '.akinator / aki', '.greekgod / gg', '.wcg',
     ],
-  },
-  {
-    emoji: '🎉',
-    title: 'EVENTS',
-    items: ['.elb', '.estats'],
   },
   {
     emoji: '🏰',
     title: 'GUILDS',
     items: [
-      '.guilds', '.guild info', '.guild create', '.guild invite',
+      '.guild info', '.guild create', '.guild invite',
       '.guild accept', '.guild decline', '.guild emblem',
       '.guild leave', '.guild disband', '.guild members', '.guild remove',
     ],
@@ -198,12 +195,7 @@ const MENU_SECTIONS = [
   {
     emoji: '🎰',
     title: 'GAMBLE',
-    items: ['.slots', '.cf', '.dice', '.db', '.dp', '.roulette', '.horse', '.bj', '.rr'],
-  },
-  {
-    emoji: '🐉',
-    title: 'POKÉMON',
-    items: ['.pmenu'],
+    items: ['.slots', '.cf', '.dice', '.db', '.dp', '.roulette', '.horse'],
   },
   {
     emoji: '🎭',
@@ -226,19 +218,19 @@ const MENU_SECTIONS = [
   {
     emoji: '⬇️',
     title: 'DOWNLOADERS',
-    items: ['.ig', '.ttk', '.yt', '.x', '.fb', '.play', '.anime', '.manga', '.manhwa', '.novel'],
+    items: ['.ig', '.ttk', '.yt', '.x', '.fb', '.play'],
   },
   {
     emoji: '🔍',
     title: 'SEARCH',
-    items: ['.pinterest / pint', '.sauce / reverseimg', '.wallpaper', '.lyrics', '.igstalk', '.shazam'],
+    items: ['.pinterest / pint', '.sauce / reverseimg', '.wallpaper', '.lyrics'],
   },
   {
     emoji: '🤖',
     title: 'AI',
     items: [
       '.copilot', '.gpt', '.voice', '.imagine', '.upscale',
-      '.translate / tt', '.transcribe / tb', '.ocr', '.tldr', '.tts',
+      '.translate / tt', '.transcribe / tb', '.tts',
     ],
   },
   {
@@ -246,24 +238,20 @@ const MENU_SECTIONS = [
     title: 'CONVERTER',
     items: [
       '.sticker / s', '.take', '.toimg', '.tovid', '.tomp3', '.tovn',
-      '.rotate', '.flip', '.resize', '.tourl', '.carbon', '.fancy',
+      '.rotate', '.flip', '.resize', '.tourl',
     ],
   },
   {
     emoji: '🌸',
     title: 'ANIME SFW',
-    items: [
-      '.waifu', '.neko', '.maid', '.mori-calliope', '.raiden-shogun',
-      '.oppai', '.selfies', '.uniform', '.kamisato-ayaka',
-      '.yuri', '.yaoi', '.cosplay',
-    ],
+    items: ['.waifu', '.neko', '.maid', '.oppai', '.selfies', '.uniform'],
   },
   {
     emoji: '🔞',
     title: 'ANIME NSFW',
     items: [
       '.nsfw on/off', '.milf', '.ass', '.hentai', '.oral', '.ecchi',
-      '.paizuri', '.ero', '.ehentai', '.nhentai', '.gelbooru',
+      '.paizuri', '.ero', '.ehentai', '.nhentai',
     ],
   },
   {
@@ -274,13 +262,13 @@ const MENU_SECTIONS = [
       '.warn', '.resetwarn', '.groupstats / gs', '.welcome', '.setwelcome',
       '.leave', '.setleave', '.purge', '.blacklist', '.promote', '.demote',
       '.mute', '.unmute', '.hidetag', '.tagall', '.activity', '.active',
-      '.inactive', '.open', '.close', '.news',
+      '.inactive', '.open', '.close',
     ],
   },
   {
     emoji: '🐾',
     title: 'PETS',
-    items: ['.pet', '.pet adopt', '.pet feed', '.pet play', '.pet name'],
+    items: ['.pet', '.pet adopt', '.pet catalogue', '.pet feed', '.pet play', '.pet name'],
   },
   {
     emoji: '📬',
@@ -1055,6 +1043,24 @@ client.on('message', async (msg) => {
     }
   } catch (err) {
     console.error('Antilink error:', err.stack || err.message || err);
+  }
+});
+
+// ── AFK mention notice ────────────────────────────────────────────────────
+// Separate from the main dispatch listener above on purpose: that one only
+// runs for recognized commands / mentions of the bot itself / replies to the
+// bot, so a plain "@someone how's it going" would never reach it. This
+// listener fires for every message and just checks whether any @-mentioned
+// person is currently AFK, independent of whether the message is a command
+// at all — same standalone-listener pattern already used for activity
+// tracking and antilink above.
+client.on('message', async (msg) => {
+  try {
+    if (msg.fromMe) return;
+    const { _checkAfkMentions } = require('./commands/afk');
+    await _checkAfkMentions(client, msg);
+  } catch (err) {
+    console.error('AFK mention check error:', err.message);
   }
 });
 

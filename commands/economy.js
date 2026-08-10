@@ -90,6 +90,7 @@ function xpProgressBar(current, max, length = 12) {
 }
 
 const SHOP_ITEMS = [
+  { name: 'Pet Food', price: 100, emoji: '🍖', effect: "Feed your pet (-25% hunger) via .pet feed" },
   { name: 'Health Potion', price: 200, emoji: '🧪', effect: 'Restore HP in battles' },
   { name: 'Orb Pack', price: 500, emoji: '🔮', effect: 'Get 3 orbs' },
   { name: 'Lucky Charm', price: 800, emoji: '🍀', effect: 'Boost drop rates for 1 hour' },
@@ -394,12 +395,6 @@ async lottery(client, msg, args) {
     const registered = new Date(user.createdAt)
       .toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
 
-    // No gym-badge or ban system exists yet (Pokémon commands and a
-    // moderation ban are both still on the to-build list) — shown as
-    // fixed defaults for every profile until those land for real.
-    const gymBadges = 'None';
-    const banned = 'No';
-
     // BUGFIX (Aug 2026): this used to read user.cards.length — a field
     // that's declared on the User schema but that nothing in the codebase
     // ever writes to (not .claim, not .sc, not .tc/accepttrade), so it was
@@ -420,8 +415,6 @@ async lottery(client, msg, args) {
       line('Registered', registered),
       line('Role', role),
       line('Guild', guildLabel),
-      line('Gym Badges', gymBadges),
-      line('Banned', banned),
       line('Level', `${user.level} (${user.xp} XP)`),
       line('Coins', formatNum(user.coins)),
       line('Orbs', user.orbs),
@@ -564,6 +557,14 @@ async lottery(client, msg, args) {
     } else if (matchedName === 'Star Fragment') {
       user.stardust += 50;
       effect = '⭐ Got 50 stardust!';
+    } else if (matchedName === 'Pet Food') {
+      // Pet Food is consumed automatically by .pet feed itself (it checks
+      // and removes it from inventory directly) rather than through this
+      // generic .use command, so it can be paired with feeding in one step.
+      // Refund it here rather than letting .use silently burn it with no
+      // effect.
+      effect = "🍖 Use *.pet feed* to feed this to your pet — it's consumed automatically from there, not through .use.";
+      refund = true;
     } else {
       effect = '✅ Used!';
     }
