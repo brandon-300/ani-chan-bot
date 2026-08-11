@@ -4,7 +4,7 @@ const ffmpeg = require('fluent-ffmpeg');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { mentionTag } = require('../utils/helpers');
+const { mentionTag, safeGetQuotedMessage, safeGetContact } = require('../utils/helpers');
 
 const TMP = os.tmpdir();
 
@@ -90,9 +90,9 @@ async function getGifFromNekosBest(endpoint) {
 // No API key required. Confirmed live via direct curl test (Aug 2026) —
 // its full reaction list was pulled straight from its own /gif/allreactions
 // endpoint rather than third-party docs, after a previous fallback choice
-// (waifu.pics) turned out to be a dead domain (NXDOMAIN even via 8.8.8.8).
-// Covers hug/kiss/slap/wave/pat/dance/cry/smile/laugh/lick/punch/tickle —
-// only "kill" has no equivalent (this API's list is all wholesome/social
+// (waifu.pics) turned out to be a dead domain (NXDOMAIN). Covers
+// hug/kiss/slap/wave/pat/dance/cry/smile/laugh/lick/punch/tickle — only
+// "kill" has no equivalent (this API's list is all wholesome/social
 // reactions, no violence-themed categories), so .kill stays nekos.best-only.
 async function getGifFromOtakuGifs(reaction, attempt = 1) {
   try {
@@ -198,27 +198,49 @@ async function sendGif(msg, nekosEndpoint, otakuReaction, text, mentions = []) {
   msg.reply(text, undefined, { mentions });
 }
 
+// ─── Target resolution for two-party actions ───────────────────────────────
+// Accepts a target two ways, matching the reference "Miyabi" bot:
+//   1. An explicit @mention in the command message.
+//   2. Replying to someone's earlier message (the quoted message's sender
+//      becomes the target) — uses the same safeGetQuotedMessage/
+//      safeGetContact retry helpers already used elsewhere in the codebase
+//      for transient WhatsApp-internal glitches.
+// Returns null if neither is present. Deliberately does NOT fall back to
+// "everyone" — that was the bug: buildInteraction() used to silently tag
+// nobody as a real target and just print the word "everyone" as inert
+// text, which reads as if the command mass-mentioned the group.
+async function resolveTarget(msg) {
+  const mentioned = await msg.getMentions();
+  if (mentioned[0]) return mentioned[0];
+
+  if (msg.hasQuotedMsg) {
+    try {
+      const quoted = await safeGetQuotedMessage(msg);
+      if (quoted) return await safeGetContact(quoted);
+    } catch (err) {
+      console.error('resolveTarget: quoted message/contact fetch failed:', err.message);
+      // Fall through to "no target" — a transient fetch failure here
+      // shouldn't crash the command, just means we ask the user to
+      // mention/reply again.
+    }
+  }
+  return null;
+}
+
 // ─── Two-party actions (hug, kiss, slap, etc.) ─────────────────────────────
 // Builds "@sender <action> @target" — a REAL tappable mention on both
-// sides, not the sender's plain pushname and not inert "@number" text —
-// plus the matching `mentions` array to hand to sendGif/msg.reply. Falls
-// back to "everyone" (plain text, nothing to tag) when nobody was
-// @-mentioned, same as before.
+// sides, not the sender's plain pushname and not inert "@number" text.
+// Returns null (instead of building a fake "everyone" target) when
+// resolveTarget() finds nobody — callers must check for this and reply
+// with the "please mention or reply" message rather than sending a GIF.
 async function buildInteraction(msg, action) {
   const contact = await msg.getContact();
-  const mentioned = await msg.getMentions();
-  const target = mentioned[0];
-
-  const mentions = [contact.id._serialized];
-  let targetText = 'everyone';
-  if (target) {
-    targetText = `@${mentionTag(target)}`;
-    mentions.push(target.id._serialized);
-  }
+  const target = await resolveTarget(msg);
+  if (!target) return null;
 
   return {
-    text: `@${mentionTag(contact)} ${action} ${targetText}`,
-    mentions,
+    text: `@${mentionTag(contact)} ${action} @${mentionTag(target)}`,
+    mentions: [contact.id._serialized, target.id._serialized],
   };
 }
 
@@ -232,30 +254,63 @@ async function buildSelf(msg, action) {
   };
 }
 
+const NO_TARGET_MSG = 'Please mention or reply to a user to use this command.';
+
+// ─── .fuck / .kidnap text builders ─────────────────────────────────────────
+// Same mention-or-reply requirement as buildInteraction() above (via
+// resolveTarget), but kept as their own functions instead of reusing
+// buildInteraction() since these two keep their original bespoke
+// emoji/flavor text rather than the generic "@sender <action> @target"
+// phrasing the other commands use.
+async function buildFuck(msg) {
+  const contact = await msg.getContact();
+  const target = await resolveTarget(msg);
+  if (!target) return null;
+  return {
+    text: `😤 @${mentionTag(contact)} said a bad word at @${mentionTag(target)}! (meme command)`,
+    mentions: [contact.id._serialized, target.id._serialized],
+  };
+}
+
+async function buildKidnap(msg) {
+  const contact = await msg.getContact();
+  const target = await resolveTarget(msg);
+  if (!target) return null;
+  return {
+    text: `🚨 @${mentionTag(contact)} kidnapped @${mentionTag(target)}! 🚓 Police on the way! (meme command)`,
+    mentions: [contact.id._serialized, target.id._serialized],
+  };
+}
+
 module.exports = {
   async hug(client, msg, args) {
-    const { text, mentions } = await buildInteraction(msg, 'hugs');
-    await sendGif(msg, 'hug', 'hug', text, mentions);
+    const built = await buildInteraction(msg, 'hugs');
+    if (!built) return msg.reply(NO_TARGET_MSG);
+    await sendGif(msg, 'hug', 'hug', built.text, built.mentions);
   },
 
   async kiss(client, msg, args) {
-    const { text, mentions } = await buildInteraction(msg, 'kisses');
-    await sendGif(msg, 'kiss', 'kiss', text, mentions);
+    const built = await buildInteraction(msg, 'kisses');
+    if (!built) return msg.reply(NO_TARGET_MSG);
+    await sendGif(msg, 'kiss', 'kiss', built.text, built.mentions);
   },
 
   async slap(client, msg, args) {
-    const { text, mentions } = await buildInteraction(msg, 'slaps');
-    await sendGif(msg, 'slap', 'slap', text, mentions);
+    const built = await buildInteraction(msg, 'slaps');
+    if (!built) return msg.reply(NO_TARGET_MSG);
+    await sendGif(msg, 'slap', 'slap', built.text, built.mentions);
   },
 
   async wave(client, msg, args) {
-    const { text, mentions } = await buildInteraction(msg, 'waves at');
-    await sendGif(msg, 'wave', 'wave', text, mentions);
+    const built = await buildInteraction(msg, 'waves at');
+    if (!built) return msg.reply(NO_TARGET_MSG);
+    await sendGif(msg, 'wave', 'wave', built.text, built.mentions);
   },
 
   async pat(client, msg, args) {
-    const { text, mentions } = await buildInteraction(msg, 'pats');
-    await sendGif(msg, 'pat', 'pat', text, mentions);
+    const built = await buildInteraction(msg, 'pats');
+    if (!built) return msg.reply(NO_TARGET_MSG);
+    await sendGif(msg, 'pat', 'pat', built.text, built.mentions);
   },
 
   async dance(client, msg, args) {
@@ -279,13 +334,15 @@ module.exports = {
   },
 
   async lick(client, msg, args) {
-    const { text, mentions } = await buildInteraction(msg, 'licks');
-    await sendGif(msg, 'lick', 'lick', text, mentions);
+    const built = await buildInteraction(msg, 'licks');
+    if (!built) return msg.reply(NO_TARGET_MSG);
+    await sendGif(msg, 'lick', 'lick', built.text, built.mentions);
   },
 
   async punch(client, msg, args) {
-    const { text, mentions } = await buildInteraction(msg, 'punches');
-    await sendGif(msg, 'punch', 'punch', text, mentions);
+    const built = await buildInteraction(msg, 'punches');
+    if (!built) return msg.reply(NO_TARGET_MSG);
+    await sendGif(msg, 'punch', 'punch', built.text, built.mentions);
   },
 
   async jihad(client, msg, args) {
@@ -307,40 +364,33 @@ module.exports = {
   },
 
   async kill(client, msg, args) {
-    const { text, mentions } = await buildInteraction(msg, 'kills');
+    const built = await buildInteraction(msg, 'kills');
+    if (!built) return msg.reply(NO_TARGET_MSG);
     // No otakugifs.xyz equivalent — nekos.best only. Falls back to text if
     // nekos.best is unreachable.
-    await sendGif(msg, 'shoot', null, text, mentions);
+    await sendGif(msg, 'shoot', null, built.text, built.mentions);
   },
 
   async bonk(client, msg, args) {
-    const { text, mentions } = await buildInteraction(msg, 'bonks');
-    await sendGif(msg, 'slap', 'slap', text, mentions);
+    const built = await buildInteraction(msg, 'bonks');
+    if (!built) return msg.reply(NO_TARGET_MSG);
+    await sendGif(msg, 'slap', 'slap', built.text, built.mentions);
   },
 
-  // intentionally left as text — family-friendly bot
+  // GIF via nekos.best "baka" — no otakugifs.xyz equivalent exists, so
+  // this is nekos.best-only, same as .kill below. On a connection where
+  // nekos.best is Cloudflare-blocked, this will reliably fall back to the
+  // text-only reply inside sendGif() until nekos.best is reachable again.
   async fuck(client, msg, args) {
-    const contact = await msg.getContact();
-    const mentioned = await msg.getMentions();
-    const target = mentioned[0];
-
-    const mentions = [contact.id._serialized];
-    let targetText = 'the void';
-    if (target) {
-      targetText = `@${mentionTag(target)}`;
-      mentions.push(target.id._serialized);
-    }
-
-    msg.reply(
-      `😤 @${mentionTag(contact)} said a bad word at ${targetText}! (meme command)`,
-      undefined,
-      { mentions }
-    );
+    const built = await buildFuck(msg);
+    if (!built) return msg.reply(NO_TARGET_MSG);
+    await sendGif(msg, 'baka', null, built.text, built.mentions);
   },
 
   async tickle(client, msg, args) {
-    const { text, mentions } = await buildInteraction(msg, 'tickles');
-    await sendGif(msg, 'tickle', 'tickle', text, mentions);
+    const built = await buildInteraction(msg, 'tickles');
+    if (!built) return msg.reply(NO_TARGET_MSG);
+    await sendGif(msg, 'tickle', 'tickle', built.text, built.mentions);
   },
 
   async shrug(client, msg, args) {
@@ -361,22 +411,12 @@ module.exports = {
     );
   },
 
+  // GIF via nekos.best "carry" — same nekos.best-only situation as .fuck
+  // and .kill: no otakugifs.xyz equivalent, so this falls back to text
+  // whenever nekos.best is unreachable.
   async kidnap(client, msg, args) {
-    const contact = await msg.getContact();
-    const mentioned = await msg.getMentions();
-    const target = mentioned[0];
-
-    const mentions = [contact.id._serialized];
-    let targetText = 'someone';
-    if (target) {
-      targetText = `@${mentionTag(target)}`;
-      mentions.push(target.id._serialized);
-    }
-
-    msg.reply(
-      `🚨 @${mentionTag(contact)} tried to kidnap ${targetText}! 🚓 Police on the way! (meme command)`,
-      undefined,
-      { mentions }
-    );
+    const built = await buildKidnap(msg);
+    if (!built) return msg.reply(NO_TARGET_MSG);
+    await sendGif(msg, 'carry', null, built.text, built.mentions);
   },
 };

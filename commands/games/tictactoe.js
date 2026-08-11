@@ -1,14 +1,24 @@
+const { MessageMedia } = require('whatsapp-web.js');
 const { safeGetChat, resolveNameById } = require('../../utils/helpers');
+const { getBestMove } = require('./tictactoeEngine');
+const { renderBoardImage } = require('./tictactoeBoardImage');
+const { BOT_NAME } = require('../../utils/config');
 
 // ─── Active Game Sessions ─────────────────────────────────────────────────────
-// chatId -> { board, turn, players, names, symbols }
-// `names` is resolved once at game start and cached here — see the comment
-// on the .ttt command below for why we don't just re-derive it from
-// WhatsApp Contact objects every time we need to display it.
+// chatId -> { board, mode: 'pvp' | 'bot', turn, players, names, symbols,
+//             difficulty, lastMove }
+// Same shape/conventions as chessGames in chess.js: in bot mode the human
+// is always players[0] (symbols[0], '❌') and players[1] is the literal
+// string 'BOT' — never a real WhatsApp id, so it can never accidentally
+// match one. `names` is resolved once at game start and cached here — see
+// the comment in the .ttt command below for why we don't just re-derive it
+// from WhatsApp Contact objects every time we need to display it.
 const tttGames = new Map();
 
+const DIFFICULTY_KEYS = ['easy', 'medium', 'hard'];
+
 // ─── Helpers ───────────────────────────────────────────────────────────────────
-function renderTTT(board) {
+function renderTTTText(board) {
   return board.map(r => r.join(' | ')).join('\n─────────\n') + '\n\nPositions:\n1|2|3\n─────────\n4|5|6\n─────────\n7|8|9';
 }
 
@@ -26,10 +36,41 @@ function checkTTTWin(board) {
   return null;
 }
 
+// The board/win-check logic above works in terms of the display symbols
+// ('❌'/'⭕'/'·') so the text fallback and win-check stay unchanged from
+// before. tictactoeEngine.js works in plain 'X'/'O'/null terms instead
+// (it has no reason to know which emoji is in use) — this converts between
+// the two right before/after calling it, rather than changing the engine
+// or the rest of this file's board representation.
+function toEngineCells(board, symbols) {
+  return board.flat().map(cell => {
+    if (cell === symbols[0]) return 'X';
+    if (cell === symbols[1]) return 'O';
+    return null;
+  });
+}
+
+// Sends the current board as an image with `caption`. Falls back to the
+// existing plain-text board (with the same caption appended) if image
+// rendering fails for any reason, so the game is never blocked by it — same
+// pattern as sendBoard() in chess.js.
+async function sendBoard(msg, chat, game, caption) {
+  try {
+    const png = renderBoardImage(game.board, { symbols: game.symbols, lastMove: game.lastMove });
+    const media = new MessageMedia('image/png', png.toString('base64'), 'ttt-board.png');
+    await chat.sendMessage(media, { caption });
+  } catch (err) {
+    console.error('Tic Tac Toe board image render failed, falling back to text board:', err.message);
+    await msg.reply(`${renderTTTText(game.board)}\n\n${caption}`);
+  }
+}
+
 module.exports = {
   tttGames,
 
-  // .ttt — start a game, or (if one's active) .ttt [1-9] to make a move
+  // .ttt @user — play another person
+  // .ttt [easy|medium|hard] — play the bot (defaults to medium)
+  // .ttt [1-9] — make a move in whichever game is active (shared by both modes)
   async ttt(client, msg, args) {
     const chat = await safeGetChat(msg);
     if (!chat) return;
@@ -59,32 +100,70 @@ module.exports = {
         return msg.reply('❌ That spot is already taken! Choose another.');
       }
 
+      const moverName = game.names[game.turn];
       game.board[row][col] = game.symbols[game.turn];
+      game.lastMove = { row, col };
 
-      const result = checkTTTWin(game.board);
+      let result = checkTTTWin(game.board);
       if (result) {
         tttGames.delete(chatId);
-        if (result === 'draw') {
-          return msg.reply(`${renderTTT(game.board)}\n\n🤝 *It's a draw!*`);
-        }
-        return msg.reply(`${renderTTT(game.board)}\n\n🏆 *${game.names[game.turn]} wins!* (${result})`);
+        const outcome = result === 'draw' ? "🤝 *It's a draw!*" : `🏆 *${moverName} wins!*`;
+        return sendBoard(msg, chat, game, `${moverName} played position ${movePos}\n\n${outcome}`);
       }
 
+      // ── vs bot: it replies with its own move in this same message ────────
+      if (game.mode === 'bot') {
+        const engineCells = toEngineCells(game.board, game.symbols);
+        const botIndex = getBestMove(engineCells, 'O', 'X', game.difficulty);
+
+        if (botIndex === null) {
+          // Shouldn't happen — checkTTTWin() above already ruled out "board full".
+          tttGames.delete(chatId);
+          return sendBoard(msg, chat, game, `❌ ${BOT_NAME} couldn't find a move — ending the game.`);
+        }
+
+        const botRow = Math.floor(botIndex / 3);
+        const botCol = botIndex % 3;
+        game.board[botRow][botCol] = game.symbols[1];
+        game.lastMove = { row: botRow, col: botCol };
+
+        result = checkTTTWin(game.board);
+        if (result) {
+          tttGames.delete(chatId);
+          const outcome = result === 'draw' ? "🤝 *It's a draw!*" : `🏆 *${game.names[1]} wins!*`;
+          return sendBoard(
+            msg, chat, game,
+            `${moverName} played position ${movePos}\n🤖 ${BOT_NAME} played position ${botIndex + 1}\n\n${outcome}`
+          );
+        }
+
+        tttGames.set(chatId, game); // game.turn stays 0 — it's the human's turn again
+        return sendBoard(
+          msg, chat, game,
+          `${moverName} played position ${movePos}\n🤖 ${BOT_NAME} played position ${botIndex + 1}\n\nYour turn! Type *.ttt [1-9]* to play.`
+        );
+      }
+
+      // ── vs person ─────────────────────────────────────────────────────────
       game.turn = game.turn === 0 ? 1 : 0;
       tttGames.set(chatId, game);
 
-      return msg.reply(
-        `${renderTTT(game.board)}\n\n${game.symbols[game.turn]} ${game.names[game.turn]}'s turn! Type *.ttt [1-9]* to play.`
+      return sendBoard(
+        msg, chat, game,
+        `${moverName} played position ${movePos}\n\n${game.symbols[game.turn]} ${game.names[game.turn]}'s turn! Type *.ttt [1-9]* to play.`
       );
     }
 
+    // ── A stray move number with no active game ─────────────────────────────
+    if (!game && !isNaN(movePos)) {
+      return msg.reply('❌ No Tic Tac Toe game active. Start one with *.ttt @user* (vs a person) or *.ttt [easy|medium|hard]* (vs the bot).');
+    }
+
+    if (game) return msg.reply('❌ A game is already in progress!');
+
     // ── Otherwise, this is a request to start a new game ────────────────────
     const mentioned = await msg.getMentions();
-    if (!mentioned.length) return msg.reply('❌ Mention someone to play! .ttt @user');
-    if (tttGames.has(chatId)) return msg.reply('❌ A game is already in progress!');
-
     const playerId = contact.id._serialized;
-    const opponentId = mentioned[0].id._serialized;
 
     // msg.getContact() (the sender) always comes with an accurate pushname
     // from WhatsApp, but msg.getMentions() (the opponent) often doesn't —
@@ -96,19 +175,43 @@ module.exports = {
     // result in game state — every later message (turn prompts, win
     // announcement) reads from that cache instead of re-fetching, which also
     // means no extra network round-trips per move on shaky connections.
-    const [playerName, opponentName] = await Promise.all([
-      resolveNameById(client, playerId),
-      resolveNameById(client, opponentId),
-    ]);
-
+    const playerName = await resolveNameById(client, playerId);
     const board = Array.from({ length: 3 }, () => ['·', '·', '·']);
-    const players = [playerId, opponentId];
-    const names = [playerName, opponentName];
+    const symbols = ['❌', '⭕'];
 
-    tttGames.set(chatId, { board, turn: 0, players, names, symbols: ['❌', '⭕'] });
+    if (mentioned.length) {
+      // ── vs person ────────────────────────────────────────────────────────
+      const opponentId = mentioned[0].id._serialized;
+      const opponentName = await resolveNameById(client, opponentId);
 
-    msg.reply(
-      `🎮 *Tic Tac Toe*\n${playerName} (❌) vs ${opponentName} (⭕)\n\n${renderTTT(board)}\n\n❌ ${playerName}'s turn! Type *.ttt [1-9]* to play.`
+      const newGame = {
+        board, turn: 0, symbols, mode: 'pvp',
+        players: [playerId, opponentId],
+        names: [playerName, opponentName],
+        lastMove: null,
+      };
+      tttGames.set(chatId, newGame);
+
+      return sendBoard(
+        msg, chat, newGame,
+        `🎮 *Tic Tac Toe*\n${playerName} (❌) vs ${opponentName} (⭕)\n\n❌ ${playerName}'s turn! Type *.ttt [1-9]* to play.`
+      );
+    }
+
+    // ── vs bot ────────────────────────────────────────────────────────────
+    const difficultyLabel = DIFFICULTY_KEYS.includes((args[0] || '').toLowerCase()) ? args[0].toLowerCase() : 'medium';
+
+    const newGame = {
+      board, turn: 0, symbols, mode: 'bot', difficulty: difficultyLabel,
+      players: [playerId, 'BOT'],
+      names: [playerName, `🤖 ${BOT_NAME}`],
+      lastMove: null,
+    };
+    tttGames.set(chatId, newGame);
+
+    return sendBoard(
+      msg, chat, newGame,
+      `🎮 *Tic Tac Toe vs ${BOT_NAME}* (${difficultyLabel})\n\n❌ You: ${playerName}\n⭕ 🤖 ${BOT_NAME}\n\nYou're ❌ — type *.ttt [1-9]* to play! Mention someone instead (.ttt @user) to play a person.`
     );
   },
 
