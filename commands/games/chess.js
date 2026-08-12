@@ -4,6 +4,7 @@ const { safeGetChat, resolveNameById } = require('../../utils/helpers');
 const { getBestMove } = require('./chessEngine');
 const { renderBoardImage } = require('./chessBoardImage');
 const { BOT_NAME } = require('../../utils/config');
+const { isChatBusy, claim, release } = require('./activeGame');
 
 // ─── Active Game Sessions ─────────────────────────────────────────────────────
 // chatId -> { chess, mode: 'pvp' | 'bot', white, black, whiteName, blackName, search }
@@ -44,12 +45,18 @@ function describeGameOver(chess, whiteName, blackName) {
 // a single shared message can actually deliver. Falls back to the existing
 // plain-text ASCII board (with the same caption appended) if image
 // rendering fails for any reason, so the game is never blocked by it.
+//
+// BUGFIX (Aug 2026): was using chat.sendMessage(), which sends a fresh,
+// unquoted message — same bug already found and fixed in interaction.js's
+// sendGif(). msg.reply() sends the board as a real quoted reply bubble
+// under the .move/.chess command that triggered it, matching every other
+// command in the bot.
 async function sendBoard(msg, chat, chess, { lastMove, caption } = {}) {
   try {
     const perspective = chess.turn();
     const png = renderBoardImage(chess, { perspective, lastMove });
     const media = new MessageMedia('image/png', png.toString('base64'), 'chess-board.png');
-    await chat.sendMessage(media, { caption });
+    await msg.reply(media, undefined, { caption });
   } catch (err) {
     console.error('Chess board image render failed, falling back to text board:', err.message);
     await msg.reply(`${chess.ascii()}\n\n${caption}`);
@@ -70,6 +77,9 @@ module.exports = {
 
     if (chessGames.has(chatId)) return msg.reply('❌ A game is already active!');
 
+    const busy = isChatBusy(chatId);
+    if (busy) return msg.reply(`❌ A ${busy.label} game is already active in this chat! Finish it or use *.quitgame* first.`);
+
     const playerId = contact.id._serialized;
     const playerName = await resolveNameById(client, playerId);
 
@@ -87,6 +97,7 @@ module.exports = {
         whiteName: playerName,
         blackName: opponentName,
       });
+      claim(chatId, 'chess');
 
       return sendBoard(msg, chat, chess, {
         caption: `♟️ *Chess*\n\n♔ White: ${playerName}\n♚ Black: ${opponentName}\n\nWhite goes first! Use *.move [e2e4]* (from-to format).`,
@@ -110,6 +121,7 @@ module.exports = {
       blackName: `🤖 ${BOT_NAME}`,
       search,
     });
+    claim(chatId, 'chess');
 
     return sendBoard(msg, chat, chess, {
       caption: `♟️ *Chess vs ${BOT_NAME}* (${difficultyLabel})\n\n♔ White: ${playerName}\n♚ Black: 🤖 ${BOT_NAME}\n\nYou're White — use *.move [e2e4]* (from-to format) to play! Mention someone instead (.chess @user) to play a person.${slowWarning}`,
@@ -137,12 +149,32 @@ module.exports = {
     if (!moveStr) return msg.reply('❌ Usage: .move [e2e4]');
 
     const moverName = game.chess.turn() === 'w' ? game.whiteName : game.blackName;
-    const humanResult = game.chess.move({ from: moveStr.slice(0, 2), to: moveStr.slice(2, 4), promotion: 'q' });
+
+    // BUGFIX (Aug 2026): chess.js v1.4.0 (the version actually installed —
+    // confirmed via node_modules/chess.js/package.json) throws an Error on
+    // an illegal move instead of returning null/false. This code was
+    // originally written against the older pre-1.0 chess.js API, where
+    // `.move()` returning a falsy value was how an invalid move was
+    // reported — the `if (!humanResult)` check right below used to be
+    // reachable, but with the throwing behavior it never was: the
+    // exception propagated straight past this whole command handler and
+    // was only caught by index.js's generic top-level error handler, which
+    // logged "Failed to execute command: Invalid move: {...}" and replied
+    // with a generic "An error occurred" message instead of the intended
+    // "❌ Invalid move!" — confirmed by reproducing the exact thrown
+    // message format from the reported pm2 log.
+    let humanResult;
+    try {
+      humanResult = game.chess.move({ from: moveStr.slice(0, 2), to: moveStr.slice(2, 4), promotion: 'q' });
+    } catch (err) {
+      humanResult = null;
+    }
     if (!humanResult) return msg.reply('❌ Invalid move!');
 
     // Human move resolved. If the game's over now, report it and stop.
     if (game.chess.isGameOver()) {
       chessGames.delete(chatId);
+      release(chatId, 'chess');
       return sendBoard(msg, chat, game.chess, {
         lastMove: { from: humanResult.from, to: humanResult.to },
         caption: `${moverName} played *${humanResult.san}*\n\n${describeGameOver(game.chess, game.whiteName, game.blackName)}`,
@@ -155,6 +187,7 @@ module.exports = {
       if (!aiMove) {
         // Shouldn't happen — isGameOver() above already ruled out "no moves".
         chessGames.delete(chatId);
+        release(chatId, 'chess');
         return sendBoard(msg, chat, game.chess, {
           lastMove: { from: humanResult.from, to: humanResult.to },
           caption: `❌ ${BOT_NAME} couldn't find a move — ending the game.`,
@@ -165,6 +198,7 @@ module.exports = {
 
       if (game.chess.isGameOver()) {
         chessGames.delete(chatId);
+        release(chatId, 'chess');
         return sendBoard(msg, chat, game.chess, {
           lastMove: aiLastMove,
           caption: `${moverName} played *${humanResult.san}*\n🤖 ${BOT_NAME} played *${aiMove.san}*\n\n${describeGameOver(game.chess, game.whiteName, game.blackName)}`,
@@ -196,6 +230,7 @@ module.exports = {
     const quitterName = game.white === playerId ? game.whiteName : game.blackName;
     const winnerName = game.white === playerId ? game.blackName : game.whiteName;
     chessGames.delete(chatId);
+    release(chatId, 'chess');
     return { quitterName, winnerName };
   },
 };

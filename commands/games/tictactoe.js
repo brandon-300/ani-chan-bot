@@ -3,6 +3,7 @@ const { safeGetChat, resolveNameById } = require('../../utils/helpers');
 const { getBestMove } = require('./tictactoeEngine');
 const { renderBoardImage } = require('./tictactoeBoardImage');
 const { BOT_NAME } = require('../../utils/config');
+const { isChatBusy, claim, release } = require('./activeGame');
 
 // ─── Active Game Sessions ─────────────────────────────────────────────────────
 // chatId -> { board, mode: 'pvp' | 'bot', turn, players, names, symbols,
@@ -54,11 +55,17 @@ function toEngineCells(board, symbols) {
 // existing plain-text board (with the same caption appended) if image
 // rendering fails for any reason, so the game is never blocked by it — same
 // pattern as sendBoard() in chess.js.
+//
+// BUGFIX (Aug 2026): was using chat.sendMessage(), which sends a fresh,
+// unquoted message instead of a reply — same bug found in chess.js's
+// sendBoard() and, before that, interaction.js's sendGif(). msg.reply()
+// sends the board as a real quoted reply bubble under the .ttt command
+// that triggered it.
 async function sendBoard(msg, chat, game, caption) {
   try {
     const png = renderBoardImage(game.board, { symbols: game.symbols, lastMove: game.lastMove });
     const media = new MessageMedia('image/png', png.toString('base64'), 'ttt-board.png');
-    await chat.sendMessage(media, { caption });
+    await msg.reply(media, undefined, { caption });
   } catch (err) {
     console.error('Tic Tac Toe board image render failed, falling back to text board:', err.message);
     await msg.reply(`${renderTTTText(game.board)}\n\n${caption}`);
@@ -107,6 +114,7 @@ module.exports = {
       let result = checkTTTWin(game.board);
       if (result) {
         tttGames.delete(chatId);
+        release(chatId, 'ttt');
         const outcome = result === 'draw' ? "🤝 *It's a draw!*" : `🏆 *${moverName} wins!*`;
         return sendBoard(msg, chat, game, `${moverName} played position ${movePos}\n\n${outcome}`);
       }
@@ -119,6 +127,7 @@ module.exports = {
         if (botIndex === null) {
           // Shouldn't happen — checkTTTWin() above already ruled out "board full".
           tttGames.delete(chatId);
+          release(chatId, 'ttt');
           return sendBoard(msg, chat, game, `❌ ${BOT_NAME} couldn't find a move — ending the game.`);
         }
 
@@ -130,6 +139,7 @@ module.exports = {
         result = checkTTTWin(game.board);
         if (result) {
           tttGames.delete(chatId);
+          release(chatId, 'ttt');
           const outcome = result === 'draw' ? "🤝 *It's a draw!*" : `🏆 *${game.names[1]} wins!*`;
           return sendBoard(
             msg, chat, game,
@@ -161,6 +171,12 @@ module.exports = {
 
     if (game) return msg.reply('❌ A game is already in progress!');
 
+    // Someone else's game type (Chess/Connect 4/Battle) is active in this
+    // chat — checked before the tttGames-specific check above would ever
+    // catch it, since this chat's entry lives in a different game's Map.
+    const busy = isChatBusy(chatId);
+    if (busy) return msg.reply(`❌ A ${busy.label} game is already active in this chat! Finish it or use *.quitgame* first.`);
+
     // ── Otherwise, this is a request to start a new game ────────────────────
     const mentioned = await msg.getMentions();
     const playerId = contact.id._serialized;
@@ -191,6 +207,7 @@ module.exports = {
         lastMove: null,
       };
       tttGames.set(chatId, newGame);
+      claim(chatId, 'ttt');
 
       return sendBoard(
         msg, chat, newGame,
@@ -208,6 +225,7 @@ module.exports = {
       lastMove: null,
     };
     tttGames.set(chatId, newGame);
+    claim(chatId, 'ttt');
 
     return sendBoard(
       msg, chat, newGame,
@@ -225,6 +243,7 @@ module.exports = {
     const idx = game.players.indexOf(playerId);
     const winnerIdx = idx === 0 ? 1 : 0;
     tttGames.delete(chatId);
+    release(chatId, 'ttt');
     return { quitterName: game.names[idx], winnerName: game.names[winnerIdx] };
   },
 };
