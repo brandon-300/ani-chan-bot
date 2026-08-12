@@ -153,8 +153,19 @@ module.exports = {
     const game = c4Games.get(chatId);
     if (!game) return msg.reply('❌ No active Connect 4 game.');
 
+    // BUGFIX (Aug 2026): same bug found and fixed in battle.js's .attack/
+    // .defend — this used to skip straight to the turn check below, so a
+    // bystander typing .drop while two other people played got told
+    // "❌ Not your turn!", which reads as if they were actually in the
+    // game. Chess and Tic Tac Toe already checked participation first;
+    // Connect 4 and Battle's .attack/.defend didn't.
+    const playerId = contact.id._serialized;
+    if (!game.players.some(p => p.id === playerId)) {
+      return msg.reply("❌ You're not part of this game!");
+    }
+
     const current = game.players[game.turn];
-    if (current.id !== contact.id._serialized) return msg.reply('❌ Not your turn!');
+    if (current.id !== playerId) return msg.reply('❌ Not your turn!');
 
     const col = parseInt(args[0]) - 1;
     if (isNaN(col) || col < 0 || col > 6) return msg.reply('❌ Choose a column 1-7.');
