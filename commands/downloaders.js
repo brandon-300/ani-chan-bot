@@ -16,6 +16,7 @@ const RAPIDAPI_HOST_IG = 'instagram-downloader.p.rapidapi.com';
 const RAPIDAPI_HOST_TT = 'tiktok-downloader-download-videos-without-watermark.p.rapidapi.com';
 const RAPIDAPI_HOST_YT = 'youtube-mp36.p.rapidapi.com';
 const RAPIDAPI_HOST_TW = 'twitter241.p.rapidapi.com';
+const RAPIDAPI_HOST_FB = 'social-media-video-downloader.p.rapidapi.com';
 
 async function downloadAndSend(msg, url, caption) {
   try {
@@ -26,6 +27,25 @@ async function downloadAndSend(msg, url, caption) {
     await chat.sendMessage(media, { caption });
   } catch (err) {
     msg.reply(`❌ Failed to download. Error: ${err.message}`);
+  }
+}
+
+// Shared status-code -> user message mapping so all downloaders report
+// auth/quota/timeout problems consistently instead of one generic string.
+function replyForError(msg, label, err) {
+  const status = err.response?.status;
+  console.error(`[${label}] request failed. status:`, status, 'body:', JSON.stringify(err.response?.data)?.slice(0, 1500) || err.message);
+
+  if (status === 401 || status === 403) {
+    msg.reply(`❌ ${label} download failed: RapidAPI rejected the key (401/403).\n💡 Check this RapidAPI account is subscribed to the right API for ${label}, and that the key is correct.`);
+  } else if (status === 404) {
+    msg.reply(`❌ ${label} download failed: not found (404). The link may be private, deleted, or region-locked.`);
+  } else if (status === 429) {
+    msg.reply(`❌ ${label} download failed: rate/quota limit hit (429).\n💡 Check your remaining quota on RapidAPI.`);
+  } else if (err.code === 'ECONNABORTED') {
+    msg.reply(`❌ ${label} download timed out (slow connection). Try again.`);
+  } else {
+    msg.reply(`❌ ${label} download failed. Check \`pm2 logs ani-chan-bot\` for the exact error.`);
   }
 }
 
@@ -43,13 +63,17 @@ module.exports = {
           'X-RapidAPI-Key': RAPIDAPI_KEY,
           'X-RapidAPI-Host': RAPIDAPI_HOST_IG,
         },
+        timeout: 20000,
       });
 
       const mediaUrl = res.data?.media?.[0]?.url || res.data?.url;
-      if (!mediaUrl) return msg.reply('❌ Could not extract media.');
+      if (!mediaUrl) {
+        console.error('[ig] 200 OK but no media URL parsed. Raw response:', JSON.stringify(res.data)?.slice(0, 1500));
+        return msg.reply('❌ Could not extract media.');
+      }
       await downloadAndSend(msg, mediaUrl, '📸 Downloaded from Instagram');
     } catch (err) {
-      msg.reply('❌ Instagram download failed. Check your API key.');
+      replyForError(msg, 'Instagram', err);
     }
   },
 
@@ -66,13 +90,17 @@ module.exports = {
           'X-RapidAPI-Key': RAPIDAPI_KEY,
           'X-RapidAPI-Host': RAPIDAPI_HOST_TT,
         },
+        timeout: 20000,
       });
 
       const videoUrl = res.data?.video?.[0] || res.data?.url;
-      if (!videoUrl) return msg.reply('❌ Could not extract video.');
+      if (!videoUrl) {
+        console.error('[ttk] 200 OK but no video URL parsed. Raw response:', JSON.stringify(res.data)?.slice(0, 1500));
+        return msg.reply('❌ Could not extract video.');
+      }
       await downloadAndSend(msg, videoUrl, '🎵 Downloaded from TikTok');
     } catch (err) {
-      msg.reply('❌ TikTok download failed.');
+      replyForError(msg, 'TikTok', err);
     }
   },
 
@@ -124,17 +152,26 @@ module.exports = {
           'X-RapidAPI-Key': RAPIDAPI_KEY,
           'X-RapidAPI-Host': RAPIDAPI_HOST_TW,
         },
+        timeout: 20000,
       });
 
       const media = res.data?.tweet?.entities?.media?.[0];
-      if (!media) return msg.reply('❌ No media found in tweet.');
+      if (!media) {
+        console.error('[x] 200 OK but no media parsed. Raw response:', JSON.stringify(res.data)?.slice(0, 1500));
+        return msg.reply('❌ No media found in tweet.');
+      }
 
       const videoUrl = media?.video_info?.variants?.find(v => v.content_type === 'video/mp4')?.url;
       const imageUrl = media?.media_url_https;
 
+      if (!videoUrl && !imageUrl) {
+        console.error('[x] Media object present but no usable URL. Media object:', JSON.stringify(media)?.slice(0, 1000));
+        return msg.reply('❌ Could not extract media from tweet.');
+      }
+
       await downloadAndSend(msg, videoUrl || imageUrl, '🐦 Downloaded from X');
     } catch (err) {
-      msg.reply('❌ X download failed.');
+      replyForError(msg, 'X', err);
     }
   },
 
@@ -149,15 +186,19 @@ module.exports = {
         params: { url },
         headers: {
           'X-RapidAPI-Key': RAPIDAPI_KEY,
-          'X-RapidAPI-Host': 'social-media-video-downloader.p.rapidapi.com',
+          'X-RapidAPI-Host': RAPIDAPI_HOST_FB,
         },
+        timeout: 20000,
       });
 
       const link = res.data?.links?.find(l => l.quality === 'hd')?.link || res.data?.links?.[0]?.link;
-      if (!link) return msg.reply('❌ Could not extract video.');
+      if (!link) {
+        console.error('[fb] 200 OK but no link parsed. Raw response:', JSON.stringify(res.data)?.slice(0, 1500));
+        return msg.reply('❌ Could not extract video.');
+      }
       await downloadAndSend(msg, link, '📘 Downloaded from Facebook');
     } catch (err) {
-      msg.reply('❌ Facebook download failed.');
+      replyForError(msg, 'Facebook', err);
     }
   },
 
