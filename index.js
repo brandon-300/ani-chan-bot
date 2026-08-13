@@ -128,154 +128,12 @@ const aliases = {
 };
 
 // ─── Menu content ───────────────────────────────────────────────────────────
-// Data-driven on purpose: one array entry per category, one string per
-// command. To add/remove a command from the menu later, edit an array below
-// — no need to touch any string-building logic.
-//
-// AUDITED (Aug 2026): every entry below was checked against the actual
-// loaded `commands` object — nothing here is a placeholder for something
-// unbuilt. Owner-only admin tools (card catalogue management like
-// .addcard/.mergecards/.repairlinks, the .addxp testing command, etc.) are
-// deliberately left off — this menu is the public command list. When a new
-// command is added, add it here in the same pass; when one changes name or
-// gets removed, update/remove its entry here too, so this never drifts out
-// of sync with reality again.
-const MENU_SECTIONS = [
-  {
-    emoji: '⚙️',
-    title: 'GENERAL',
-    items: ['.rules', '.setrules', '.ping', '.stats', '.mods', '.owner', '.url', '.otp', '.afk'],
-  },
-  {
-    emoji: '🎴',
-    title: 'CARDS',
-    items: [
-      '.cards', '.card', '.ci / cardinfo', '.si', '.ss',
-      '.clb', '.vlb', '.tlb', '.sslb', '.mclb', '.slb',
-      '.deck', '.col', '.cardshop', '.sellc', '.rc', '.vs', '.claim',
-      '.sc', '.tc', '.accepttrade', '.declinetrade',
-      '.lendcard / lc', '.fuse / fusion', '.wishlist', '.wishlb',
-      '.auction', '.submit / bid', '.myauc', '.remauc', '.listauc',
-      '.stardust', '.anticamp',
-      '.cg', '.tier', '.cs', '.myseries', '.resell',
-    ],
-  },
-  {
-    emoji: '💰',
-    title: 'ECONOMY',
-    items: [
-      '.balance / bal', '.orbs', '.ebal', '.daily',
-      '.withdraw / wd', '.deposit / dep', '.donate',
-      '.lottery', '.rich', '.richg',
-      '.profile / p', '.edit', '.bio', '.setname', '.setage',
-      '.setpic', '.removepic',
-      '.inventory / inv', '.use', '.sell', '.buy', '.shop',
-      '.dig', '.fish', '.leaderboard / lb', '.achievements / ach',
-      '.level / xp', '.roast', '.gamble', '.beg',
-    ],
-  },
-  {
-    emoji: '🎮',
-    title: 'GAMES',
-    items: [
-      '.ttt', '.quitgame', '.c4', '.drop', '.chess', '.move',
-      '.startbattle', '.attack', '.defend', '.flee',
-      '.akinator / aki', '.greekgod / gg', '.wcg',
-    ],
-  },
-  {
-    emoji: '🏰',
-    title: 'GUILDS',
-    items: [
-      '.guild info', '.guild create', '.guild invite',
-      '.guild accept', '.guild decline', '.guild emblem',
-      '.guild leave', '.guild disband', '.guild members', '.guild remove',
-    ],
-  },
-  {
-    emoji: '🎰',
-    title: 'GAMBLE',
-    items: ['.slots', '.cf', '.dice', '.db', '.dp', '.roulette', '.horse'],
-  },
-  {
-    emoji: '🎭',
-    title: 'INTERACTION',
-    items: [
-      '.hug', '.kiss', '.slap', '.wave', '.pat', '.dance', '.sad', '.smile',
-      '.laugh', '.lick', '.punch', '.jihad', '.crusade', '.kill', '.bonk',
-      '.fuck', '.tickle', '.shrug', '.wank', '.kidnap',
-    ],
-  },
-  {
-    emoji: '😂',
-    title: 'FUN',
-    items: [
-      '.gay', '.lesbian', '.simp', '.ship', '.skill', '.duality', '.gen',
-      '.pov', '.social', '.relation', '.pp', '.wouldyourather / wyr',
-      '.joke', '.truth', '.dare', '.td', '.uno', '.meme',
-    ],
-  },
-  {
-    emoji: '⬇️',
-    title: 'DOWNLOADERS',
-    items: ['.ig', '.ttk', '.yt', '.x', '.fb', '.play'],
-  },
-  {
-    emoji: '🔍',
-    title: 'SEARCH',
-    items: ['.pinterest / pint', '.sauce / reverseimg', '.wallpaper', '.lyrics'],
-  },
-  {
-    emoji: '🤖',
-    title: 'AI',
-    items: [
-      '.copilot', '.gpt', '.voice', '.imagine', '.upscale',
-      '.translate / tt', '.transcribe / tb', '.tts',
-    ],
-  },
-  {
-    emoji: '🔄',
-    title: 'CONVERTER',
-    items: [
-      '.sticker / s', '.take', '.toimg', '.tovid', '.tomp3', '.tovn',
-      '.rotate', '.flip', '.resize', '.tourl',
-    ],
-  },
-  {
-    emoji: '🌸',
-    title: 'ANIME SFW',
-    items: ['.waifu', '.neko', '.maid', '.oppai', '.selfies', '.uniform'],
-  },
-  {
-    emoji: '🔞',
-    title: 'ANIME NSFW',
-    items: [
-      '.nsfw on/off', '.milf', '.ass', '.hentai', '.oral', '.ecchi',
-      '.paizuri', '.ero', '.ehentai', '.nhentai',
-    ],
-  },
-  {
-    emoji: '🛡️',
-    title: 'ADMIN',
-    items: [
-      '.kick', '.delete', '.antilink', '.antilink action', '.antism',
-      '.warn', '.resetwarn', '.groupstats / gs', '.welcome', '.setwelcome',
-      '.leave', '.setleave', '.purge', '.blacklist', '.promote', '.demote',
-      '.mute', '.unmute', '.hidetag', '.tagall', '.activity', '.active',
-      '.inactive', '.open', '.close',
-    ],
-  },
-  {
-    emoji: '🐾',
-    title: 'PETS',
-    items: ['.pet', '.pet adopt', '.pet catalogue', '.pet feed', '.pet play', '.pet name'],
-  },
-  {
-    emoji: '📬',
-    title: 'FEEDBACK',
-    items: ['.feedback'],
-  },
-];
+// Sourced from utils/commandReference.js — the single source of truth
+// shared with README.md's command tables. See that file's header comment
+// for why: editing a copy here that could drift from the README (or vice
+// versa) is exactly the kind of staleness this project has hit before
+// (e.g. the pinned ani-chan-bot-commands.txt reference file going stale).
+const { COMMAND_REFERENCE } = require('./utils/commandReference');
 
 async function sendQuickMenu(msg) {
   const header =
@@ -284,9 +142,10 @@ async function sendQuickMenu(msg) {
 ┃  𖤓 Commands: ${Object.keys(commands).length}
 ╰━━━━━━━━━━━━━╯`;
 
-  const body = MENU_SECTIONS.map(section => {
-    const lines = section.items.map(item => `┣ ✦ ${item}`).join('\n');
-    return `*${section.emoji} ${section.title} ${section.emoji}*\n${lines}\n┗━━━━━━━━━━━`;
+  const body = COMMAND_REFERENCE.map(section => {
+    const lines = section.items.map(item => `┣ ✦ ${item.cmd} — ${item.desc}`).join('\n');
+    const note = section.note ? `${section.note}\n` : '';
+    return `*${section.emoji} ${section.title} ${section.emoji}*\n${note}${lines}\n┗━━━━━━━━━━━`;
   }).join('\n\n');
 
   const menu = `${header}\n\n${body}\n\nType *${PREFIX}<command>* to use one.`;

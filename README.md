@@ -1,38 +1,49 @@
 # ╭━━★彡 AniChan Bot 彡★━━╮
-> A full-featured WhatsApp bot by Riz, powered by whatsapp-web.js
+> A full-featured WhatsApp bot owned and maintained by **Brandon**, powered by `whatsapp-web.js`.
+>
+> Runs on Node.js in Termux on Android — no VPS required. The bot's persona is Marin Kitagawa from *My Dress-Up Darling*.
 
 ---
 
 ## 🚀 Setup Guide
 
 ### 1. Prerequisites
-- Node.js v18+ installed
-- MongoDB Atlas account (free): https://mongodb.com/atlas
-- OpenAI API key: https://platform.openai.com
-- RapidAPI key: https://rapidapi.com
+- Node.js v20+ (developed and run on Node 24.18.0 aarch64 in Termux)
+- Termux (Android) or any Linux/macOS/Windows environment — see the [Termux / Android notes](#-termux--android-notes) below if running on a phone
+- MongoDB Atlas account (free tier works): https://mongodb.com/atlas
+- A Google AI Studio (Gemini) API key: https://aistudio.google.com
+- A Fish Audio API key + a voice reference id: https://fish.audio
+- A Cloudinary account (free tier works): https://cloudinary.com
+- A RapidAPI account: https://rapidapi.com
+- A SauceNAO API key (free): https://saucenao.com
 
 ### 2. Install Dependencies
 ```bash
 cd ani-chan-bot
 npm install
 ```
+On Termux, always run `pip`/`npm` installs with patience over mobile data — see the Termux notes below.
 
 ### 3. Configure Environment
 ```bash
 cp .env.example .env
 ```
-Edit `.env` and fill in:
-| Variable | Description |
+Edit `.env` and fill in the values — every variable the bot actually reads is documented inline in `.env.example`, including:
+
+| Variable | Used for |
 |---|---|
 | `MONGO_URI` | MongoDB connection string |
-| `OPENAI_API_KEY` | For .gpt, .copilot, .imagine, .translate, .transcribe |
-| `RAPIDAPI_KEY` | For downloaders (.ig, .ttk, .yt, .x, .fb), .pinterest |
-| `SAUCENAO_KEY` | For .sauce (free at saucenao.com) |
-| `OWNER_NUMBER` | Your WhatsApp number with country code |
-| `PREFIX` | Default is `.` |
-| `BOT_NAME` | Default is `Ani-Chan Bot` |
+| `BOT_NAME` / `BOT_PREFIX` | Bot display name and command prefix (default `.`) |
+| `BOT_NUMBER` | Optional — link by phone number instead of scanning a QR code |
+| `OWNER_NUMBER` / `OWNER_IDS` / `MOD_NUMBERS` | Owner and moderator ids |
+| `GEMINI_API_KEY` (+ optional `GEMINI_TEXT_MODEL` / `GEMINI_IMAGE_MODEL`) | `.copilot`, `.gpt`, `.voice`, `.imagine`, `.translate`, `.transcribe` |
+| `FISH_API_KEY` / `FISH_VOICE_ID` (+ optional `FISH_MODEL`) | `.voice` and `.tts` spoken voice-note replies |
+| `CLOUDINARY_CLOUD_NAME` / `CLOUDINARY_API_KEY` / `CLOUDINARY_API_SECRET` (or `CLOUDINARY_URL`) | `.setpic` profile pictures |
+| `RAPIDAPI_KEY` | Downloaders (`.ig`, `.ttk`, `.yt`, `.x`, `.fb`, `.play`) and `.pinterest` |
+| `SAUCENAO_KEY` | `.sauce` / `.reverseimg` |
+| `PUPPETEER_EXECUTABLE_PATH` | Termux only — path to Chromium (a sensible default is already set) |
 
-### 4. Seed Card Database (run once)
+### 4. Seed the Card Database (run once)
 ```bash
 node utils/seedCards.js
 ```
@@ -40,183 +51,326 @@ node utils/seedCards.js
 ### 5. Start the Bot
 ```bash
 node index.js
-# or with PM2 (recommended for 24/7):
+# or with PM2 (recommended for 24/7 uptime):
 npm install -g pm2
 pm2 start index.js --name ani-chan-bot
 pm2 save
 pm2 startup
 ```
 
-### 6. Scan QR Code
-Open WhatsApp on your phone → Linked Devices → Link a Device → Scan the QR code printed in terminal.
+### 6. Link WhatsApp
+Open WhatsApp on your phone → Linked Devices → Link a Device → scan the QR code printed in the terminal (or skip this by setting `BOT_NUMBER` in `.env` to link by phone number instead).
+
+---
+
+## 📱 Termux / Android Notes
+This bot is actively developed and run entirely on an Android phone (Infinix Hot 50i) inside Termux — no server or VPS needed. A few things that matter if you're doing the same:
+- **No native npm binary dependencies.** Packages like `canvas`, `sharp`, and `jimp` don't reliably build in Termux. Every image the bot generates (chess/Tic Tac Toe/Connect 4 boards, the Battle HUD, card grids) is drawn with a pure-JS pixel renderer instead — see `utils/pngEncoder.js` and the `*BoardImage.js` files under `commands/games/`.
+- **ffmpeg is required and used directly** (via `fluent-ffmpeg`) for stickers, video/audio conversion, and voice notes — install it with `pkg install ffmpeg`.
+- **Mobile data is often unstable.** `npm install` and any first-time API call can be slow or need a retry — this is expected, not a bug.
+- **MongoDB free tier caps out at 512MB** — keep an eye on collection sizes if you're running this long-term on the free Atlas tier.
 
 ---
 
 ## 📦 RapidAPI Subscriptions Needed
 Subscribe to these APIs on RapidAPI (most have free tiers):
-- `instagram-downloader` — for .ig
-- `tiktok-downloader-download-videos-without-watermark` — for .ttk
-- `youtube-mp36` — for .yt and .play
-- `twitter241` — for .x
-- `social-media-video-downloader` — for .fb
-- `pinterest-scraper` — for .pinterest
-- `ai-image-upscaler` — for .upscale
+- `instagram-downloader` — for `.ig`
+- `tiktok-downloader-download-videos-without-watermark` — for `.ttk`
+- `youtube-mp36` — for `.yt` and `.play`
+- `twitter241` — for `.x`
+- `social-media-video-downloader` — for `.fb`
+- `pinterest-scraper` — for `.pinterest`
+- `ai-image-upscaler` — for `.upscale`
 
 ---
 
 ## 🎴 Commands Reference
+The bot's owner-only admin tools (card catalogue management, testing commands, etc.) are intentionally left out of this list — this is the public command set, kept in sync with the in-chat `.menu` command from a single shared source (`utils/commandReference.js`). These tables are regenerated from that file by `generate_readme_commands.js` — run `node generate_readme_commands.js` after changing commandReference.js rather than hand-editing the tables below.
 
-### Cards
+<!-- COMMAND_TABLES_START — auto-generated by generate_readme_commands.js from utils/commandReference.js. Do not hand-edit below this line; run `node generate_readme_commands.js` instead. -->
+
+### ⚙️ GENERAL
 | Command | Description |
 |---|---|
-| `.cards [on/off]` | Enable/disable card drops in group |
-| `.card [index]` | View a card in your collection |
-| `.ci [name] [tier]` | Card info from catalogue |
-| `.si [series]` | Series info |
-| `.ss [series]` | Your cards from a series |
-| `.slb [series]` | Series leaderboard |
-| `.clb` | Card collection leaderboard |
-| `.deck` | View your battle deck |
-| `.col` | View full collection |
-| `.cardshop` | Browse cards for sale |
-| `.sellc [index] [price]` | List card for sale |
-| `.rc [index]` | Remove card from sale |
-| `.vs @user` | Deck battle |
-| `.claim [id]` | Claim a dropped card or buy from shop |
-| `.sc @user [index] [price]` | Sell card to a user |
-| `.tc @user [idx] [idx]` | Trade cards |
-| `.lendcard` | Lend your top card to group |
-| `.auction` | View active auctions |
-| `.submit [id] [amount]` | Bid on auction |
-| `.myauc` | Your active auctions |
-| `.remauc [id]` | Remove your auction |
-| `.listauc` | List all auctions |
-| `.stardust` | Check stardust balance |
-| `.anticamp` | View camp stats |
+| `.rules` | View this group's saved rules |
+| `.setrules [text]` | Set this group's rules (admin only) |
+| `.ping / .test` | Check the bot is online and its response latency |
+| `.stats` | Bot-wide stats: uptime, command count, groups, users, memory |
+| `.mods` | List the bot's owner and moderators |
+| `.owner` | Send the bot owner's contact card |
+| `.url` | Get this group's invite link (admin only) |
+| `.otp` | Generate a random 6-digit code (just for fun/utility) |
+| `.afk [reason]` | Mark yourself AFK — the bot notifies anyone who mentions you |
 
-### Economy
+### 🎴 CARDS
 | Command | Description |
 |---|---|
-| `.balance / .bal` | Check wallet, bank, orbs |
-| `.orbs` | Check orbs |
+| `.cards [on/off]` | Enable/disable random card drops in this group |
+| `.card [index]` | View one of your cards up close (index from .col) |
+| `.ci [name] [tier] / .cardinfo` | Look up a card's full details in the catalogue |
+| `.si [series]` | Info about a card series |
+| `.ss [series]` | Your owned cards from one series |
+| `.clb` | Leaderboard by total cards owned |
+| `.vlb` | Leaderboard by total collection value |
+| `.tlb` | Leaderboard by highest-tier card owned |
+| `.sslb` | Leaderboard by number of SS/SSS cards owned |
+| `.mclb` | Leaderboard by best-completed series |
+| `.slb [series]` | Leaderboard for who owns the most of one series |
+| `.deck [add\|remove\|clear] [index]` | Manage your 5-card battle deck |
+| `.col` | View your full card collection, numbered |
+| `.cardshop` | Browse cards other players have listed for sale |
+| `.sellc [index] [price]` | List one of your cards for sale to other players |
+| `.rc [index]` | Remove your card listing from the shop |
+| `.vs @user` | Battle another player using your decks |
+| `.claim [id]` | Claim a dropped card, or buy one from the shop |
+| `.sc @user [index] [price]` | Sell a card directly to another user |
+| `.tc @user [idx] [idx]` | Propose a card trade with another user |
+| `.accepttrade / .declinetrade` | Respond to a pending trade offer |
+| `.lendcard / .lc` | Temporarily lend your top card to the group |
+| `.fuse / .fusion` | Fuse duplicate cards into a higher-tier card |
+| `.wishlist [add\|remove] [name]` | Manage (or view) your card wishlist |
+| `.wishlb` | Leaderboard by wishlist size |
+| `.auction / .listauc` | View all active card auctions |
+| `.submit [id] [amount] / .bid` | Bid on an auction |
+| `.myauc` | View your own active auctions |
+| `.remauc [id]` | Cancel one of your auctions |
+| `.stardust` | Check your stardust balance (from converting duplicates) |
+| `.anticamp` | Check your camp count — hoarding duplicates decays them over time |
+| `.cg` | Generate an image grid of your whole card collection |
+| `.tier [tier]` | View drop-rate odds for every card tier |
+| `.cs [name/series]` | Search cards by name or series |
+| `.myseries` | View your collection grouped by series, with completion status |
+| `.resell [index]` | Instantly sell a card to the bot for 50% of tier value |
+
+### 💰 ECONOMY
+| Command | Description |
+|---|---|
+| `.balance / .bal` | Check your wallet, bank, and orbs |
+| `.orbs` | Check your orbs balance |
 | `.ebal [@user]` | Check another user's balance |
-| `.daily` | Claim daily reward |
-| `.withdraw [amount]` | Withdraw from bank |
-| `.deposit [amount]` | Deposit to bank |
-| `.donate @user [amount]` | Donate coins |
-| `.lottery` | Try your luck (100 coin ticket) |
-| `.rich` | Top 10 richest users |
-| `.richg` | Richest in this group |
-| `.profile / .p` | View profile |
-| `.edit` | Edit profile |
-| `.bio [text]` | Set bio |
-| `.setage [age]` | Set age |
-| `.inventory / .inv` | View inventory |
-| `.use [item]` | Use an item |
-| `.sell [item]` | Sell an item |
-| `.shop` | View shop |
-| `.buy [item]` | Buy an item |
-| `.dig` | Dig for loot (30 min cooldown) |
-| `.fish` | Fish for coins (20 min cooldown) |
+| `.daily` | Claim your daily coin reward |
+| `.withdraw [amount] / .wd` | Withdraw coins from your bank to your wallet |
+| `.deposit [amount] / .dep` | Deposit coins from your wallet into your bank |
+| `.donate @user [amount]` | Send coins to another user |
+| `.lottery` | Buy a 100-coin lottery ticket for a chance to win big |
+| `.rich` | Top 10 richest users bot-wide |
+| `.richg` | Richest users in this group |
+| `.profile / .p` | View your profile card |
+| `.edit` | List which profile fields you can edit |
+| `.setname [name]` | Set your display name on your profile |
+| `.bio [text]` | Set your profile bio |
+| `.setage [age]` | Set your age on your profile |
+| `.setpic` | Set your profile picture (reply to an image) |
+| `.removepic` | Clear your profile picture |
+| `.inventory / .inv` | View your items |
+| `.use [item]` | Use an item from your inventory |
+| `.sell [item]` | Sell an item from your inventory |
+| `.shop` | Browse the item shop |
+| `.buy [item]` | Buy an item from the shop |
+| `.dig` | Dig for coins/loot (cooldown: 30 min) |
+| `.fish` | Fish for coins (cooldown: 20 min) |
 | `.leaderboard / .lb` | XP/level leaderboard |
-| `.roast [@user]` | Get roasted |
-| `.gamble [amount]` | Gamble coins (50/50) |
-| `.beg` | Beg for coins (5 min cooldown) |
+| `.achievements / .ach` | List your unlocked and locked achievements |
+| `.level / .xp [@user]` | View your (or someone else's) level and XP progress |
+| `.roast [@user]` | Get roasted (or roast someone else) |
+| `.gamble [amount]` | Gamble coins on a 50/50 coin flip |
+| `.beg` | Beg for coins (cooldown: 5 min) |
 
-### Games
+### 🎮 GAMES
+All four games play with real pixel-drawn board images and support both PvP (`@mention` someone) and a bot opponent (`easy` / `medium` / `hard`). Only one game can be active per chat at a time — `.quitgame` forfeits whichever one is running.
+
 | Command | Description |
 |---|---|
-| `.ttt @user` | Start Tic Tac Toe |
-| `.startbattle @user` | Start card battle RPG |
-| `.attack` | Attack in battle |
-| `.defend` | Defend in battle |
-| `.flee` | Flee from battle |
-| `.akinator` | Akinator guessing game |
-| `.greekgod` | Discover your Greek god |
-| `.c4 @user` | Connect 4 |
-| `.drop [1-7]` | Drop piece in Connect 4 |
-| `.wcg` | Would you rather group game |
-| `.chess @user` | Start chess game |
-| `.move [e2e4]` | Make chess move |
+| `.chess @user` | Challenge another player to chess (image board) |
+| `.chess [easy\|medium\|hard]` | Play chess against the bot (defaults to medium) |
+| `.move [e2e4]` | Make a chess move — shared by PvP and vs-bot games |
+| `.ttt @user` | Challenge another player to Tic Tac Toe (image board) |
+| `.ttt [easy\|medium\|hard]` | Play Tic Tac Toe against the bot |
+| `.ttt [1-9]` | Make a move in whichever Tic Tac Toe game is active |
+| `.c4 @user` | Challenge another player to Connect 4 (image board) |
+| `.c4 [easy\|medium\|hard]` | Play Connect 4 against the bot |
+| `.drop [1-7]` | Drop a piece into a Connect 4 column |
+| `.startbattle @user` | Challenge another player to an HP battle (image HUD) |
+| `.startbattle [easy\|medium\|hard]` | Battle the bot |
+| `.attack` | Deal random damage to your battle opponent |
+| `.defend` | Skip your attack to heal instead |
+| `.flee` | Forfeit the current battle |
+| `.quitgame / .quit` | Forfeit whichever game (Chess/TTT/Connect 4/Battle) is active in this chat |
+| `.akinator / .aki` | Guess-the-character game |
+| `.greekgod / .gg` | Find out which Greek god you embody |
+| `.wcg` | Group "Would You Rather" game |
 
-### Guilds
+### 🏰 GUILDS
 | Command | Description |
 |---|---|
 | `.guild info` | View your guild |
-| `.guild create [name]` | Create a guild (1000 coins) |
-| `.guild invite @user` | Invite to guild |
-| `.guild accept` | Accept guild invite |
-| `.guild decline` | Decline invite |
-| `.guild emblem [emoji]` | Set guild emblem |
-| `.guild leave` | Leave guild |
-| `.guild disband` | Disband guild (leader only) |
+| `.guild create [name]` | Create a guild (costs 1000 coins) |
+| `.guild invite @user` | Invite a user to your guild |
+| `.guild accept` | Accept a pending guild invite |
+| `.guild decline` | Decline a pending guild invite |
+| `.guild emblem [emoji]` | Set your guild's emblem |
+| `.guild leave` | Leave your current guild |
+| `.guild disband` | Disband your guild (leader only) |
+| `.guild members` | List guild members (leader only) |
+| `.guild remove [name]` | Remove a member from the guild (leader only) |
 
-### Gambling
+### 🎰 GAMBLE
 | Command | Description |
 |---|---|
-| `.slots [amount]` | Spin the slots |
-| `.cf [amount]` | Coin flip |
-| `.dice [amount]` | Dice vs bot |
-| `.db [amount]` | Double or Bust |
-| `.dp [amount]` | Double or Pass |
-| `.roulette [amount] [bet]` | Roulette (red/black/even/odd/number) |
-| `.horse [1-5] [amount]` | Horse racing |
+| `.slots [amount]` | Spin the slot machine |
+| `.cf [amount]` | Coin flip bet |
+| `.dice [amount]` | Roll dice against the bot |
+| `.db [amount]` | Double or Bust — higher risk, higher reward |
+| `.dp [amount]` | Double or Pass — lower risk, lower reward |
+| `.roulette [amount] [bet]` | Roulette — bet red/black/even/odd/a number |
+| `.horse [1-5] [amount]` | Bet on a horse race |
 
-### Pets
+### 🎭 INTERACTION
+| Command | Description |
+|---|---|
+| `.hug / .kiss / .slap / .wave / .pat` | React toward someone — mention them or reply to their message (anime GIF) |
+| `.lick / .punch / .bonk / .tickle / .kill` | More reaction GIFs toward someone — mention or reply required |
+| `.fuck / .kidnap` | Meme reaction GIFs toward someone — mention or reply required |
+| `.dance / .sad / .smile / .laugh` | Solo reaction GIFs — no target needed |
+| `.jihad / .crusade / .shrug / .wank` | Solo meme/text reactions — no target needed |
+
+### 😂 FUN
+| Command | Description |
+|---|---|
+| `.gay / .lesbian / .simp / .skill / .duality` | Random silly percentage/label generators |
+| `.ship [@user1] [@user2]` | Ship two people together with a compatibility score |
+| `.gen / .pov / .social / .relation / .pp` | More random silly generators |
+| `.wouldyourather / .wyr` | Would You Rather prompt |
+| `.joke` | Random joke |
+| `.truth / .dare / .td` | Truth, dare, or a random pick of either |
+| `.uno` | Start a silly text-based Uno round |
+| `.meme <text>` | Caption a replied sticker/image as a meme (use \| for top\|bottom text) |
+
+### ⬇️ DOWNLOADERS
+| Command | Description |
+|---|---|
+| `.ig [url]` | Download an Instagram post/reel |
+| `.ttk [url]` | Download a TikTok video (no watermark) |
+| `.yt [url or search]` | Download YouTube audio |
+| `.x [url]` | Download a Twitter/X video |
+| `.fb [url]` | Download a Facebook video |
+| `.play [song name]` | Search YouTube and send back the audio |
+
+### 🔍 SEARCH
+| Command | Description |
+|---|---|
+| `.pinterest [query] / .pint` | Search Pinterest images |
+| `.sauce / .reverseimg` | Reverse image search a replied image (SauceNAO) |
+| `.wallpaper [query]` | Search wallpapers (wallhaven.cc) |
+| `.lyrics [song name]` | Look up song lyrics |
+
+### 🤖 AI
+| Command | Description |
+|---|---|
+| `.copilot [msg]` | Full context-aware AI chat as Marin (Gemini) — text reply |
+| `.gpt [msg]` | Single-turn AI question (Gemini) — text reply |
+| `.voice [msg]` | Same AI chat as .copilot, replied as a spoken voice note (Fish Audio TTS) |
+| `.imagine [prompt]` | AI image generation (Gemini 2.5 Flash Image) |
+| `.upscale` | Upscale a replied image |
+| `.translate [lang] [text] / .tt` | Translate text |
+| `.transcribe / .tb` | Transcribe a replied voice note to text |
+| `.tts [text]` | Turn text into a spoken voice note (reply to a message to use its text) |
+
+### 🔄 CONVERTER
+| Command | Description |
+|---|---|
+| `.sticker / .s` | Convert an image/GIF/video to a sticker |
+| `.take` | Re-save a sticker under your own pack name/author |
+| `.toimg` | Convert a sticker/webp back to an image |
+| `.tovid` | Convert a GIF/image/video to an MP4 |
+| `.tomp3` | Extract audio from a video as MP3 |
+| `.tovn` | Convert audio to a WhatsApp voice note |
+| `.rotate [degrees]` | Rotate a replied image |
+| `.flip` | Horizontally flip a replied image |
+| `.resize [width] [height]` | Resize a replied image |
+| `.tourl` | Upload replied media and get a direct link |
+
+### 🌸 ANIME SFW
+| Command | Description |
+|---|---|
+| `.waifu / .neko / .maid` | Random SFW anime character images |
+| `.oppai / .selfies / .uniform` | More SFW anime image categories |
+| `.mori-calliope / .raiden-shogun / .kamisato-ayaka` | Character-themed SFW anime images |
+
+### 🔞 ANIME NSFW
+| Command | Description |
+|---|---|
+| `.nsfw on/off` | Enable/disable NSFW commands in this group (admin only) |
+| `.milf / .ass / .hentai / .oral / .ecchi` | NSFW anime image categories (requires .nsfw on) |
+| `.paizuri / .ero` | More NSFW anime image categories (requires .nsfw on) |
+| `.ehentai [tag]` | Link to an e-hentai search for a tag |
+| `.nhentai [code or tag]` | Link to an nhentai search or gallery |
+
+### 🛡️ ADMIN
+| Command | Description |
+|---|---|
+| `.kick @user` | Remove a user from the group |
+| `.delete` | Delete a replied message |
+| `.antilink [on/off]` | Auto-remove messages containing links |
+| `.antilink action [warn/kick]` | Set what happens when antilink triggers |
+| `.antism on/off` | Auto-remove status/channel forward spam |
+| `.warn @user [reason]` | Issue a warning to a user |
+| `.resetwarn @user` | Clear a user's warnings |
+| `.groupstats / .gs` | Per-group stats (see .stats for bot-wide numbers) |
+| `.welcome on/off` | Toggle welcome messages for new members |
+| `.setwelcome [message]` | Set the welcome message (use @user as a placeholder) |
+| `.leave on/off` | Toggle goodbye messages when members leave |
+| `.setleave [message]` | Set the goodbye message |
+| `.purge [count]` | Delete the last N messages |
+| `.blacklist add/remove/list` | Manage blacklisted words |
+| `.promote @user` | Promote a user to group admin |
+| `.demote @user` | Demote a group admin |
+| `.mute / .unmute` | Lock/unlock the group to admins-only messaging |
+| `.hidetag [message]` | Mention everyone silently (no notification) |
+| `.tagall [message]` | Mention everyone with a visible notification |
+| `.activity` | Show member activity stats |
+| `.active / .inactive` | List the most/least active members |
+| `.open / .close` | Open/close the group to everyone's messages |
+
+### 🐾 PETS
 | Command | Description |
 |---|---|
 | `.pet` | View your pet |
-| `.pet adopt [type]` | Adopt a pet (500 coins) |
-| `.pet feed` | Feed your pet |
-| `.pet play` | Play with pet |
-| `.pet name [name]` | Rename pet |
+| `.pet catalogue` | Browse every adoptable pet, grouped by rarity |
+| `.pet adopt [name]` | Adopt a pet (costs 500 coins) |
+| `.pet feed` | Feed your pet using Pet Food from your inventory |
+| `.pet play` | Play with your pet (cooldown: 2 hrs) |
+| `.pet name [name]` | Rename your pet |
 
-### Interactions
-`.hug .kiss .slap .wave .pat .dance .sad .smile .laugh .lick .punch .kill .bonk .tickle .shrug .tickle .kidnap` and meme commands
-
-### Fun
-`.gay .lesbian .simp .ship .skill .duality .gen .pov .social .relation .pp .wouldyourather .joke .truth .dare .td .uno`
-
-### Downloaders
-`.ig .ttk .yt .x .fb .play`
-
-### Search
-`.pinterest .sauce .wallpaper .lyrics`
-
-### AI
+### 📬 FEEDBACK
 | Command | Description |
 |---|---|
-| `.copilot [msg]` | Full context-aware AI chat (GPT-4o) |
-| `.gpt [msg]` | Single-turn GPT (GPT-4o-mini) |
-| `.imagine [prompt]` | DALL-E 3 image generation |
-| `.upscale` | Upscale a replied image |
-| `.translate [lang] [text]` | Translate text |
-| `.transcribe` | Transcribe a voice note |
+| `.feedback [message]` | Send feedback directly to the bot owner |
 
-### Converters
-`.sticker .take .toimg .tovid .rotate [degrees]`
-
-### Anime SFW
-`.waifu .neko .maid .mori-calliope .raiden-shogun .oppai .selfies .uniform .kamisato-ayaka`
-
-### Anime NSFW (admin must enable with .nsfw on)
-`.milf .ass .hentai .oral .ecchi .paizuri .ero .ehentai .nhentai`
-
-### Admin
-`.kick .delete .antilink .antilink action .antism .warn .resetwarn .groupstats .welcome .setwelcome .leave .setleave .purge .blacklist .promote .demote .mute .unmute .hidetag .tagall .activity .active .inactive .open .close`
+<!-- COMMAND_TABLES_END -->
 
 ---
 
 ## 🛠 Tech Stack
-- **Runtime**: Node.js
-- **WhatsApp**: whatsapp-web.js
+- **Runtime**: Node.js (24.18.0 aarch64 in production, on Termux/Android)
+- **WhatsApp**: `whatsapp-web.js` (unofficial — see note below)
 - **Database**: MongoDB + Mongoose
-- **AI**: OpenAI (GPT-4o, DALL-E 3, Whisper)
-- **Images**: Anime: nekos.best, waifu.im | Wallpaper: wallhaven.cc
-- **Media**: sharp (images), ffmpeg (video/stickers)
+- **AI chat / translation / transcription / image generation**: Google Gemini, called directly over REST (no SDK, to avoid an extra npm install on unstable mobile data)
+- **Voice replies**: Fish Audio TTS (`.voice`, `.tts`)
+- **Board/HUD images**: Hand-written pure-JS pixel renderer + a from-scratch PNG encoder (`utils/pngEncoder.js`) — no `canvas`/`sharp`/`jimp`, since none of those reliably build in Termux
+- **Game AI**: Alpha-beta minimax (Chess, Connect 4), full minimax (Tic Tac Toe), heuristic decision-making (Battle)
+- **Profile pictures**: Cloudinary
+- **Anime images**: nekos.best (primary) with an otakugifs.xyz fallback, since nekos.best is Cloudflare-blocked on some connections
+- **Media processing**: `fluent-ffmpeg` + system `ffmpeg` (stickers, video/audio/voice-note conversion)
 - **Downloaders**: RapidAPI
+- **Process management**: PM2
 
 ## ⚠️ Notes
-- This bot uses `whatsapp-web.js` which is **unofficial**. Use at your own risk.
-- Host on a VPS for 24/7 uptime (DigitalOcean, Railway, etc.)
-- Keep your session folder backed up to avoid re-scanning QR
+- This bot uses `whatsapp-web.js`, which is **unofficial**. Use at your own risk — WhatsApp can change behavior without notice.
+- Keep your session folder backed up to avoid re-scanning the QR code after every restart.
+- If you're not on Termux, you can still run this anywhere Node.js + ffmpeg + Chromium are available (a VPS works fine too) — just adjust `PUPPETEER_EXECUTABLE_PATH` for your platform.
+
+---
+
+## 📄 License
+This project is released into the public domain under [The Unlicense](LICENSE) — free for anyone to use, modify, sell, or distribute for any purpose, with no restrictions and no attribution required.
