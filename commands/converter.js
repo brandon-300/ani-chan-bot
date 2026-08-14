@@ -3,7 +3,7 @@ const ffmpeg = require('fluent-ffmpeg');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { safeGetChat, safeGetQuotedMessage } = require('../utils/helpers');
+const { safeGetQuotedMessage } = require('../utils/helpers');
 const { BOT_NAME } = require('../utils/config');
 
 const TMP = os.tmpdir();
@@ -139,10 +139,10 @@ module.exports = {
 
       const stickerData = fs.readFileSync(outputPath).toString('base64');
       const stickerMedia = new MessageMedia('image/webp', stickerData);
-      const chat = await safeGetChat(msg);
-    if (!chat) return;
-      if (!chat) return;
-      await chat.sendMessage(stickerMedia, {
+      // msg.reply() (not chat.sendMessage()) so the sticker appears as a
+      // quoted reply under the triggering .sticker command — same fix
+      // already applied to the game board sends (chess/ttt/c4/battle).
+      await msg.reply(stickerMedia, undefined, {
         sendMediaAsSticker: true,
         stickerName: BOT_NAME,
         stickerAuthor: 'Brandon',
@@ -169,10 +169,7 @@ module.exports = {
         return msg.reply('❌ Please reply to a sticker.');
       }
 
-      const chat = await safeGetChat(msg);
-    if (!chat) return;
-      if (!chat) return;
-      await chat.sendMessage(media, {
+      await msg.reply(media, undefined, {
         sendMediaAsSticker: true,
         stickerName: packName,
         stickerAuthor: authorName,
@@ -206,10 +203,7 @@ module.exports = {
       const pngBuffer = fs.readFileSync(outputPath);
       const imgMedia = new MessageMedia('image/png', pngBuffer.toString('base64'));
 
-      const chat = await safeGetChat(msg);
-    if (!chat) return;
-      if (!chat) return;
-      await chat.sendMessage(imgMedia, { caption: '✅ Converted to image!' });
+      await msg.reply(imgMedia, undefined, { caption: '✅ Converted to image!' });
     } catch (err) {
       msg.reply('❌ Conversion failed: ' + err.message);
     } finally {
@@ -252,10 +246,7 @@ module.exports = {
 
       const videoData = fs.readFileSync(outputPath).toString('base64');
       const videoMedia = new MessageMedia('video/mp4', videoData);
-      const chat = await safeGetChat(msg);
-    if (!chat) return;
-      if (!chat) return;
-      await chat.sendMessage(videoMedia, { caption: '✅ Converted to video!' });
+      await msg.reply(videoMedia, undefined, { caption: '✅ Converted to video!' });
     } catch (err) {
       msg.reply('❌ Conversion failed: ' + err.message);
     } finally {
@@ -294,10 +285,7 @@ module.exports = {
       const rotated = fs.readFileSync(outputPath);
       const rotatedMedia = new MessageMedia('image/png', rotated.toString('base64'));
 
-      const chat = await safeGetChat(msg);
-    if (!chat) return;
-      if (!chat) return;
-      await chat.sendMessage(rotatedMedia, { caption: `🔄 Rotated ${degrees}°` });
+      await msg.reply(rotatedMedia, undefined, { caption: `🔄 Rotated ${degrees}°` });
     } catch (err) {
       msg.reply('❌ Rotation failed: ' + err.message);
     } finally {
@@ -328,10 +316,7 @@ module.exports = {
 
       const audioData = fs.readFileSync(outputPath).toString('base64');
       const audioMedia = new MessageMedia('audio/mpeg', audioData);
-      const chat = await safeGetChat(msg);
-    if (!chat) return;
-      if (!chat) return;
-      await chat.sendMessage(audioMedia, { sendAudioAsVoice: false });
+      await msg.reply(audioMedia, undefined, { sendAudioAsVoice: false });
     } catch (err) {
       msg.reply('❌ MP3 conversion failed: ' + err.message);
     } finally {
@@ -364,10 +349,7 @@ module.exports = {
 
       const voiceData = fs.readFileSync(outputPath).toString('base64');
       const voiceMedia = new MessageMedia('audio/ogg', voiceData);
-      const chat = await safeGetChat(msg);
-    if (!chat) return;
-      if (!chat) return;
-      await chat.sendMessage(voiceMedia, { sendAudioAsVoice: true });
+      await msg.reply(voiceMedia, undefined, { sendAudioAsVoice: true });
     } catch (err) {
       msg.reply('❌ Voice note conversion failed: ' + err.message);
     } finally {
@@ -397,10 +379,7 @@ module.exports = {
 
       const out = fs.readFileSync(outputPath);
       const outMedia = new MessageMedia('image/png', out.toString('base64'));
-      const chat = await safeGetChat(msg);
-    if (!chat) return;
-      if (!chat) return;
-      await chat.sendMessage(outMedia, { caption: '✅ Flipped image!' });
+      await msg.reply(outMedia, undefined, { caption: '✅ Flipped image!' });
     } catch (err) {
       msg.reply('❌ Flip failed: ' + err.message);
     } finally {
@@ -408,17 +387,31 @@ module.exports = {
     }
   },
 
-  // .resize width [height] — resize an image
+  // .resize width [height] — resize an image to exact pixel dimensions
+  // (NOT a percentage — see MIN_DIMENSION guard below)
   async resize(client, msg, args) {
     const targetMsg = await getTargetMessage(msg);
     if (targetMsg === 'ERROR') return msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment.");
-    if (!targetMsg.hasMedia) return msg.reply('❌ Reply to an image/video with .resize width [height]');
+    if (!targetMsg.hasMedia) return msg.reply('❌ Reply to an image/video with .resize width [height] (in pixels)');
+
+    const MIN_DIMENSION = 100;
 
     const width = parseInt(args[0], 10);
     const height = args[1] ? parseInt(args[1], 10) : -1;
 
     if (!width || width <= 0) {
-      return msg.reply('❌ Usage: .resize width [height]');
+      return msg.reply('❌ Usage: .resize width [height] — both are *pixel* values, not a percentage.\nExample: .resize 800 600');
+    }
+
+    // .resize has always taken literal pixel dimensions, not percentages.
+    // Someone typing e.g. "40 50" expecting a 40%/50% scale would otherwise
+    // silently get a ~28x50px image with no explanation — reject clearly
+    // instead of producing a near-unusable result.
+    if (width < MIN_DIMENSION || (height > 0 && height < MIN_DIMENSION)) {
+      return msg.reply(
+        `❌ ${width}${height > 0 ? `x${height}` : ''} is too small — .resize takes *pixel* dimensions, not a percentage.\n` +
+        `💡 Try something like .resize 800 600, or just .resize 800 to scale by width only (height auto-scales to match).`
+      );
     }
 
     const media = await targetMsg.downloadMedia().catch(() => null);
@@ -430,8 +423,17 @@ module.exports = {
     try {
       fs.writeFileSync(inputPath, Buffer.from(media.data, 'base64'));
 
+      // With both width and height given: scale UP to cover the target box
+      // (force_original_aspect_ratio=increase), then center-crop down to
+      // exactly width x height. This guarantees the output really is the
+      // requested size, with no stretching/distortion — the previous
+      // "decrease" mode only fit the image inside the box and could return
+      // a smaller, differently-shaped result when the aspect ratios didn't
+      // match (e.g. .resize 640 360 on a portrait photo).
+      // With width only (no height arg): classic aspect-preserving scale,
+      // height auto-follows — there's no target box to crop to.
       const vf = height > 0
-        ? `scale=${width}:${height}:force_original_aspect_ratio=decrease`
+        ? `scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height}`
         : `scale=${width}:-1`;
 
       await runFfmpeg(inputPath, outputPath, [
@@ -441,10 +443,7 @@ module.exports = {
 
       const out = fs.readFileSync(outputPath);
       const outMedia = new MessageMedia('image/png', out.toString('base64'));
-      const chat = await safeGetChat(msg);
-    if (!chat) return;
-      if (!chat) return;
-      await chat.sendMessage(outMedia, { caption: `✅ Resized to ${width}${height > 0 ? `x${height}` : ''}` });
+      await msg.reply(outMedia, undefined, { caption: `✅ Resized to ${width}${height > 0 ? `x${height}` : ''}` });
     } catch (err) {
       msg.reply('❌ Resize failed: ' + err.message);
     } finally {

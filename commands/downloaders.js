@@ -1,19 +1,18 @@
 const axios = require('axios');
 const { MessageMedia } = require('whatsapp-web.js');
 const yts = require('yt-search');
-const { safeGetChat } = require('../utils/helpers');
 
 // NOTE: All downloaders require RapidAPI keys or alternative APIs.
 // Sign up at https://rapidapi.com and get keys for:
 // - Instagram DL: social-media-video-downloader.p.rapidapi.com
-// - TikTok DL: tiktok-downloader-download-videos-without-watermark.p.rapidapi.com
+// - TikTok DL: social-media-video-downloader.p.rapidapi.com (same family as IG/FB — /tiktok/v3/post/details)
 // - YouTube DL: youtube-mp36.p.rapidapi.com
 // - Twitter/X DL: twittr-v2-fastest-twitter-x-api-150k-requests-for-15.p.rapidapi.com
 // - Facebook DL: social-media-video-downloader.p.rapidapi.com
 
 const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY;
 const RAPIDAPI_HOST_IG = 'social-media-video-downloader.p.rapidapi.com';
-const RAPIDAPI_HOST_TT = 'tiktok-downloader-download-videos-without-watermark.p.rapidapi.com';
+const RAPIDAPI_HOST_TT = 'social-media-video-downloader.p.rapidapi.com';
 const RAPIDAPI_HOST_YT = 'youtube-mp36.p.rapidapi.com';
 const RAPIDAPI_HOST_TW = 'twittr-v2-fastest-twitter-x-api-150k-requests-for-15.p.rapidapi.com';
 const RAPIDAPI_HOST_FB = 'social-media-video-downloader.p.rapidapi.com';
@@ -21,10 +20,10 @@ const RAPIDAPI_HOST_FB = 'social-media-video-downloader.p.rapidapi.com';
 async function downloadAndSend(msg, url, caption) {
   try {
     const media = await MessageMedia.fromUrl(url, { unsafeMime: true });
-    const chat = await safeGetChat(msg);
-    if (!chat) return;
-    if (!chat) return;
-    await chat.sendMessage(media, { caption });
+    // msg.reply() (not chat.sendMessage()) so the downloaded media appears
+    // as a quoted reply under the triggering command — same fix already
+    // applied to the game board sends and to converter.js.
+    await msg.reply(media, undefined, { caption });
   } catch (err) {
     msg.reply(`❌ Failed to download. Error: ${err.message}`);
   }
@@ -116,21 +115,31 @@ module.exports = {
 
     msg.reply('⏳ Downloading from TikTok...');
     try {
-      const res = await axios.get('https://tiktok-downloader-download-videos-without-watermark.p.rapidapi.com/index', {
-        params: { url },
-        headers: {
-          'X-RapidAPI-Key': RAPIDAPI_KEY,
-          'X-RapidAPI-Host': RAPIDAPI_HOST_TT,
-        },
-        timeout: 20000,
-      });
+      const res = await axios.get(
+        'https://social-media-video-downloader.p.rapidapi.com/tiktok/v3/post/details',
+        {
+          params: { url },
+          headers: {
+            'X-RapidAPI-Key': RAPIDAPI_KEY,
+            'X-RapidAPI-Host': RAPIDAPI_HOST_TT,
+          },
+          timeout: 20000,
+        }
+      );
 
-      const videoUrl = res.data?.video?.[0] || res.data?.url;
-      if (!videoUrl) {
-        console.error('[ttk] 200 OK but no video URL parsed. Raw response:', JSON.stringify(res.data)?.slice(0, 1500));
-        return msg.reply('❌ Could not extract video.');
+      const content = res.data?.contents?.[0];
+      if (!content) {
+        console.error('[ttk] 200 OK but no contents parsed. Raw:', JSON.stringify(res.data)?.slice(0, 1500));
+        return msg.reply('❌ Could not extract media.');
       }
-      await downloadAndSend(msg, videoUrl, '🎵 Downloaded from TikTok');
+
+      const mediaUrl = extractSmvdMediaUrl(content);
+      if (!mediaUrl) {
+        console.error('[ttk] Content present but no usable media URL. Content object:', JSON.stringify(content)?.slice(0, 1000));
+        return msg.reply('❌ Could not extract media from post.');
+      }
+
+      await downloadAndSend(msg, mediaUrl, '🎵 Downloaded from TikTok');
     } catch (err) {
       replyForError(msg, 'TikTok', err);
     }

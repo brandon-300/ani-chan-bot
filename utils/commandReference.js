@@ -242,7 +242,7 @@ const COMMAND_REFERENCE = [
       { cmd: '.tovn', desc: 'Convert audio to a WhatsApp voice note' },
       { cmd: '.rotate [degrees]', desc: 'Rotate a replied image' },
       { cmd: '.flip', desc: 'Horizontally flip a replied image' },
-      { cmd: '.resize [width] [height]', desc: 'Resize a replied image' },
+      { cmd: '.resize [width] [height]', desc: 'Resize a replied image (pixels, min 100px per side — not a percentage)' },
       { cmd: '.tourl', desc: 'Upload replied media and get a direct link' },
     ],
   },
