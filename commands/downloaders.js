@@ -5,17 +5,17 @@ const { safeGetChat } = require('../utils/helpers');
 
 // NOTE: All downloaders require RapidAPI keys or alternative APIs.
 // Sign up at https://rapidapi.com and get keys for:
-// - Instagram DL: instagram-downloader.p.rapidapi.com
+// - Instagram DL: social-media-video-downloader.p.rapidapi.com
 // - TikTok DL: tiktok-downloader-download-videos-without-watermark.p.rapidapi.com
 // - YouTube DL: youtube-mp36.p.rapidapi.com
-// - Twitter/X DL: twitter241.p.rapidapi.com
+// - Twitter/X DL: twittr-v2-fastest-twitter-x-api-150k-requests-for-15.p.rapidapi.com
 // - Facebook DL: social-media-video-downloader.p.rapidapi.com
 
 const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY;
-const RAPIDAPI_HOST_IG = 'instagram-downloader.p.rapidapi.com';
+const RAPIDAPI_HOST_IG = 'social-media-video-downloader.p.rapidapi.com';
 const RAPIDAPI_HOST_TT = 'tiktok-downloader-download-videos-without-watermark.p.rapidapi.com';
 const RAPIDAPI_HOST_YT = 'youtube-mp36.p.rapidapi.com';
-const RAPIDAPI_HOST_TW = 'twitter241.p.rapidapi.com';
+const RAPIDAPI_HOST_TW = 'twittr-v2-fastest-twitter-x-api-150k-requests-for-15.p.rapidapi.com';
 const RAPIDAPI_HOST_FB = 'social-media-video-downloader.p.rapidapi.com';
 
 async function downloadAndSend(msg, url, caption) {
@@ -49,6 +49,25 @@ function replyForError(msg, label, err) {
   }
 }
 
+// Shared extraction logic for the "Social Media Video Downloader" API family
+// (Instagram and Facebook both return the same contents[].videos[]/images[]
+// shape from this provider).
+function extractSmvdMediaUrl(content) {
+  if (content.videos?.length) {
+    // Several video entries are silent DASH tracks meant to be paired with
+    // a separate audios[] track by a player — pick the entry whose own
+    // metadata says it already has audio (the platform's own canonical
+    // combined file, e.g. IG's video_versions[0] / FB's native_hd).
+    return content.videos.find(v => v.metadata?.has_audio)?.url || content.videos[0]?.url;
+  }
+  if (content.images?.length) {
+    // NOTE: unverified — only confirmed against video posts on both
+    // platforms so far. First field name to check if a photo post fails.
+    return content.images[0]?.url;
+  }
+  return null;
+}
+
 module.exports = {
   // .ig [url]
   async ig(client, msg, args) {
@@ -57,20 +76,33 @@ module.exports = {
 
     msg.reply('⏳ Downloading from Instagram...');
     try {
-      const res = await axios.get('https://instagram-downloader.p.rapidapi.com/index', {
-        params: { url },
-        headers: {
-          'X-RapidAPI-Key': RAPIDAPI_KEY,
-          'X-RapidAPI-Host': RAPIDAPI_HOST_IG,
-        },
-        timeout: 20000,
-      });
+      const shortcode = url.match(/instagram\.com\/(?:p|reel|tv)\/([A-Za-z0-9_-]+)/)?.[1];
+      if (!shortcode) return msg.reply('❌ Could not parse Instagram post/reel URL.');
 
-      const mediaUrl = res.data?.media?.[0]?.url || res.data?.url;
-      if (!mediaUrl) {
-        console.error('[ig] 200 OK but no media URL parsed. Raw response:', JSON.stringify(res.data)?.slice(0, 1500));
+      const res = await axios.get(
+        'https://social-media-video-downloader.p.rapidapi.com/instagram/v3/media/post/details',
+        {
+          params: { shortcode, renderableFormats: '720p,highres' },
+          headers: {
+            'X-RapidAPI-Key': RAPIDAPI_KEY,
+            'X-RapidAPI-Host': RAPIDAPI_HOST_IG,
+          },
+          timeout: 20000,
+        }
+      );
+
+      const content = res.data?.contents?.[0];
+      if (!content) {
+        console.error('[ig] 200 OK but no contents parsed. Raw:', JSON.stringify(res.data)?.slice(0, 1500));
         return msg.reply('❌ Could not extract media.');
       }
+
+      const mediaUrl = extractSmvdMediaUrl(content);
+      if (!mediaUrl) {
+        console.error('[ig] Content present but no usable media URL. Content object:', JSON.stringify(content)?.slice(0, 1000));
+        return msg.reply('❌ Could not extract media from post.');
+      }
+
       await downloadAndSend(msg, mediaUrl, '📸 Downloaded from Instagram');
     } catch (err) {
       replyForError(msg, 'Instagram', err);
@@ -146,30 +178,58 @@ module.exports = {
       const tweetId = url.match(/status\/(\d+)/)?.[1];
       if (!tweetId) return msg.reply('❌ Invalid Twitter/X URL.');
 
-      const res = await axios.get('https://twitter241.p.rapidapi.com/tweet', {
-        params: { pid: tweetId },
-        headers: {
-          'X-RapidAPI-Key': RAPIDAPI_KEY,
-          'X-RapidAPI-Host': RAPIDAPI_HOST_TW,
-        },
-        timeout: 20000,
-      });
+      const res = await axios.get(
+        `https://${RAPIDAPI_HOST_TW}/tweet/${tweetId}`,
+        {
+          headers: {
+            'X-RapidAPI-Key': RAPIDAPI_KEY,
+            'X-RapidAPI-Host': RAPIDAPI_HOST_TW,
+          },
+          timeout: 20000,
+        }
+      );
 
-      const media = res.data?.tweet?.entities?.media?.[0];
-      if (!media) {
-        console.error('[x] 200 OK but no media parsed. Raw response:', JSON.stringify(res.data)?.slice(0, 1500));
+      // This API passes through Twitter's own internal GraphQL response
+      // almost unmodified. The tweet we asked for isn't always entries[0]
+      // (replies/cursors/other modules can be interleaved), so find it by
+      // its entryId ("tweet-<id>") rather than assuming position.
+      const instructions = res.data?.data?.threaded_conversation_with_injections_v2?.instructions || [];
+      let tweetResult = null;
+      for (const instruction of instructions) {
+        const match = (instruction.entries || []).find(e => e.entryId === `tweet-${tweetId}`);
+        if (match) {
+          tweetResult = match.content?.itemContent?.tweet_results?.result || null;
+          break;
+        }
+      }
+
+      if (!tweetResult) {
+        console.error('[x] Could not locate tweet entry in response. Raw:', JSON.stringify(res.data)?.slice(0, 1500));
+        return msg.reply('❌ Could not read tweet content from the API response.');
+      }
+
+      const mediaList = tweetResult?.legacy?.extended_entities?.media || tweetResult?.legacy?.entities?.media || [];
+      if (!mediaList.length) {
+        // Genuinely valid outcome — this tweet has no photo/video attached.
         return msg.reply('❌ No media found in tweet.');
       }
 
-      const videoUrl = media?.video_info?.variants?.find(v => v.content_type === 'video/mp4')?.url;
-      const imageUrl = media?.media_url_https;
+      const media = mediaList[0];
+      let mediaUrl;
+      if (media.type === 'photo') {
+        mediaUrl = media.media_url_https;
+      } else {
+        // video or animated_gif — pick the highest-bitrate mp4 variant
+        const mp4Variants = (media.video_info?.variants || []).filter(v => v.content_type === 'video/mp4');
+        mediaUrl = mp4Variants.sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0))[0]?.url;
+      }
 
-      if (!videoUrl && !imageUrl) {
+      if (!mediaUrl) {
         console.error('[x] Media object present but no usable URL. Media object:', JSON.stringify(media)?.slice(0, 1000));
         return msg.reply('❌ Could not extract media from tweet.');
       }
 
-      await downloadAndSend(msg, videoUrl || imageUrl, '🐦 Downloaded from X');
+      await downloadAndSend(msg, mediaUrl, '🐦 Downloaded from X');
     } catch (err) {
       replyForError(msg, 'X', err);
     }
@@ -182,21 +242,31 @@ module.exports = {
 
     msg.reply('⏳ Downloading from Facebook...');
     try {
-      const res = await axios.get('https://social-media-video-downloader.p.rapidapi.com/smvd/get/all', {
-        params: { url },
-        headers: {
-          'X-RapidAPI-Key': RAPIDAPI_KEY,
-          'X-RapidAPI-Host': RAPIDAPI_HOST_FB,
-        },
-        timeout: 20000,
-      });
+      const res = await axios.get(
+        'https://social-media-video-downloader.p.rapidapi.com/facebook/v3/post/details',
+        {
+          params: { url, renderableFormats: '720p,highres' },
+          headers: {
+            'X-RapidAPI-Key': RAPIDAPI_KEY,
+            'X-RapidAPI-Host': RAPIDAPI_HOST_FB,
+          },
+          timeout: 20000,
+        }
+      );
 
-      const link = res.data?.links?.find(l => l.quality === 'hd')?.link || res.data?.links?.[0]?.link;
-      if (!link) {
-        console.error('[fb] 200 OK but no link parsed. Raw response:', JSON.stringify(res.data)?.slice(0, 1500));
-        return msg.reply('❌ Could not extract video.');
+      const content = res.data?.contents?.[0];
+      if (!content) {
+        console.error('[fb] 200 OK but no contents parsed. Raw:', JSON.stringify(res.data)?.slice(0, 1500));
+        return msg.reply('❌ Could not extract media.');
       }
-      await downloadAndSend(msg, link, '📘 Downloaded from Facebook');
+
+      const mediaUrl = extractSmvdMediaUrl(content);
+      if (!mediaUrl) {
+        console.error('[fb] Content present but no usable media URL. Content object:', JSON.stringify(content)?.slice(0, 1000));
+        return msg.reply('❌ Could not extract media from post.');
+      }
+
+      await downloadAndSend(msg, mediaUrl, '📘 Downloaded from Facebook');
     } catch (err) {
       replyForError(msg, 'Facebook', err);
     }
