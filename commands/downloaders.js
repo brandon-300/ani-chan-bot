@@ -67,6 +67,18 @@ function extractSmvdMediaUrl(content) {
   return null;
 }
 
+// The "Social Media Video Downloader" API family returns HTTP 200 even when
+// it can't actually get the post — the real reason lives in a top-level
+// `error` field instead (e.g. {"error":{"message":"...age-restricted...",
+// "code":"not_found"}}). Without checking this, a perfectly legitimate
+// "Instagram won't let this API see that post" response looked identical to
+// an actual parsing bug — the person just got a generic "could not extract
+// media" with the real reason buried in pm2 logs only.
+function smvdErrorReason(data) {
+  const msg = data?.error?.message;
+  return typeof msg === 'string' && msg.trim() ? msg.trim() : null;
+}
+
 module.exports = {
   // .ig [url]
   async ig(client, msg, args) {
@@ -92,8 +104,11 @@ module.exports = {
 
       const content = res.data?.contents?.[0];
       if (!content) {
+        const reason = smvdErrorReason(res.data);
         console.error('[ig] 200 OK but no contents parsed. Raw:', JSON.stringify(res.data)?.slice(0, 1500));
-        return msg.reply('❌ Could not extract media.');
+        return msg.reply(reason
+          ? `❌ Instagram couldn't be reached for this post: ${reason}`
+          : '❌ Could not extract media.');
       }
 
       const mediaUrl = extractSmvdMediaUrl(content);
@@ -129,8 +144,11 @@ module.exports = {
 
       const content = res.data?.contents?.[0];
       if (!content) {
+        const reason = smvdErrorReason(res.data);
         console.error('[ttk] 200 OK but no contents parsed. Raw:', JSON.stringify(res.data)?.slice(0, 1500));
-        return msg.reply('❌ Could not extract media.');
+        return msg.reply(reason
+          ? `❌ TikTok couldn't be reached for this post: ${reason}`
+          : '❌ Could not extract media.');
       }
 
       const mediaUrl = extractSmvdMediaUrl(content);
@@ -265,8 +283,11 @@ module.exports = {
 
       const content = res.data?.contents?.[0];
       if (!content) {
+        const reason = smvdErrorReason(res.data);
         console.error('[fb] 200 OK but no contents parsed. Raw:', JSON.stringify(res.data)?.slice(0, 1500));
-        return msg.reply('❌ Could not extract media.');
+        return msg.reply(reason
+          ? `❌ Facebook couldn't be reached for this post: ${reason}`
+          : '❌ Could not extract media.');
       }
 
       const mediaUrl = extractSmvdMediaUrl(content);

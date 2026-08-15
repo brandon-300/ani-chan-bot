@@ -7,6 +7,12 @@ const path = require('path');
 const { execSync } = require('child_process');
 const { safeGetQuotedMessage, safeGetChat, safeGetContact, resolveSenderName, withRetry, encodeIdKey } = require('./utils/helpers');
 const { BOT_NAME } = require('./utils/config');
+const { instrumentHttpClients, wrapWithUsageTracking } = require('./utils/usageTracking');
+
+// Installed as early as possible, before any command file's axios/fetch
+// calls could ever fire — see utils/usageTracking.js for what this
+// actually does (auto-counts outbound API calls per command, for .stats).
+instrumentHttpClients();
 
 // Shared with the LocalAuth session path below and with the browser-lock
 // recovery helpers further down, so both always agree on the same binary
@@ -470,6 +476,8 @@ const HEAVY_COMMANDS = new Set([
   'pinterest', 'sauce', 'wallpaper', 'lyrics',
   // cardmanager.js — multi-call AniList lookups / background-batch triggers / bulk DB repair
   'backfillimages', 'bulkadd', 'autoexpand', 'repairlinks', 'purgeorphans',
+  // general.js — multi-collection aggregation + live per-group WhatsApp lookups
+  'stats',
 ]);
 
 // ─── Global serial queue for heavy commands ────────────────────────────────────
@@ -684,6 +692,24 @@ client.on('message', (msg) => {
     // — see the "AFK welcome-back" section near the AFK-mention listener —
     // so it fires for every message the person sends, not just commands.
 
+    // ── Usage tracking context (for .stats) ──────────────────────────────
+    // Resolved via safeGetChat/safeGetContact rather than raw msg.from/
+    // msg.author — same id-canonicalization reasoning as the activity-
+    // tracking listener further down in this file (a real group or person
+    // could otherwise fragment into multiple different rows over time).
+    // Wrapped in try/catch and defaults to the plain, untracked handler on
+    // any failure — a tracking hiccup must never block a real command.
+    let trackedHandlerFn = handlerFn;
+    try {
+      const trackChat = await safeGetChat(msg);
+      const trackContact = await safeGetContact(msg);
+      const usageGroupId = trackChat?.isGroup ? trackChat.id._serialized : 'DM';
+      const usageUserId = trackContact?.id._serialized || (msg.author || msg.from);
+      trackedHandlerFn = wrapWithUsageTracking(handlerFn, { groupId: usageGroupId, userId: usageUserId, command });
+    } catch (err) {
+      console.error('Usage tracking context resolution failed (command still runs untracked):', err.message);
+    }
+
     const isHeavy = HEAVY_COMMANDS.has(command);
 
     if (isHeavy) {
@@ -695,7 +721,7 @@ client.on('message', (msg) => {
       const heavyPosition = enqueueHeavyTask(async () => {
         console.log(`Executing command (Task ID: ${taskId})`);
         try {
-          await handlerFn();
+          await trackedHandlerFn();
           console.log(`Command executed and replied to ${senderName} successfully at ${new Date().toLocaleString()}`);
         } catch (err) {
           console.error(`Failed to execute command: ${err.message}`);
@@ -727,7 +753,7 @@ client.on('message', (msg) => {
     // Normal commands: run immediately, same as before.
     console.log('Executing command');
     try {
-      await handlerFn();
+      await trackedHandlerFn();
       console.log(`Command executed and replied to ${senderName} successfully at ${new Date().toLocaleString()}`);
     } catch (err) {
       console.error(`Failed to execute command: ${err.message}`);
@@ -947,6 +973,19 @@ setInterval(() => {
     console.log(`💚 Heartbeat: ${new Date().toLocaleString()}`);
   } catch (err) {
     console.error('Heartbeat error:', err.message);
+  }
+}, 60000);
+
+// ── Daily bot-stats digest (8:00 AM WAT, unprompted) ────────────────────
+// Checked every minute alongside the heartbeat above — the actual
+// once-a-day gating (and duplicate-send protection across PM2 restarts)
+// lives in _maybeSendDailyStats itself (commands/general.js), via
+// BotState. This just needs to call it often enough not to miss the
+// 07:00 UTC / 08:00 WAT minute.
+setInterval(() => {
+  const { _maybeSendDailyStats } = require('./commands/general');
+  if (_maybeSendDailyStats) {
+    _maybeSendDailyStats(client).catch(err => console.error('Daily stats digest error:', err.message));
   }
 }, 60000);
 

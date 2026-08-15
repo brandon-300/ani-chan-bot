@@ -23,6 +23,21 @@ function runFfmpeg(inputPath, outputPath, outputOptions = []) {
   });
 }
 
+// Reads the source width/height via ffprobe (bundled with the ffmpeg
+// package, no extra install needed). Used by .resize to decide crop vs.
+// pad — we need the real source dimensions to know how much of the image
+// a cover-crop would throw away before committing to a filter.
+function probeDimensions(inputPath) {
+  return new Promise((resolve, reject) => {
+    ffmpeg.ffprobe(inputPath, (err, data) => {
+      if (err) return reject(err);
+      const stream = (data.streams || []).find(s => s.width && s.height);
+      if (!stream) return reject(new Error('No stream with width/height found'));
+      resolve({ width: stream.width, height: stream.height });
+    });
+  });
+}
+
 function cleanup(...files) {
   for (const file of files) {
     try {
@@ -72,21 +87,68 @@ async function getTargetMessage(msg) {
   }
 }
 
-async function uploadTo0x0(buffer, filename) {
+// 0x0.st is a hobby-run anonymous file host with no uptime guarantees, and
+// its anti-abuse layer is known to block/rate-limit requests that don't
+// send a real User-Agent (Node's fetch sends nothing distinguishing by
+// default). We: (1) set a real User-Agent, (2) retry with backoff on
+// transient 503/429 responses, (3) fall back to catbox.moe if 0x0.st is
+// still down after retries — a single point of failure isn't good enough
+// on an unstable connection.
+const UPLOAD_USER_AGENT = 'AniChanBot/1.0 (+WhatsApp media relay; Termux)';
+
+async function uploadOnceTo0x0(buffer, filename) {
   const form = new FormData();
   form.append('file', new Blob([buffer]), filename);
 
   const res = await fetch('https://0x0.st', {
     method: 'POST',
+    headers: { 'User-Agent': UPLOAD_USER_AGENT },
     body: form,
   });
 
   if (!res.ok) {
-    throw new Error(`Upload failed: HTTP ${res.status}`);
+    const err = new Error(`HTTP ${res.status}`);
+    err.status = res.status;
+    throw err;
   }
 
   const text = (await res.text()).trim();
-  if (!text) throw new Error('Upload failed: empty response');
+  if (!text) throw new Error('empty response');
+  return text;
+}
+
+async function uploadTo0x0(buffer, filename, retries = 2) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await uploadOnceTo0x0(buffer, filename);
+    } catch (err) {
+      // 503 (overloaded) / 429 (rate-limited) are transient — worth a
+      // retry with backoff. Anything else (bad file, 4xx, etc.) fails
+      // immediately since retrying won't help.
+      const transient = err.status === 503 || err.status === 429;
+      if (!transient || attempt >= retries) throw err;
+      await new Promise(r => setTimeout(r, 1500 * (attempt + 1)));
+    }
+  }
+}
+
+async function uploadToCatbox(buffer, filename) {
+  const form = new FormData();
+  form.append('reqtype', 'fileupload');
+  form.append('fileToUpload', new Blob([buffer]), filename);
+
+  const res = await fetch('https://catbox.moe/user/api.php', {
+    method: 'POST',
+    headers: { 'User-Agent': UPLOAD_USER_AGENT },
+    body: form,
+  });
+
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+  const text = (await res.text()).trim();
+  if (!text || !text.startsWith('http')) {
+    throw new Error(`unexpected response: ${text.slice(0, 200)}`);
+  }
   return text;
 }
 
@@ -423,18 +485,40 @@ module.exports = {
     try {
       fs.writeFileSync(inputPath, Buffer.from(media.data, 'base64'));
 
-      // With both width and height given: scale UP to cover the target box
-      // (force_original_aspect_ratio=increase), then center-crop down to
-      // exactly width x height. This guarantees the output really is the
-      // requested size, with no stretching/distortion — the previous
-      // "decrease" mode only fit the image inside the box and could return
-      // a smaller, differently-shaped result when the aspect ratios didn't
-      // match (e.g. .resize 640 360 on a portrait photo).
-      // With width only (no height arg): classic aspect-preserving scale,
-      // height auto-follows — there's no target box to crop to.
-      const vf = height > 0
-        ? `scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height}`
-        : `scale=${width}:-1`;
+      let vf;
+      if (height > 0) {
+        // Decide crop vs. pad by actually measuring how much of the image
+        // a cover-crop would discard, instead of guessing from aspect
+        // ratio alone. RETAIN_THRESHOLD = 0.5 means: if cropping would
+        // keep less than half the image along the cropped axis (e.g. a
+        // tall portrait forced into a wide landscape box), switch to
+        // padding instead so the subject doesn't get sliced away.
+        const RETAIN_THRESHOLD = 0.5;
+        let mode = 'crop'; // safe fallback if probing fails for any reason
+
+        try {
+          const { width: srcW, height: srcH } = await probeDimensions(inputPath);
+          const scaleCover = Math.max(width / srcW, height / srcH);
+          const scaledW = srcW * scaleCover;
+          const scaledH = srcH * scaleCover;
+          const retainedFraction = Math.min(width / scaledW, height / scaledH);
+          mode = retainedFraction < RETAIN_THRESHOLD ? 'pad' : 'crop';
+        } catch (probeErr) {
+          console.error('[resize] Dimension probe failed, defaulting to crop mode:', probeErr.message);
+        }
+
+        vf = mode === 'pad'
+          // Fit the whole image inside the box (no cropping), then pad
+          // the leftover space with black bars to hit the exact size.
+          ? `scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black`
+          // Scale UP to cover the box, then center-crop down to exactly
+          // width x height — guaranteed exact size, no distortion.
+          : `scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height}`;
+      } else {
+        // Width only (no height arg): classic aspect-preserving scale,
+        // height auto-follows — there's no target box to crop/pad against.
+        vf = `scale=${width}:-1`;
+      }
 
       await runFfmpeg(inputPath, outputPath, [
         '-vf', vf,
@@ -463,7 +547,20 @@ module.exports = {
     try {
       const buffer = Buffer.from(media.data, 'base64');
       const filename = `ani-chan_${Date.now()}.${mimeToExt(media.mimetype)}`;
-      const url = await uploadTo0x0(buffer, filename);
+
+      let url;
+      try {
+        url = await uploadTo0x0(buffer, filename);
+      } catch (primaryErr) {
+        // 0x0.st is a hobby service with no uptime guarantee — fall back
+        // to catbox.moe rather than failing outright.
+        console.error('[tourl] 0x0.st failed, falling back to catbox.moe:', primaryErr.message);
+        try {
+          url = await uploadToCatbox(buffer, filename);
+        } catch (fallbackErr) {
+          throw new Error(`0x0.st: ${primaryErr.message} | catbox.moe: ${fallbackErr.message}`);
+        }
+      }
 
       await msg.reply(`✅ Uploaded:\n${url}`);
     } catch (err) {

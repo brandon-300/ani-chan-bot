@@ -29,7 +29,7 @@ const COMMAND_REFERENCE = [
       { cmd: '.rules', desc: "View this group's saved rules" },
       { cmd: '.setrules [text]', desc: "Set this group's rules (admin only)" },
       { cmd: '.ping / .test', desc: 'Check the bot is online and its response latency' },
-      { cmd: '.stats', desc: 'Bot-wide stats: uptime, command count, groups, users, memory' },
+      { cmd: '.stats', desc: 'Full bot + per-group usage stats, incl. daily 8AM WAT digest (owner only, DM only)' },
       { cmd: '.mods', desc: "List the bot's owner and moderators" },
       { cmd: '.owner', desc: "Send the bot owner's contact card" },
       { cmd: '.url', desc: "Get this group's invite link (admin only)" },

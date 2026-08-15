@@ -178,12 +178,23 @@ module.exports = {
     }
   },
 
-  // .delete — delete a replied message
+  // .delete — delete a replied message. Deleting the bot's OWN message
+  // never needs bot-admin status (any account can always delete its own
+  // sent message) — but deleting someone ELSE's message for everyone only
+  // works if WhatsApp recognizes the bot as a group admin. Without this
+  // check, quoted.delete(true) on someone else's message used to silently
+  // fall back to a LOCAL-ONLY delete (removed from the bot's own view,
+  // still visible to everyone else) instead of throwing an error — so it
+  // looked like it worked, but nothing actually happened for the group.
+  // Same requireBotAdmin pattern already used by .kick above.
   async delete(client, msg, args) {
     if (!await requireAdmin(msg)) return;
     const quoted = await safeGetQuotedMessage(msg).catch(err => { console.error("getQuotedMessage failed:", err.message); return 'ERROR'; });
     if (quoted === 'ERROR') return msg.reply('⚠️ WhatsApp connection hiccup — please try again in a moment.');
     if (!quoted) return msg.reply('❌ Reply to a message to delete it.');
+
+    if (!quoted.fromMe && !await requireBotAdmin(msg)) return;
+
     try {
       await quoted.delete(true);
       await msg.delete(true);
