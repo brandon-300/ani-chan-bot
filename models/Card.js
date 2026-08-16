@@ -67,6 +67,13 @@ catalogueId: {
   price: { type: Number, default: 0 },
   isLent: { type: Boolean, default: false },
   lentTo: { type: String, default: null },
+  // Set true while this card is staked as collateral on an active bank loan
+  // (commands/loan.js, .loan request). Mirrors the isLent flag's pattern —
+  // prevents the SAME card from being staked into a second loan at once.
+  // Cleared back to false on .loan repay, or when the loan is auto-defaulted
+  // (overdue) and the card is seized to the bank vault — see BANK_VAULT_ID
+  // in commands/loan.js.
+  isStaked: { type: Boolean, default: false },
   obtainedAt: { type: Date, default: Date.now },
   firstOwner: { type: String, default: null },
   timesTraded: { type: Number, default: 0 },

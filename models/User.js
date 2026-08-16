@@ -58,6 +58,26 @@ const UserSchema = new mongoose.Schema({
   wishlist: { type: [String], default: [] },     // card names the user wants to be notified about
   tradesCompleted: { type: Number, default: 0 },
   createdAt: { type: Date, default: Date.now },
+  // ─── Bank Loan (commands/loan.js, .loan) ───────────────────────────────
+  // One active loan per user at a time, staked against one of their own
+  // OwnedCard docs (see models/Card.js's OwnedCardSchema.isStaked). Amounts
+  // are computed once at request time and frozen here — interest is never
+  // recalculated later, so nothing here needs to change if utils LOAN
+  // brackets are retuned after the fact. `cardId`/`cardName`/`cardTier` are
+  // a snapshot for display in .loan status even if the live card document
+  // is ever removed later; the authoritative unstake target is `cardId`.
+  loan: {
+    active: { type: Boolean, default: false },
+    bracket: { type: String, default: null },     // '1'..'6' or 'S' — see LOAN_BRACKETS in commands/loan.js
+    principal: { type: Number, default: 0 },
+    interest: { type: Number, default: 0 },
+    totalOwed: { type: Number, default: 0 },
+    cardId: { type: String, default: null },       // staked OwnedCard._id (string)
+    cardName: { type: String, default: null },
+    cardTier: { type: String, default: null },
+    issuedAt: { type: Number, default: null },      // ms epoch
+    dueAt: { type: Number, default: null },         // ms epoch
+  },
 });
 
 UserSchema.statics.findOrCreate = async function (id, name) {

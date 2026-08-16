@@ -4,7 +4,7 @@ const { checkTitle, formatTitleUnlockNotice } = require('../utils/titles');
 const { MessageMedia } = require('whatsapp-web.js');
 const User = require('../models/User');
 const Group = require('../models/Group');
-const { tierEmoji, rollTier, formatNum, pick, mentionName, mentionTag, generateUniqueCode, safeGetChat, cardValue, tierAbove, TIER_DROP_RATES, addXP, XP_REWARDS } = require('../utils/helpers');
+const { tierEmoji, rollTier, formatNum, pick, mentionName, mentionTag, generateUniqueCode, safeGetChat, cardValue, tierAbove, TIER_DROP_RATES, addXP, XP_REWARDS, parseAmount } = require('../utils/helpers');
 const crypto = require('crypto');
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -609,11 +609,12 @@ ${tierEmoji(card.tier)} Tier: ${card.tier}
   async sellc(client, msg, args) {
     const contact = await msg.getContact();
     const index = parseInt(args[0]);
-    const price = parseInt(args[1]);
-    if (!index || !price || price < 1) return msg.reply('❌ Usage: .sellc [index] [price]');
+    const price = parseAmount(args[1]);
+    if (!index || !price || price < 1) return msg.reply('❌ Usage: .sellc [index] [price]\n\nPrice supports shorthand: 5k, 1.2m, etc.');
 
     const card = await getCardByIndex(contact.id._serialized, index);
     if (!card) return msg.reply('❌ Card not found.');
+    if (card.isStaked) return msg.reply('❌ This card is staked as loan collateral — repay your loan first (.loan status).');
 
     card.isForSale = true;
     card.price = price;
@@ -757,8 +758,8 @@ if (existing)
     if (!mentioned.length) return msg.reply('❌ Usage: .sc [@user] [index] [price]');
 
     const index = parseInt(args[1]);
-    const price = parseInt(args[2]);
-    if (!index || !price) return msg.reply('❌ Usage: .sc [@user] [index] [price]');
+    const price = parseAmount(args[2]);
+    if (!index || !price) return msg.reply('❌ Usage: .sc [@user] [index] [price]\n\nPrice supports shorthand: 5k, 1.2m, etc.');
 
     const buyer = mentioned[0];
     const buyerUser = await User.findOne({ id: buyer.id._serialized });
@@ -766,6 +767,7 @@ if (existing)
 
     const card = await getCardByIndex(contact.id._serialized, index);
     if (!card) return msg.reply('❌ Card not found.');
+    if (card.isStaked) return msg.reply('❌ This card is staked as loan collateral — repay your loan first (.loan status).');
 
     buyerUser.coins -= price;
     const sellerUser = await User.findOrCreate(contact.id._serialized);
@@ -801,6 +803,8 @@ if (existing)
 
     if (!myCard) return msg.reply('❌ Your card not found.');
     if (!theirCard) return msg.reply(`❌ Their card not found.`);
+    if (myCard.isStaked) return msg.reply('❌ Your card is staked as loan collateral — repay your loan first (.loan status).');
+    if (theirCard.isStaked) return msg.reply('❌ Their card is staked as loan collateral on an active loan — they need to repay it before it can be traded.');
 
     const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
     if (!chat) return;
@@ -858,6 +862,13 @@ if (existing)
         !theirCard || theirCard.ownerId !== trade.initiatorId) {
       await trade.deleteOne();
       return msg.reply('❌ This trade is no longer valid — one of the cards changed hands since the offer.');
+    }
+
+    // Same re-check for staking — a card can be staked as loan collateral
+    // any time after a .tc offer goes out but before it's accepted.
+    if (myCard.isStaked || theirCard.isStaked) {
+      await trade.deleteOne();
+      return msg.reply('❌ This trade is no longer valid — one of the cards is now staked as loan collateral.');
     }
 
     myCard.ownerId = trade.initiatorId;
@@ -928,7 +939,11 @@ if (existing)
     if (!chat.isGroup) return msg.reply('❌ Group only.');
     const cards = await getUserCards(contact.id._serialized);
     if (!cards.length) return msg.reply('❌ You have no cards.');
-    const card = cards[0];
+    // Skip anything already unavailable — staked as loan collateral, listed
+    // in the shop, or already lent out elsewhere — rather than blindly
+    // grabbing cards[0] regardless of its state.
+    const card = cards.find(c => !c.isStaked && !c.isForSale && !c.isLent);
+    if (!card) return msg.reply('❌ None of your cards are available to lend right now (all staked, listed, or already lent).');
     card.isLent = true;
     card.lentTo = chat.id._serialized;
     await card.save();
@@ -958,8 +973,8 @@ if (existing)
   async submit(client, msg, args) {
     const contact = await msg.getContact();
     const code = args[0]?.trim().toUpperCase();
-    const amount = parseInt(args[1]);
-    if (!code || !amount) return msg.reply('❌ Usage: .submit [code] [amount]');
+    const amount = parseAmount(args[1]);
+    if (!code || !amount) return msg.reply('❌ Usage: .submit [code] [amount]\n\nAmount supports shorthand: 5k, 1.2m, etc.');
 
     const auction = await Auction.findOne({ code });
     if (!auction || !auction.isActive) return msg.reply('❌ Auction not found or ended.');
@@ -1096,6 +1111,10 @@ if (existing)
       return msg.reply(`❌ One of those positions doesn't exist. You have ${cards.length} card(s) — check *.col*.`);
     }
 
+    if (selected.some(c => c.isStaked)) {
+      return msg.reply('❌ One of those cards is staked as loan collateral — repay your loan first (.loan status) before fusing it away.');
+    }
+
     const tier = selected[0].tier;
     if (!selected.every(c => c.tier === tier)) {
       return msg.reply('❌ All 3 cards must be the same tier to fuse.');
@@ -1183,6 +1202,7 @@ if (existing)
     }
     if (card.isForSale) return msg.reply('❌ This card is currently listed in the shop — remove it with *.rc* first.');
     if (card.isLent) return msg.reply('❌ This card is currently lent out — get it back before reselling it.');
+    if (card.isStaked) return msg.reply('❌ This card is staked as loan collateral — repay your loan first (.loan status) before reselling it.');
 
     const resellPrice = Math.floor(cardValue(card.tier) * 0.5);
     const user = await User.findOrCreate(contact.id._serialized);

@@ -34,6 +34,25 @@ function formatNum(n) {
   return String(n);
 }
 
+// ─── Flexible Amount Parsing (K/M/B shorthand) ────────────────────────────────
+// Accepts plain integers ("50000") as well as shorthand people actually type
+// on a phone keyboard ("50k", "1.5m", "2B"), case-insensitive, with optional
+// thousands separators ("1,500,000"). Returns a positive integer (rounded)
+// on success, or null on anything that doesn't parse — callers should treat
+// null exactly like a failed parseInt() (i.e. show a usage error), same as
+// every existing amount field in the bot already does.
+function parseAmount(input) {
+  if (input === undefined || input === null) return null;
+  const str = String(input).trim().toLowerCase().replace(/,/g, '');
+  const match = str.match(/^(\d+(?:\.\d+)?)([kmb])?$/);
+  if (!match) return null;
+  const base = parseFloat(match[1]);
+  if (!Number.isFinite(base)) return null;
+  const multipliers = { k: 1_000, m: 1_000_000, b: 1_000_000_000 };
+  const value = Math.round(base * (multipliers[match[2]] || 1));
+  return value > 0 ? value : null;
+}
+
 // ─── Cooldown Helper ──────────────────────────────────────────────────────────
 function formatCooldown(ms) {
   const h = Math.floor(ms / 3_600_000);
@@ -395,6 +414,7 @@ module.exports = {
   boldSans,
   doubleStruck,
   formatNum,
+  parseAmount,
   formatCooldown,
   rand,
   pick,

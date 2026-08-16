@@ -195,11 +195,40 @@ module.exports = {
 
     if (!quoted.fromMe && !await requireBotAdmin(msg)) return;
 
+    // Deleted separately (not one shared try/catch) so a failure on either
+    // side is diagnosable instead of both looking identical in the logs.
+    // The delay between them is a mitigation for a suspected timing issue:
+    // firing two back-to-back "delete for everyone" actions in the same
+    // WhatsApp Web session — the second one targeting the very message
+    // still being actively processed by this handler — appears able to
+    // silently no-op (no thrown error, but nothing actually deletes for
+    // the group) rather than fail loudly. Unconfirmed without a live
+    // session; if this message still doesn't delete, the two console.error
+    // lines below will show exactly which call is the problem.
+    let quotedOk = false;
     try {
       await quoted.delete(true);
+      quotedOk = true;
+    } catch (err) {
+      console.error('.delete: quoted.delete(true) failed:', err.message);
+    }
+
+    await new Promise(r => setTimeout(r, 400));
+
+    let msgOk = false;
+    try {
       await msg.delete(true);
-    } catch {
-      msg.reply('❌ Could not delete message.');
+      msgOk = true;
+    } catch (err) {
+      console.error('.delete: msg.delete(true) failed:', err.message);
+    }
+
+    if (!quotedOk || !msgOk) {
+      msg.reply(
+        !quotedOk
+          ? '❌ Could not delete that message.'
+          : '⚠️ Deleted the message, but could not delete this command.'
+      );
     }
   },
 

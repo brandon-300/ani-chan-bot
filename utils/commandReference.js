@@ -112,6 +112,7 @@ const COMMAND_REFERENCE = [
       { cmd: '.level / .xp [@user]', desc: 'View your (or someone else\'s) level and XP progress' },
       { cmd: '.roast [@user]', desc: 'Get roasted (or roast someone else)' },
       { cmd: '.gamble [amount]', desc: 'Gamble coins on a 50/50 coin flip' },
+      { cmd: '.loan request/repay/status', desc: 'Take a bank loan against a staked card, repay it, or check its status' },
       { cmd: '.beg', desc: 'Beg for coins (cooldown: 5 min)' },
     ],
   },
