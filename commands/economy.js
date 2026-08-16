@@ -1,7 +1,7 @@
 const User = require('../models/User');
 const Guild = require('../models/Guild');
 const { CardCatalogue, OwnedCard } = require('../models/Card');
-const { formatNum, formatCooldown, rand, pick, tierEmoji, mentionName, mentionTag, safeGetChat, safeGetQuotedMessage, isOwner, isMod, addXP, XP_REWARDS, boldSans, doubleStruck, encodeIdKey } = require('../utils/helpers');
+const { formatNum, formatCooldown, rand, pick, tierEmoji, mentionName, mentionTag, safeGetChat, safeGetQuotedMessage, isOwner, isMod, addXP, XP_REWARDS, boldSans, doubleStruck, encodeIdKey, parseAmount } = require('../utils/helpers');
 const { BOT_NAME } = require('../utils/config');
 const { battleGames } = require('./games');
 const { checkAchievements, formatUnlockNotice, ACHIEVEMENTS } = require('../utils/achievements');
@@ -181,8 +181,11 @@ module.exports = {
   async balance(client, msg, args) {
     const contact = await msg.getContact();
     const user = await User.findOrCreate(contact.id._serialized, contact.pushname);
+    const interestNote = user._interestCredited > 0
+      ? `\n📈 +${formatNum(user._interestCredited)} bank interest since your last check!`
+      : '';
     msg.reply(
-      `💳 *${contact.pushname}'s Balance*\n\n💰 Wallet: ${formatNum(user.coins)} coins\n🏦 Bank: ${formatNum(user.bank)} coins\n🔮 Orbs: ${user.orbs}\n✨ Stardust: ${user.stardust}`
+      `💳 *${contact.pushname}'s Balance*\n\n💰 Wallet: ${formatNum(user.coins)} coins\n🏦 Bank: ${formatNum(user.bank)} coins${interestNote}\n🔮 Orbs: ${user.orbs}\n✨ Stardust: ${user.stardust}`
     );
   },
 
@@ -242,29 +245,31 @@ module.exports = {
   // .withdraw [amount]
   async withdraw(client, msg, args) {
     const contact = await msg.getContact();
-    const amount = parseInt(args[0]);
-    if (!amount || amount < 1) return msg.reply('❌ Usage: .withdraw [amount]');
+    const amount = parseAmount(args[0]);
+    if (!amount || amount < 1) return msg.reply('❌ Usage: .withdraw [amount]\n\nAmount supports shorthand: 5k, 1.2m, etc.');
 
     const user = await User.findOrCreate(contact.id._serialized);
-    if (user.bank < amount) return msg.reply(`❌ Not enough in bank. Bank: ${user.bank}`);
+    const interestNote = user._interestCredited > 0 ? ` (📈 +${formatNum(user._interestCredited)} interest just credited)` : '';
+    if (user.bank < amount) return msg.reply(`❌ Not enough in bank. Bank: ${formatNum(user.bank)}${interestNote}`);
     user.bank -= amount;
     user.coins += amount;
     await user.save();
-    msg.reply(`🏦 Withdrawn 💰 *${amount}* coins.\nWallet: ${formatNum(user.coins)} | Bank: ${formatNum(user.bank)}`);
+    msg.reply(`🏦 Withdrawn 💰 *${formatNum(amount)}* coins.${interestNote}\nWallet: ${formatNum(user.coins)} | Bank: ${formatNum(user.bank)}`);
   },
 
   // .deposit [amount]
   async deposit(client, msg, args) {
     const contact = await msg.getContact();
-    const amount = parseInt(args[0]);
-    if (!amount || amount < 1) return msg.reply('❌ Usage: .deposit [amount]');
+    const amount = parseAmount(args[0]);
+    if (!amount || amount < 1) return msg.reply('❌ Usage: .deposit [amount]\n\nAmount supports shorthand: 5k, 1.2m, etc.');
 
     const user = await User.findOrCreate(contact.id._serialized);
-    if (user.coins < amount) return msg.reply(`❌ Not enough coins. Wallet: ${user.coins}`);
+    const interestNote = user._interestCredited > 0 ? ` (📈 +${formatNum(user._interestCredited)} interest just credited)` : '';
+    if (user.coins < amount) return msg.reply(`❌ Not enough coins. Wallet: ${formatNum(user.coins)}`);
     user.coins -= amount;
     user.bank += amount;
     await user.save();
-    msg.reply(`🏦 Deposited 💰 *${amount}* coins.\nWallet: ${formatNum(user.coins)} | Bank: ${formatNum(user.bank)}`);
+    msg.reply(`🏦 Deposited 💰 *${formatNum(amount)}* coins.${interestNote}\nWallet: ${formatNum(user.coins)} | Bank: ${formatNum(user.bank)}`);
   },
 
   // .donate [@user] [amount]
@@ -272,8 +277,8 @@ module.exports = {
     const contact = await msg.getContact();
     const mentioned = await msg.getMentions();
     if (!mentioned.length) return msg.reply('❌ Usage: .donate [@user] [amount]');
-    const amount = parseInt(args[1]);
-    if (!amount || amount < 1) return msg.reply('❌ Usage: .donate [@user] [amount]');
+    const amount = parseAmount(args[1]);
+    if (!amount || amount < 1) return msg.reply('❌ Usage: .donate [@user] [amount]\n\nAmount supports shorthand: 5k, 1.2m, etc.');
 
     const sender = await User.findOrCreate(contact.id._serialized);
     const receiver = await User.findOrCreate(mentioned[0].id._serialized);
@@ -282,7 +287,7 @@ module.exports = {
     sender.coins -= amount;
     receiver.coins += amount;
     await Promise.all([sender.save(), receiver.save()]);
-    msg.reply(`💝 *${contact.pushname}* donated 💰 ${amount} coins to *${mentioned[0].pushname}*!`);
+    msg.reply(`💝 *${contact.pushname}* donated 💰 ${formatNum(amount)} coins to *${mentioned[0].pushname}*!`);
   },
 
 async lottery(client, msg, args) {
@@ -695,8 +700,8 @@ async lottery(client, msg, args) {
   // .gamble [amount]
   async gamble(client, msg, args) {
     const contact = await msg.getContact();
-    const amount = parseInt(args[0]);
-    if (!amount || amount < 10) return msg.reply('❌ Minimum gamble is 10 coins. Usage: .gamble [amount]');
+    const amount = parseAmount(args[0]);
+    if (!amount || amount < 10) return msg.reply('❌ Minimum gamble is 10 coins. Usage: .gamble [amount]\n\nAmount supports shorthand: 5k, 1.2m, etc.');
 
     const user = await User.findOrCreate(contact.id._serialized);
     if (user.coins < amount) return msg.reply('❌ Not enough coins.');
@@ -706,8 +711,8 @@ async lottery(client, msg, args) {
     await user.save();
     msg.reply(
       win
-        ? `🎲 *You won!* 🎉\n+💰 ${amount} coins\nBalance: ${formatNum(user.coins)}`
-        : `🎲 *You lost.* 😢\n-💰 ${amount} coins\nBalance: ${formatNum(user.coins)}`
+        ? `🎲 *You won!* 🎉\n+💰 ${formatNum(amount)} coins\nBalance: ${formatNum(user.coins)}`
+        : `🎲 *You lost.* 😢\n-💰 ${formatNum(amount)} coins\nBalance: ${formatNum(user.coins)}`
     );
   },
 

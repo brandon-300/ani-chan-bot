@@ -1,4 +1,4 @@
-const { CardCatalogue, OwnedCard, Auction, TradeRequest } = require('../models/Card');
+const { CardCatalogue, OwnedCard, Auction, TradeRequest, SaleRequest } = require('../models/Card');
 const { checkAchievements, formatUnlockNotice } = require('../utils/achievements');
 const { checkTitle, formatTitleUnlockNotice } = require('../utils/titles');
 const { MessageMedia } = require('whatsapp-web.js');
@@ -21,7 +21,7 @@ function escapeHtml(str) {
 
 async function getUserCards(userId) {
   const cards = await OwnedCard.find({ ownerId: userId });
-  return cards.sort((a, b) => cardValue(b.tier) - cardValue(a.tier) || a.name.localeCompare(b.name));
+  return cards.sort((a, b) => cardValue(a.tier) - cardValue(b.tier) || a.name.localeCompare(b.name));
 }
 
 async function getCardByIndex(userId, index) {
@@ -679,19 +679,41 @@ ${tierEmoji(card.tier)} Tier: ${card.tier}
     // Check if it's a shop card
     const shopCard = await OwnedCard.findOne({ code: id.toUpperCase(), isForSale: true }).catch(() => null);
     if (shopCard) {
-      if (user.coins < shopCard.price) return msg.reply(`❌ Not enough coins. Need ${shopCard.price}.`);
-      user.coins -= shopCard.price;
+      // BUGFIX (Aug 2026): this branch used to debit the buyer's coins and
+      // reassign ownerId to the buyer WITHOUT ever crediting the seller —
+      // shopCard.ownerId was overwritten before anything read the seller's
+      // id, so the seller lost their card and got nothing for it. Captured
+      // here before it's overwritten below, and credited at the end.
+      const sellerId = shopCard.ownerId;
+      const price = shopCard.price;
+
+      if (sellerId === contact.id._serialized) {
+        return msg.reply('❌ You can\'t buy your own listed card — remove it with *.rc* instead.');
+      }
+      // Payment now comes from the bank, not the wallet — same policy as
+      // .loan (deposits go to bank) and .sc/.acceptsale below, so every
+      // coin transfer in the card economy moves through one consistent
+      // account instead of splitting unpredictably between the two.
+      if (user.bank < price) {
+        return msg.reply(`❌ Not enough in your bank. Need 💰 ${formatNum(price)}, you have ${formatNum(user.bank)}. Try *.deposit* first.`);
+      }
+
+      user.bank -= price;
       shopCard.ownerId = contact.id._serialized;
       shopCard.isForSale = false;
       shopCard.price = 0;
       shopCard.timesTraded += 1;
       await shopCard.save();
       await user.save();
+      if (sellerId) {
+        await User.updateOne({ id: sellerId }, { $inc: { bank: price } }, { upsert: false })
+          .catch(err => console.error('claim: seller payout failed:', err.message));
+      }
       const xpResult = await addXP(contact.id._serialized, XP_REWARDS.shopBuy);
       const unlocked = await checkAchievements(contact.id._serialized);
       const newTitle = await checkTitle(contact.id._serialized);
       const xpLine = `\n⭐ +${XP_REWARDS.shopBuy} XP${xpResult.levelUp ? ` — 🎉 Level up! You're now level ${xpResult.level}!` : ''}`;
-      return msg.reply(`✅ You bought *${shopCard.name}* [${shopCard.tier}]!` + xpLine + formatUnlockNotice(unlocked) + formatTitleUnlockNotice(newTitle));
+      return msg.reply(`✅ You bought *${shopCard.name}* [${shopCard.tier}] for 💰 ${formatNum(price)}!` + xpLine + formatUnlockNotice(unlocked) + formatTitleUnlockNotice(newTitle));
     }
 
 // Drop claim
@@ -751,35 +773,132 @@ if (existing)
     msg.reply(`✅ *${contact.pushname}* claimed ${tierEmoji(catalogue.tier)} *${catalogue.name}* [${catalogue.tier}]!` + xpLine + formatUnlockNotice(unlocked) + formatTitleUnlockNotice(newTitle));
   },
 
-  // .sc [@user] [index] [price] — sell card to a user
+  // .sc [@user] [index] [price] — propose selling a card to a user.
+  // BUGFIX (Aug 2026): this used to transfer the card and move coins
+  // immediately, with zero consent from the buyer — no way to decline, and
+  // it happened even if they hadn't agreed to anything. It now mirrors
+  // .tc's propose-then-accept pattern exactly: this just creates a pending
+  // SaleRequest (models/Card.js); nothing changes hands until the buyer
+  // runs .acceptsale (or it's cancelled with .declinesale / expires after
+  // 10 min, same window .tc uses).
   async sc(client, msg, args) {
     const contact = await msg.getContact();
     const mentioned = await msg.getMentions();
-    if (!mentioned.length) return msg.reply('❌ Usage: .sc [@user] [index] [price]');
+    if (!mentioned.length) return msg.reply('❌ Usage: .sc [@user] [index] [price]\n\nPrice supports shorthand: 5k, 1.2m, etc.');
+
+    const buyer = mentioned[0];
+    if (buyer.id._serialized === contact.id._serialized) {
+      return msg.reply("❌ You can't sell a card to yourself.");
+    }
 
     const index = parseInt(args[1]);
     const price = parseAmount(args[2]);
     if (!index || !price) return msg.reply('❌ Usage: .sc [@user] [index] [price]\n\nPrice supports shorthand: 5k, 1.2m, etc.');
 
-    const buyer = mentioned[0];
-    const buyerUser = await User.findOne({ id: buyer.id._serialized });
-    if (!buyerUser || buyerUser.coins < price) return msg.reply('❌ Buyer has insufficient funds.');
-
     const card = await getCardByIndex(contact.id._serialized, index);
     if (!card) return msg.reply('❌ Card not found.');
     if (card.isStaked) return msg.reply('❌ This card is staked as loan collateral — repay your loan first (.loan status).');
+    if (card.isForSale) return msg.reply('❌ This card is currently listed in the shop — remove it with *.rc* first, or just tell them the shop code.');
+    if (card.isLent) return msg.reply('❌ This card is currently lent out — get it back before selling it.');
 
-    buyerUser.coins -= price;
-    const sellerUser = await User.findOrCreate(contact.id._serialized);
-    sellerUser.coins += price;
-    card.ownerId = buyer.id._serialized;
-    card.timesTraded += 1;
+    const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
+    if (!chat) return;
 
-    await Promise.all([buyerUser.save(), sellerUser.save(), card.save()]);
+    // Replace any earlier pending offer between these two in this chat, so
+    // .acceptsale always resolves to the latest offer, never a stale one —
+    // same reasoning as .tc's identical cleanup step below.
+    await SaleRequest.deleteMany({
+      groupId: chat.id._serialized,
+      sellerId: contact.id._serialized,
+      buyerId: buyer.id._serialized
+    });
+
+    await SaleRequest.create({
+      groupId: chat.id._serialized,
+      sellerId: contact.id._serialized,
+      buyerId: buyer.id._serialized,
+      cardId: card._id,
+      price
+    });
+
     msg.reply(
-      `✅ Sold *${card.name}* [${card.tier}] to @${mentionTag(buyer)} for 💰 ${price}!`,
+      `🛍️ *Sale Offer*\n\n${mentionName(contact)} wants to sell you:\n${tierEmoji(card.tier)} *${card.name}* [${card.tier}]\nfor 💰 ${formatNum(price)} coins\n\n@${buyer.id.user}, reply *.acceptsale* or *.declinesale* (expires in 10 min)`,
       undefined,
       { mentions: [buyer.id._serialized] }
+    );
+  },
+
+  // .acceptsale — accept the most recent pending sale offer sent to you in
+  // this chat. Money and ownership only actually move here.
+  async acceptsale(client, msg, args) {
+    const contact = await msg.getContact();
+    const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
+    if (!chat) return;
+
+    const sale = await SaleRequest.findOne({
+      groupId: chat.id._serialized,
+      buyerId: contact.id._serialized
+    }).sort({ createdAt: -1 });
+
+    if (!sale) return msg.reply('❌ You have no pending sale offers.');
+
+    if (Date.now() - sale.createdAt.getTime() > 10 * 60 * 1000) {
+      await sale.deleteOne();
+      return msg.reply('❌ That sale offer expired. Ask them to send a new one.');
+    }
+
+    const card = await OwnedCard.findById(sale.cardId);
+    // Re-check ownership AND availability in case anything changed between
+    // the offer and this acceptance — same defense-in-depth .accepttrade
+    // applies to trades.
+    if (!card || card.ownerId !== sale.sellerId) {
+      await sale.deleteOne();
+      return msg.reply('❌ This sale is no longer valid — the card changed hands since the offer.');
+    }
+    if (card.isStaked || card.isForSale || card.isLent) {
+      await sale.deleteOne();
+      return msg.reply('❌ This sale is no longer valid — the card is no longer available (staked, listed, or lent).');
+    }
+
+    const buyerUser = await User.findOrCreate(contact.id._serialized, contact.pushname);
+    if (buyerUser.bank < sale.price) {
+      return msg.reply(`❌ Not enough in your bank. Need 💰 ${formatNum(sale.price)}, you have ${formatNum(buyerUser.bank)}. Try *.deposit* first.`);
+    }
+
+    const sellerUser = await User.findOrCreate(sale.sellerId);
+    buyerUser.bank -= sale.price;
+    sellerUser.bank += sale.price;
+    card.ownerId = contact.id._serialized;
+    card.timesTraded += 1;
+
+    await Promise.all([buyerUser.save(), sellerUser.save(), card.save(), sale.deleteOne()]);
+
+    msg.reply(
+      `✅ Bought *${card.name}* [${card.tier}] from @${sale.sellerId.split('@')[0]} for 💰 ${formatNum(sale.price)} coins!`,
+      undefined,
+      { mentions: [sale.sellerId] }
+    );
+  },
+
+  // .declinesale — decline the most recent pending sale offer sent to you
+  // in this chat.
+  async declinesale(client, msg, args) {
+    const contact = await msg.getContact();
+    const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
+    if (!chat) return;
+
+    const sale = await SaleRequest.findOne({
+      groupId: chat.id._serialized,
+      buyerId: contact.id._serialized
+    }).sort({ createdAt: -1 });
+
+    if (!sale) return msg.reply('❌ You have no pending sale offers.');
+
+    await sale.deleteOne();
+    msg.reply(
+      `❌ ${mentionName(contact)} declined the sale offer from @${sale.sellerId.split('@')[0]}.`,
+      undefined,
+      { mentions: [sale.sellerId] }
     );
   },
 
@@ -805,6 +924,10 @@ if (existing)
     if (!theirCard) return msg.reply(`❌ Their card not found.`);
     if (myCard.isStaked) return msg.reply('❌ Your card is staked as loan collateral — repay your loan first (.loan status).');
     if (theirCard.isStaked) return msg.reply('❌ Their card is staked as loan collateral on an active loan — they need to repay it before it can be traded.');
+    if (myCard.isForSale) return msg.reply('❌ Your card is currently listed in the shop — remove it with *.rc* first.');
+    if (theirCard.isForSale) return msg.reply('❌ Their card is currently listed in the shop.');
+    if (myCard.isLent) return msg.reply('❌ Your card is currently lent out — get it back before trading it.');
+    if (theirCard.isLent) return msg.reply('❌ Their card is currently lent out.');
 
     const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
     if (!chat) return;
@@ -864,11 +987,12 @@ if (existing)
       return msg.reply('❌ This trade is no longer valid — one of the cards changed hands since the offer.');
     }
 
-    // Same re-check for staking — a card can be staked as loan collateral
-    // any time after a .tc offer goes out but before it's accepted.
-    if (myCard.isStaked || theirCard.isStaked) {
+    // Same re-check for staking/listing/lending — any of these can change
+    // on a card any time after a .tc offer goes out but before it's
+    // accepted, same reasoning as .acceptsale's identical guard.
+    if (myCard.isStaked || theirCard.isStaked || myCard.isForSale || theirCard.isForSale || myCard.isLent || theirCard.isLent) {
       await trade.deleteOne();
-      return msg.reply('❌ This trade is no longer valid — one of the cards is now staked as loan collateral.');
+      return msg.reply('❌ This trade is no longer valid — one of the cards is no longer available (staked, listed, or lent).');
     }
 
     myCard.ownerId = trade.initiatorId;
@@ -931,28 +1055,110 @@ if (existing)
     );
   },
 
-  // .lendcard — lend your top card to group temporarily
+  // .lendcard [index] — lend one of YOUR cards (by .col position) to the
+  // group temporarily.
+  // BUGFIX (Aug 2026): this used to silently grab cards[0] — whichever
+  // card happened to sort first — with no way to choose, and no way to get
+  // it back early short of waiting out the full hour. It now takes an
+  // explicit index (same convention as .card/.resell/.sellc) and pairs
+  // with .unlendcard below for an early return.
   async lendcard(client, msg, args) {
     const contact = await msg.getContact();
+    const userId = contact.id._serialized;
     const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
     if (!chat) return;
     if (!chat.isGroup) return msg.reply('❌ Group only.');
-    const cards = await getUserCards(contact.id._serialized);
-    if (!cards.length) return msg.reply('❌ You have no cards.');
-    // Skip anything already unavailable — staked as loan collateral, listed
-    // in the shop, or already lent out elsewhere — rather than blindly
-    // grabbing cards[0] regardless of its state.
-    const card = cards.find(c => !c.isStaked && !c.isForSale && !c.isLent);
-    if (!card) return msg.reply('❌ None of your cards are available to lend right now (all staked, listed, or already lent).');
+
+    // Lazily clear any of this user's lends that expired while the bot was
+    // offline — the in-memory setTimeout below is the normal path, but a
+    // PM2 restart on Termux kills it with nothing to re-arm it on boot.
+    // lendExpiresAt is the persisted source of truth, so this always
+    // catches up before picking/checking a card.
+    await OwnedCard.updateMany(
+      { ownerId: userId, isLent: true, lendExpiresAt: { $ne: null, $lte: new Date() } },
+      { $set: { isLent: false, lentTo: null, lendExpiresAt: null } }
+    ).catch(err => console.error('lendcard: expired-lend cleanup failed:', err.message));
+
+    const index = parseInt(args[0]);
+    if (!index || index < 1) {
+      return msg.reply('❌ Usage: .lendcard [index]\n\nUse *.col* to see your collection with numbered positions.');
+    }
+
+    const card = await getCardByIndex(userId, index);
+    if (!card) return msg.reply('❌ Card not found.');
+    if (card.isStaked) return msg.reply('❌ This card is staked as loan collateral — repay your loan first (.loan status).');
+    if (card.isForSale) return msg.reply('❌ This card is currently listed in the shop — remove it with *.rc* first.');
+    if (card.isLent) return msg.reply('❌ This card is already lent out.');
+
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000);
     card.isLent = true;
     card.lentTo = chat.id._serialized;
+    card.lendExpiresAt = expiresAt;
     await card.save();
-    msg.reply(`✅ You lent ${tierEmoji(card.tier)} *${card.name}* to this group for 1 hour!`);
+
+    msg.reply(`✅ You lent ${tierEmoji(card.tier)} *${card.name}* to this group for 1 hour!\nUse *.unlendcard ${index}* to get it back early.`);
+
+    const cardId = card._id;
     setTimeout(async () => {
-      card.isLent = false; card.lentTo = null;
-      await card.save();
-      chat.sendMessage(`⏰ ${contact.pushname}'s *${card.name}* has been returned.`);
+      // updateOne against the DB rather than re-saving this hour-old
+      // in-memory `card` doc — that stale copy wouldn't reflect any other
+      // field changed on the card in the meantime (e.g. isForSale toggled
+      // via .sellc), and a plain .save() here would silently clobber that.
+      // The `isLent: true` filter also means this is a no-op (no false
+      // "returned" message) if .unlendcard already returned it early.
+      const result = await OwnedCard.findOneAndUpdate(
+        { _id: cardId, isLent: true },
+        { $set: { isLent: false, lentTo: null, lendExpiresAt: null } }
+      ).catch(err => { console.error('lendcard: auto-return failed:', err.message); return null; });
+      if (result) {
+        chat.sendMessage(`⏰ ${contact.pushname}'s *${result.name}* has been returned.`).catch(() => {});
+      }
     }, 60 * 60 * 1000);
+  },
+
+  // .unlendcard [index] — reclaim a card you lent out before its 1-hour
+  // timer expires. Index is optional if you only have one card out.
+  async unlendcard(client, msg, args) {
+    const contact = await msg.getContact();
+    const userId = contact.id._serialized;
+
+    const lentCards = await OwnedCard.find({ ownerId: userId, isLent: true });
+    if (!lentCards.length) return msg.reply('❌ You have no cards currently lent out.');
+
+    let target;
+    const index = parseInt(args[0]);
+    if (index) {
+      target = await getCardByIndex(userId, index);
+      if (!target || !target.isLent) return msg.reply('❌ That card is not currently lent out.');
+    } else if (lentCards.length === 1) {
+      target = lentCards[0];
+    } else {
+      const cards = await getUserCards(userId);
+      const list = lentCards
+        .map(lc => {
+          const pos = cards.findIndex(c => c._id.equals(lc._id)) + 1;
+          return `${pos}. ${tierEmoji(lc.tier)} ${lc.name}`;
+        })
+        .join('\n');
+      return msg.reply(`❌ You have multiple cards lent out — specify which:\n\n${list}\n\nUse *.unlendcard [index]*.`);
+    }
+
+    const lentToChatId = target.lentTo;
+    target.isLent = false;
+    target.lentTo = null;
+    target.lendExpiresAt = null;
+    await target.save();
+
+    msg.reply(`✅ ${tierEmoji(target.tier)} *${target.name}* has been returned to you early.`);
+
+    if (lentToChatId) {
+      try {
+        const lentChat = await client.getChatById(lentToChatId);
+        if (lentChat) await lentChat.sendMessage(`↩️ ${contact.pushname} took back *${target.name}* early.`);
+      } catch {
+        // Group may no longer exist / bot may have been removed — not fatal.
+      }
+    }
   },
 
   // .auction
@@ -1114,6 +1320,12 @@ if (existing)
     if (selected.some(c => c.isStaked)) {
       return msg.reply('❌ One of those cards is staked as loan collateral — repay your loan first (.loan status) before fusing it away.');
     }
+    if (selected.some(c => c.isForSale)) {
+      return msg.reply('❌ One of those cards is currently listed in the shop — remove it with *.rc* first.');
+    }
+    if (selected.some(c => c.isLent)) {
+      return msg.reply('❌ One of those cards is currently lent out — get it back before fusing it away.');
+    }
 
     const tier = selected[0].tier;
     if (!selected.every(c => c.tier === tier)) {
@@ -1208,10 +1420,12 @@ if (existing)
     const user = await User.findOrCreate(contact.id._serialized);
 
     await OwnedCard.deleteOne({ _id: card._id });
-    user.coins += resellPrice;
+    // Bot-to-user payout — goes to the bank, not the wallet, same policy as
+    // .loan disbursement and .acceptsale/.claim's shop-purchase payout.
+    user.bank += resellPrice;
     await user.save();
 
-    msg.reply(`✅ Resold *${card.name}* [${card.tier}] to the bot for 💰 ${resellPrice} coins.\n\nThis card is gone for good — use *.sellc* instead next time if you want a shot at full value from another player.`);
+    msg.reply(`✅ Resold *${card.name}* [${card.tier}] to the bot for 💰 ${formatNum(resellPrice)} coins (deposited to your bank).\n\nThis card is gone for good — use *.sellc* instead next time if you want a shot at full value from another player.`);
   },
 
   // .tier — shows the rarity tier list with real drop odds (read straight
@@ -1365,7 +1579,7 @@ if (existing)
 
     const contact = await msg.getContact();
     const userId = contact.id._serialized;
-    const cards = await getUserCards(userId); // already sorted: tier desc, then name
+    const cards = await getUserCards(userId); // already sorted: tier asc (lowest first), then name
     if (!cards.length) return msg.reply('❌ You have no cards yet. Wait for one to drop and use *.claim*!');
 
     const CG_COLS = 3;

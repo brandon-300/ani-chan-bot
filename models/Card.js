@@ -67,6 +67,14 @@ catalogueId: {
   price: { type: Number, default: 0 },
   isLent: { type: Boolean, default: false },
   lentTo: { type: String, default: null },
+  // Persisted expiry for .lendcard, checked lazily (see resolveExpiredLends
+  // in commands/cards.js) in addition to the in-memory setTimeout that does
+  // the normal 1-hour auto-return. The setTimeout alone isn't reliable on
+  // Termux — a PM2 restart during that hour kills it with no re-arm on
+  // boot, which would otherwise leave isLent stuck true forever. Having the
+  // real expiry stored here means the next .lendcard/.unlendcard call (or
+  // any future startup reconciliation job) can always catch up correctly.
+  lendExpiresAt: { type: Date, default: null },
   // Set true while this card is staked as collateral on an active bank loan
   // (commands/loan.js, .loan request). Mirrors the isLent flag's pattern —
   // prevents the SAME card from being staked into a second loan at once.
@@ -110,6 +118,23 @@ const TradeRequestSchema = new mongoose.Schema({
   partnerCardId: { type: mongoose.Schema.Types.ObjectId, ref: 'OwnedCard', required: true },
 }, { timestamps: true });
 
+// ─── Sale Request (direct user-to-user sale via .sc) ─────────────────────────
+// BUGFIX (Aug 2026): .sc used to transfer the card AND move coins the
+// instant the seller ran the command — no consent from the buyer at all,
+// and no way for them to decline. This mirrors TradeRequestSchema's
+// propose-then-accept pattern above: nothing changes hands until the buyer
+// runs .acceptsale (see commands/cards.js), same as a trade needs
+// .accepttrade. .declinesale (or letting it expire after 10 min, checked
+// the same way .accepttrade checks trade age) cancels it with no side
+// effects.
+const SaleRequestSchema = new mongoose.Schema({
+  groupId: { type: String, required: true },
+  sellerId: { type: String, required: true },
+  buyerId: { type: String, required: true },
+  cardId: { type: mongoose.Schema.Types.ObjectId, ref: 'OwnedCard', required: true },
+  price: { type: Number, required: true },
+}, { timestamps: true });
+
 // ─── Catalogue Auto-Growth State ──────────────────────────────────────────────
 // Singleton doc (always _id: 'singleton') tracking the background AniList
 // discovery job — see runDiscoveryBatch()/_initCatalogueGrowth() in
@@ -132,5 +157,6 @@ module.exports = {
   OwnedCard: mongoose.model('OwnedCard', OwnedCardSchema),
   Auction: mongoose.model('Auction', AuctionSchema),
   TradeRequest: mongoose.model('TradeRequest', TradeRequestSchema),
+  SaleRequest: mongoose.model('SaleRequest', SaleRequestSchema),
   CatalogueGrowthState: mongoose.model('CatalogueGrowthState', CatalogueGrowthStateSchema),
 };

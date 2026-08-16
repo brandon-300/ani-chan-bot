@@ -78,7 +78,78 @@ const UserSchema = new mongoose.Schema({
     issuedAt: { type: Number, default: null },      // ms epoch
     dueAt: { type: Number, default: null },         // ms epoch
   },
+  // Anchor for daily bank interest — see applyDailyInterest() below. null
+  // until the first time it's checked for this user (existing users get it
+  // seeded on their next command rather than backdated).
+  lastInterestAt: { type: Number, default: null },
 });
+
+// ─── Daily Bank Interest ────────────────────────────────────────────────────
+// "The bank should function like a real bank" (Aug 2026): money sitting in
+// user.bank now compounds once per day. Deliberately a MODEST game-economy
+// rate, not a real-world APR — 0.2%/day compounds to roughly 2x/year if
+// left untouched the whole time, which is meant to feel like a nice bonus
+// for using the bank rather than a way to out-earn actually playing the
+// game (cards run into the hundreds of thousands of coins). Retune here if
+// that balance ever feels off.
+const DAILY_BANK_INTEREST_RATE = 0.002;
+const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+
+// There's deliberately no separate always-on scheduler for this (like the
+// existing 8AM WAT stats digest in index.js would be) — a fixed-time
+// trigger needs the Termux process to be alive at that exact moment, which
+// isn't reliable on this setup. Instead this runs LAZILY inside
+// findOrCreate below, every time any command touches a user, and always
+// catches up correctly on however many full days actually passed no matter
+// how long the bot was offline/restarted in between — same reasoning as
+// the loan-default and lend-expiry lazy checks elsewhere in the bot.
+//
+// Mutates `user` in place and returns true if it needs saving (new day(s)
+// elapsed, or this is the very first time lastInterestAt is being seeded)
+// — false is the common case (already checked today), so most calls add
+// zero extra writes. Also stashes the coins credited on the plain (non-
+// schema, never persisted) `user._interestCredited` property so callers
+// that care — .balance/.withdraw/.deposit in commands/economy.js — can
+// mention it; every other caller of findOrCreate can safely ignore it.
+//
+// KNOWN LIMITATION: interest is computed against whatever the CURRENT bank
+// balance is at check-time, not a real day-by-day ledger of what the
+// balance actually was on each elapsed day (this bot doesn't keep that
+// history). In practice that means someone who deposits a large sum right
+// after a long absence gets that day-count's compounding applied to the
+// new balance immediately, rather than to whatever (possibly $0) balance
+// they actually held meanwhile. For a small-group hobby bot this is a
+// minor, low-value edge case (it rewards NOT playing for a long time, not
+// actually playing), so it's left as-is rather than building a full daily
+// balance ledger for it — flagging it here in case that tradeoff ever
+// needs revisiting.
+function applyDailyInterest(user) {
+  const now = Date.now();
+
+  if (user.lastInterestAt == null) {
+    user.lastInterestAt = now;
+    user._interestCredited = 0;
+    return true;
+  }
+
+  const daysElapsed = Math.floor((now - user.lastInterestAt) / ONE_DAY_MS);
+  if (daysElapsed < 1) {
+    user._interestCredited = 0;
+    return false;
+  }
+
+  // Advance the anchor unconditionally, even if bank is currently 0 — so
+  // this same elapsed-days window can never be "cashed in" a second time
+  // later (e.g. withdraw everything, wait, deposit again).
+  user.lastInterestAt += daysElapsed * ONE_DAY_MS;
+
+  const before = user.bank;
+  if (before > 0) {
+    user.bank = Math.floor(before * Math.pow(1 + DAILY_BANK_INTEREST_RATE, daysElapsed));
+  }
+  user._interestCredited = user.bank - before;
+  return true;
+}
 
 UserSchema.statics.findOrCreate = async function (id, name) {
   // `name` here is only ever a DEFAULT for a brand-new user — most call
@@ -93,11 +164,15 @@ UserSchema.statics.findOrCreate = async function (id, name) {
   // and .save() — see .setname in commands/economy.js.
   const setOnInsert = { id };
   if (name) setOnInsert.name = name;
-  return this.findOneAndUpdate(
+  const user = await this.findOneAndUpdate(
     { id },
     { $setOnInsert: setOnInsert },
     { upsert: true, new: true, setDefaultsOnInsert: true }
   );
+  if (applyDailyInterest(user)) {
+    await user.save();
+  }
+  return user;
 };
 
 module.exports = mongoose.model('User', UserSchema);

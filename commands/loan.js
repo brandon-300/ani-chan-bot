@@ -69,7 +69,7 @@ function maxLoanFor(cardTier) {
 // with what .col shows.
 async function getUserCards(userId) {
   const cards = await OwnedCard.find({ ownerId: userId });
-  return cards.sort((a, b) => cardValue(b.tier) - cardValue(a.tier) || a.name.localeCompare(b.name));
+  return cards.sort((a, b) => cardValue(a.tier) - cardValue(b.tier) || a.name.localeCompare(b.name));
 }
 
 async function getCardByIndex(userId, index) {

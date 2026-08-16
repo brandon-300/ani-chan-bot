@@ -37,7 +37,7 @@ async function generateCardId() {
 // files, so .diagcard's numbering lines up exactly with .col/.cg/.card.
 async function getOwnedCardByIndex(userId, index) {
   const cards = await OwnedCard.find({ ownerId: userId });
-  cards.sort((a, b) => cardValue(b.tier) - cardValue(a.tier) || a.name.localeCompare(b.name));
+  cards.sort((a, b) => cardValue(a.tier) - cardValue(b.tier) || a.name.localeCompare(b.name));
   return cards[index - 1] || null;
 }
 

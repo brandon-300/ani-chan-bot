@@ -120,6 +120,7 @@ const aliases = {
   lb: 'leaderboard',
   s: 'sticker',
   lc: 'lendcard',
+  ulc: 'unlendcard',
   gs: 'groupstats',
   aki: 'akinator',
   gg: 'greekgod',
