@@ -213,6 +213,22 @@ const XP_REWARDS = {
   daily: 25,
 };
 
+// DESIGN CHANGE (Aug 2026): user.xp is now a LIFETIME cumulative total that
+// only ever goes up — it used to reset to a leftover remainder at every
+// level-up (e.g. Level 2 at 25 XP into that level displayed as just "25",
+// not "125" total). Levels still cost exactly the same as before — this
+// only changes what gets displayed/stored, not how fast you level.
+//
+// xpNeededForLevel(N) = cumulative lifetime XP required to REACH level N.
+// Levels still each cost `level * 100` XP to clear (unchanged from before):
+// the gap between consecutive thresholds is
+//   xpNeededForLevel(N+1) - xpNeededForLevel(N) = 50*N*(N+1) - 50*N*(N-1) = 100*N
+// which is exactly the old per-level cost. Level 1 = 0, Level 2 = 100,
+// Level 3 = 300, Level 4 = 600, Level 5 = 1000, etc.
+function xpNeededForLevel(level) {
+  return 50 * level * (level - 1);
+}
+
 // BUGFIX (Aug 2026): the level-up branch used to `return` before ever calling
 // user.save() — so every level-up computed correctly in memory and then
 // silently discarded itself. Only the no-level-up path actually persisted.
@@ -222,14 +238,13 @@ const XP_REWARDS = {
 async function addXP(userId, amount) {
   const user = await User.findOne({ id: userId });
   if (!user) return { levelUp: false };
-  user.xp += amount;
-  let levelUp = false;
-  while (user.xp >= user.level * 100) {
-    user.xp -= user.level * 100;
+  const startingLevel = user.level;
+  user.xp += amount; // cumulative — never decremented, see note above
+  while (user.xp >= xpNeededForLevel(user.level + 1)) {
     user.level += 1;
     user.coins += user.level * 200;
-    levelUp = true;
   }
+  const levelUp = user.level > startingLevel;
   await user.save();
   return { levelUp, level: user.level };
 }
@@ -424,6 +439,7 @@ module.exports = {
   botIsAdmin,
   addXP,
   XP_REWARDS,
+  xpNeededForLevel,
   rollTier,
   tierEmoji,
   TIER_VALUES,

@@ -990,4 +990,15 @@ setInterval(() => {
   }
 }, 60000);
 
+// ── Inactive-user cleanup (4:00 AM WAT daily) ───────────────────────────
+// Same shape as the stats digest above — checked every minute, actual
+// once-a-day gating + duplicate-run protection lives inside
+// _sweepInactiveUsers itself (commands/admin.js), via BotState.
+setInterval(() => {
+  const { _sweepInactiveUsers } = require('./commands/admin');
+  if (_sweepInactiveUsers) {
+    _sweepInactiveUsers(client).catch(err => console.error('Inactive user sweep error:', err.message));
+  }
+}, 60000);
+
 startWhatsApp();

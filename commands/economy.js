@@ -1,7 +1,7 @@
 const User = require('../models/User');
 const Guild = require('../models/Guild');
 const { CardCatalogue, OwnedCard } = require('../models/Card');
-const { formatNum, formatCooldown, rand, pick, tierEmoji, mentionName, mentionTag, safeGetChat, safeGetQuotedMessage, isOwner, isMod, addXP, XP_REWARDS, boldSans, doubleStruck, encodeIdKey, parseAmount } = require('../utils/helpers');
+const { formatNum, formatCooldown, rand, pick, tierEmoji, mentionName, mentionTag, safeGetChat, safeGetQuotedMessage, isOwner, isMod, addXP, XP_REWARDS, xpNeededForLevel, boldSans, doubleStruck, encodeIdKey, parseAmount } = require('../utils/helpers');
 const { BOT_NAME } = require('../utils/config');
 const { battleGames } = require('./games');
 const { checkAchievements, formatUnlockNotice, ACHIEVEMENTS } = require('../utils/achievements');
@@ -777,9 +777,17 @@ async lottery(client, msg, args) {
     const targetId = contact.id._serialized;
     const user = await User.findOrCreate(targetId, contact.pushname);
 
-    const needed = user.level * 100;
-    const bar = xpProgressBar(user.xp, needed);
-    const pct = Math.floor((user.xp / needed) * 100);
+    // user.xp is a lifetime cumulative total (never resets on level-up —
+    // see xpNeededForLevel in utils/helpers.js). The progress bar below
+    // still shows progress WITHIN the current level, same granularity as
+    // before, just computed relative to the cumulative baseline instead of
+    // being the raw stored value.
+    const levelFloor = xpNeededForLevel(user.level);
+    const nextThreshold = xpNeededForLevel(user.level + 1);
+    const intoLevel = user.xp - levelFloor;
+    const neededForLevel = nextThreshold - levelFloor;
+    const bar = xpProgressBar(intoLevel, neededForLevel);
+    const pct = Math.floor((intoLevel / neededForLevel) * 100);
 
     const nextTitle = TITLES.find(t => t.minLevel > user.level);
     const nextTitleLine = nextTitle
@@ -789,7 +797,7 @@ async lottery(client, msg, args) {
     msg.reply(
       `⚡ *Level ${user.level}*${mentioned.length ? ` — ${contact.pushname}` : ''}\n\n` +
       `${bar} ${pct}%\n` +
-      `${user.xp} / ${needed} XP\n\n` +
+      `${formatNum(user.xp)} XP total (${intoLevel}/${neededForLevel} into this level)\n\n` +
       `🎖️ Title: ${user.profile.title}` +
       nextTitleLine,
       undefined,

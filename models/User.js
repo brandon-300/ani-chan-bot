@@ -82,6 +82,21 @@ const UserSchema = new mongoose.Schema({
   // until the first time it's checked for this user (existing users get it
   // seeded on their next command rather than backdated).
   lastInterestAt: { type: Number, default: null },
+  // True once this user's `xp` has been converted from "progress within
+  // current level" to a lifetime cumulative total (see xpNeededForLevel in
+  // utils/helpers.js and migrateXPToCumulative.js). Defaults to true so any
+  // BRAND NEW user created after this change needs no conversion — their xp
+  // starts at 0 either way. Existing users predate this field entirely
+  // (so it reads as falsy/undefined until the migration script sets it),
+  // which is exactly what lets that script find only the accounts that
+  // still need converting.
+  xpMigrated: { type: Boolean, default: true },
+  // Last time this user triggered findOrCreate (i.e. ran any command, in a
+  // group or DM) — powers .users' "inactive Xd" display and the automatic
+  // 60-day cleanup sweep, both in commands/admin.js. See the write-side
+  // note in findOrCreate below for why this doesn't update on literally
+  // every single call.
+  lastActiveAt: { type: Number, default: null },
 });
 
 // ─── Daily Bank Interest ────────────────────────────────────────────────────
@@ -169,7 +184,22 @@ UserSchema.statics.findOrCreate = async function (id, name) {
     { $setOnInsert: setOnInsert },
     { upsert: true, new: true, setDefaultsOnInsert: true }
   );
-  if (applyDailyInterest(user)) {
+
+  let needsSave = applyDailyInterest(user);
+
+  // Debounced to once/hour rather than every single call — this bot is on
+  // a metered/unstable mobile connection, and hour-level granularity is
+  // already far more than the 60-day cleanup sweep or .users' "inactive
+  // Xd" display could ever need, so there's no reason to pay for an extra
+  // write on every command invocation just to track activity.
+  const now = Date.now();
+  const ACTIVITY_DEBOUNCE_MS = 60 * 60 * 1000;
+  if (!user.lastActiveAt || now - user.lastActiveAt > ACTIVITY_DEBOUNCE_MS) {
+    user.lastActiveAt = now;
+    needsSave = true;
+  }
+
+  if (needsSave) {
     await user.save();
   }
   return user;

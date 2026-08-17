@@ -30,6 +30,8 @@ const COMMAND_REFERENCE = [
       { cmd: '.setrules [text]', desc: "Set this group's rules (admin only)" },
       { cmd: '.ping / .test', desc: 'Check the bot is online and its response latency' },
       { cmd: '.stats', desc: 'Full bot + per-group usage stats, incl. daily 8AM WAT digest (owner only, DM only)' },
+      { cmd: '.users [page]', desc: 'List every registered user by group, with activity status (owner only, DM only)' },
+      { cmd: '.deluser [number] [confirm]', desc: "Delete a user's profile by phone number (from .users) — cards untouched; auto-cleanup also runs after 60 days idle (owner only, DM only)" },
       { cmd: '.mods', desc: "List the bot's owner and moderators" },
       { cmd: '.owner', desc: "Send the bot owner's contact card" },
       { cmd: '.url', desc: "Get this group's invite link (admin only)" },
