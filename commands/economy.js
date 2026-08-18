@@ -866,7 +866,14 @@ async lottery(client, msg, args) {
     const userId = contact.id._serialized;
     await User.findOrCreate(userId, contact.pushname);
 
-    await msg.reply('🖼️ Processing and uploading your profile picture...');
+    // In-chat acknowledgment is a reaction instead of text, same pattern as
+    // the heavy-command queue reactions in index.js — a reply is only sent
+    // once we know the actual outcome (success or error) below.
+    try {
+      await msg.react('⬆️');
+    } catch (err) {
+      console.error('Failed to react to setpic command:', err.message);
+    }
 
     const inputExt = mimeToExt(media.mimetype);
     const inputPath = tmpFile(inputExt);

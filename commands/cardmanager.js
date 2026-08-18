@@ -1,6 +1,6 @@
 const axios = require('axios');
 const { MessageMedia } = require('whatsapp-web.js');
-const { isOwner, rollTier, tierEmoji, safeGetChat, cardValue } = require('../utils/helpers');
+const { isOwner, rollTier, tierEmoji, safeGetChat, cardValue, cleanDescription } = require('../utils/helpers');
 const { CardCatalogue, OwnedCard, CatalogueGrowthState } = require('../models/Card');
 const Group = require('../models/Group');
 
@@ -98,18 +98,6 @@ async function fetchAniListCharacterSmart(name) {
     return await fetchAniListCharacter(`${words[1]} ${words[0]}`);
   }
   return null;
-}
-
-function cleanDescription(text) {
-  if (!text) return '';
-  return text
-    .replace(/<br\s*\/?>/gi, ' ')
-    .replace(/~!|!~/g, '') // AniList spoiler markers
-    .replace(/<[^>]+>/g, '')
-    .replace(/\r?\n/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 500);
 }
 
 function extractSeries(character) {
@@ -514,7 +502,20 @@ module.exports = {
       return msg.reply(`❌ Invalid tier. Choose from: ${TIERS.join(', ')}`);
     }
 
-    const update = { [field]: field === 'tier' ? value.toUpperCase() : value };
+    // EDITABLE_FIELDS (name/series/tier/description/imageUrl) are exactly
+    // the fields the custom card renderer (utils/cardRenderer.js) draws
+    // from, so ANY successful edit here invalidates the cached rendered
+    // PNG — otherwise the bot would keep serving a now-stale card face
+    // until CARD_RENDER_VERSION is next bumped. This doesn't delete the
+    // old file from Cloudinary; the next render reuses the same
+    // deterministic public_id (card_<id>_v<version>) with overwrite:true,
+    // which replaces it in place.
+    const update = {
+      [field]: field === 'tier' ? value.toUpperCase() : value,
+      renderedUrl: null,
+      renderVersion: null,
+      renderedAt: null,
+    };
 
     const card = await CardCatalogue.findOneAndUpdate(
       { cardId: rawId.toUpperCase() },

@@ -227,144 +227,93 @@ async function resolveTarget(msg) {
   return null;
 }
 
-// ─── Two-party actions (hug, kiss, slap, etc.) ─────────────────────────────
-// Builds "@sender <action> @target" — a REAL tappable mention on both
-// sides, not the sender's plain pushname and not inert "@number" text.
-// Returns null (instead of building a fake "everyone" target) when
-// resolveTarget() finds nobody — callers must check for this and reply
-// with the "please mention or reply" message rather than sending a GIF.
-async function buildInteraction(msg, action) {
+// ─── Unified action builder — every command in this file goes through ─────
+// this ONE function now. Previously there were 3 separate, inconsistent
+// implementations: buildInteraction() (two-party, required target),
+// buildSelf() (solo, target support entirely missing — this was the bug:
+// ".laugh @Anos" silently dropped the mention and replied as if solo),
+// and four commands (jihad/crusade/shrug/wank) that skipped target
+// resolution altogether with their own inline msg.reply() calls. All of
+// them now use resolveTarget() — the exact same mention-or-reply rule
+// .hug already used — so target detection behaves identically everywhere.
+//
+// `solo` and `pair` are functions that take mention tag(s) and return the
+// full message text, so each command keeps its own emoji/flavor text
+// exactly as before. `requireTarget: true` reproduces the old
+// buildInteraction/buildFuck/buildKidnap behavior (hug, kiss, fuck, etc.
+// still refuse to run with no target — returns null so the caller sends
+// NO_TARGET_MSG). `requireTarget: false` (the default) reproduces the old
+// buildSelf behavior when no target is given, but — unlike buildSelf —
+// now actually honors a target when one is provided.
+async function buildAction(msg, { solo, pair, requireTarget = false }) {
   const contact = await msg.getContact();
   const target = await resolveTarget(msg);
-  if (!target) return null;
+  const senderTag = mentionTag(contact);
+
+  if (!target) {
+    if (requireTarget) return null;
+    return {
+      text: solo(senderTag),
+      mentions: [contact.id._serialized],
+    };
+  }
 
   return {
-    text: `@${mentionTag(contact)} ${action} @${mentionTag(target)}`,
+    text: pair(senderTag, mentionTag(target)),
     mentions: [contact.id._serialized, target.id._serialized],
-  };
-}
-
-// ─── Solo actions (dance, sad, smile, laugh) ───────────────────────────────
-// Same real-tappable-mention treatment for the sender, just no second party.
-async function buildSelf(msg, action) {
-  const contact = await msg.getContact();
-  return {
-    text: `@${mentionTag(contact)} ${action}`,
-    mentions: [contact.id._serialized],
   };
 }
 
 const NO_TARGET_MSG = 'Please mention or reply to a user to use this command.';
 
-// ─── .fuck / .kidnap text builders ─────────────────────────────────────────
-// Same mention-or-reply requirement as buildInteraction() above (via
-// resolveTarget), but kept as their own functions instead of reusing
-// buildInteraction() since these two keep their original bespoke
-// emoji/flavor text rather than the generic "@sender <action> @target"
-// phrasing the other commands use.
-async function buildFuck(msg) {
-  const contact = await msg.getContact();
-  const target = await resolveTarget(msg);
-  if (!target) return null;
-  return {
-    text: `😤 @${mentionTag(contact)} said a bad word at @${mentionTag(target)}! (meme command)`,
-    mentions: [contact.id._serialized, target.id._serialized],
-  };
-}
-
-async function buildKidnap(msg) {
-  const contact = await msg.getContact();
-  const target = await resolveTarget(msg);
-  if (!target) return null;
-  return {
-    text: `🚨 @${mentionTag(contact)} kidnapped @${mentionTag(target)}! 🚓 Police on the way! (meme command)`,
-    mentions: [contact.id._serialized, target.id._serialized],
-  };
-}
-
 module.exports = {
+  // ─── Required-target actions ─────────────────────────────────────────
+  // Unchanged behavior: no mention/reply => NO_TARGET_MSG, exact same
+  // wording as before.
   async hug(client, msg, args) {
-    const built = await buildInteraction(msg, 'hugs');
+    const built = await buildAction(msg, { requireTarget: true, pair: (s, t) => `@${s} hugs @${t}` });
     if (!built) return msg.reply(NO_TARGET_MSG);
     await sendGif(msg, 'hug', 'hug', built.text, built.mentions);
   },
 
   async kiss(client, msg, args) {
-    const built = await buildInteraction(msg, 'kisses');
+    const built = await buildAction(msg, { requireTarget: true, pair: (s, t) => `@${s} kisses @${t}` });
     if (!built) return msg.reply(NO_TARGET_MSG);
     await sendGif(msg, 'kiss', 'kiss', built.text, built.mentions);
   },
 
   async slap(client, msg, args) {
-    const built = await buildInteraction(msg, 'slaps');
+    const built = await buildAction(msg, { requireTarget: true, pair: (s, t) => `@${s} slaps @${t}` });
     if (!built) return msg.reply(NO_TARGET_MSG);
     await sendGif(msg, 'slap', 'slap', built.text, built.mentions);
   },
 
   async wave(client, msg, args) {
-    const built = await buildInteraction(msg, 'waves at');
+    const built = await buildAction(msg, { requireTarget: true, pair: (s, t) => `@${s} waves at @${t}` });
     if (!built) return msg.reply(NO_TARGET_MSG);
     await sendGif(msg, 'wave', 'wave', built.text, built.mentions);
   },
 
   async pat(client, msg, args) {
-    const built = await buildInteraction(msg, 'pats');
+    const built = await buildAction(msg, { requireTarget: true, pair: (s, t) => `@${s} pats @${t}` });
     if (!built) return msg.reply(NO_TARGET_MSG);
     await sendGif(msg, 'pat', 'pat', built.text, built.mentions);
   },
 
-  async dance(client, msg, args) {
-    const { text, mentions } = await buildSelf(msg, 'is dancing!');
-    await sendGif(msg, 'dance', 'dance', text, mentions);
-  },
-
-  async sad(client, msg, args) {
-    const { text, mentions } = await buildSelf(msg, 'is feeling sad...');
-    await sendGif(msg, 'cry', 'cry', text, mentions);
-  },
-
-  async smile(client, msg, args) {
-    const { text, mentions } = await buildSelf(msg, 'is smiling!');
-    await sendGif(msg, 'smile', 'smile', text, mentions);
-  },
-
-  async laugh(client, msg, args) {
-    const { text, mentions } = await buildSelf(msg, 'is laughing!');
-    await sendGif(msg, 'laugh', 'laugh', text, mentions);
-  },
-
   async lick(client, msg, args) {
-    const built = await buildInteraction(msg, 'licks');
+    const built = await buildAction(msg, { requireTarget: true, pair: (s, t) => `@${s} licks @${t}` });
     if (!built) return msg.reply(NO_TARGET_MSG);
     await sendGif(msg, 'lick', 'lick', built.text, built.mentions);
   },
 
   async punch(client, msg, args) {
-    const built = await buildInteraction(msg, 'punches');
+    const built = await buildAction(msg, { requireTarget: true, pair: (s, t) => `@${s} punches @${t}` });
     if (!built) return msg.reply(NO_TARGET_MSG);
     await sendGif(msg, 'punch', 'punch', built.text, built.mentions);
   },
 
-  async jihad(client, msg, args) {
-    const contact = await msg.getContact();
-    msg.reply(
-      `☪️ @${mentionTag(contact)} declared a holy war on the chat! 💣 (meme command)`,
-      undefined,
-      { mentions: [contact.id._serialized] }
-    );
-  },
-
-  async crusade(client, msg, args) {
-    const contact = await msg.getContact();
-    msg.reply(
-      `✝️ @${mentionTag(contact)} called for a crusade! ⚔️ Deus Vult! (meme command)`,
-      undefined,
-      { mentions: [contact.id._serialized] }
-    );
-  },
-
   async kill(client, msg, args) {
-    const built = await buildInteraction(msg, 'kills');
+    const built = await buildAction(msg, { requireTarget: true, pair: (s, t) => `@${s} kills @${t}` });
     if (!built) return msg.reply(NO_TARGET_MSG);
     // No otakugifs.xyz equivalent — nekos.best only. Falls back to text if
     // nekos.best is unreachable.
@@ -372,51 +321,114 @@ module.exports = {
   },
 
   async bonk(client, msg, args) {
-    const built = await buildInteraction(msg, 'bonks');
+    const built = await buildAction(msg, { requireTarget: true, pair: (s, t) => `@${s} bonks @${t}` });
     if (!built) return msg.reply(NO_TARGET_MSG);
     await sendGif(msg, 'slap', 'slap', built.text, built.mentions);
   },
 
-  // GIF via nekos.best "baka" — no otakugifs.xyz equivalent exists, so
-  // this is nekos.best-only, same as .kill below. On a connection where
-  // nekos.best is Cloudflare-blocked, this will reliably fall back to the
-  // text-only reply inside sendGif() until nekos.best is reachable again.
-  async fuck(client, msg, args) {
-    const built = await buildFuck(msg);
-    if (!built) return msg.reply(NO_TARGET_MSG);
-    await sendGif(msg, 'baka', null, built.text, built.mentions);
-  },
-
   async tickle(client, msg, args) {
-    const built = await buildInteraction(msg, 'tickles');
+    const built = await buildAction(msg, { requireTarget: true, pair: (s, t) => `@${s} tickles @${t}` });
     if (!built) return msg.reply(NO_TARGET_MSG);
     await sendGif(msg, 'tickle', 'tickle', built.text, built.mentions);
   },
 
-  async shrug(client, msg, args) {
-    const contact = await msg.getContact();
-    msg.reply(
-      `🤷 @${mentionTag(contact)}: ¯\\_(ツ)_/¯`,
-      undefined,
-      { mentions: [contact.id._serialized] }
-    );
-  },
-
-  async wank(client, msg, args) {
-    const contact = await msg.getContact();
-    msg.reply(
-      `😏 @${mentionTag(contact)} is... busy. Please do not disturb. (meme command)`,
-      undefined,
-      { mentions: [contact.id._serialized] }
-    );
+  // GIF via nekos.best "baka" — no otakugifs.xyz equivalent exists, so
+  // this is nekos.best-only, same as .kill above. On a connection where
+  // nekos.best is Cloudflare-blocked, this will reliably fall back to the
+  // text-only reply inside sendGif() until nekos.best is reachable again.
+  async fuck(client, msg, args) {
+    const built = await buildAction(msg, {
+      requireTarget: true,
+      pair: (s, t) => `😤 @${s} said a bad word at @${t}!`,
+    });
+    if (!built) return msg.reply(NO_TARGET_MSG);
+    await sendGif(msg, 'baka', null, built.text, built.mentions);
   },
 
   // GIF via nekos.best "carry" — same nekos.best-only situation as .fuck
   // and .kill: no otakugifs.xyz equivalent, so this falls back to text
   // whenever nekos.best is unreachable.
   async kidnap(client, msg, args) {
-    const built = await buildKidnap(msg);
+    const built = await buildAction(msg, {
+      requireTarget: true,
+      pair: (s, t) => `🚨 @${s} kidnapped @${t}! 🚓 Police on the way!`,
+    });
     if (!built) return msg.reply(NO_TARGET_MSG);
     await sendGif(msg, 'carry', null, built.text, built.mentions);
+  },
+
+  // ─── Optional-target actions ─────────────────────────────────────────
+  // BUGFIX: these used to call buildSelf(), which never looked at any
+  // @mention or reply at all — that's why ".laugh @Anos" replied
+  // "@Brandon is laughing!" instead of directing it at Anos. They now go
+  // through the same resolveTarget() rule .hug uses: no target => solo
+  // text (identical to before), a target => directed text.
+  async dance(client, msg, args) {
+    const { text, mentions } = await buildAction(msg, {
+      solo: (s) => `@${s} is dancing!`,
+      pair: (s, t) => `@${s} dances with @${t}!`,
+    });
+    await sendGif(msg, 'dance', 'dance', text, mentions);
+  },
+
+  async sad(client, msg, args) {
+    const { text, mentions } = await buildAction(msg, {
+      solo: (s) => `@${s} is feeling sad...`,
+      pair: (s, t) => `@${s} is feeling sad because of @${t}...`,
+    });
+    await sendGif(msg, 'cry', 'cry', text, mentions);
+  },
+
+  async smile(client, msg, args) {
+    const { text, mentions } = await buildAction(msg, {
+      solo: (s) => `@${s} is smiling!`,
+      pair: (s, t) => `@${s} smiles at @${t}!`,
+    });
+    await sendGif(msg, 'smile', 'smile', text, mentions);
+  },
+
+  async laugh(client, msg, args) {
+    const { text, mentions } = await buildAction(msg, {
+      solo: (s) => `@${s} is laughing!`,
+      pair: (s, t) => `@${s} laughs at @${t}!`,
+    });
+    await sendGif(msg, 'laugh', 'laugh', text, mentions);
+  },
+
+  async jihad(client, msg, args) {
+    const { text, mentions } = await buildAction(msg, {
+      solo: (s) => `☪️ @${s} declared a holy war on the chat! 💣`,
+      pair: (s, t) => `☪️ @${s} declared a holy war on @${t}! 💣`,
+    });
+    msg.reply(text, undefined, { mentions });
+  },
+
+  async crusade(client, msg, args) {
+    const { text, mentions } = await buildAction(msg, {
+      solo: (s) => `✝️ @${s} called for a crusade! ⚔️ Deus Vult!`,
+      pair: (s, t) => `✝️ @${s} called for a crusade against @${t}! ⚔️ Deus Vult!`,
+    });
+    msg.reply(text, undefined, { mentions });
+  },
+
+  async shrug(client, msg, args) {
+    const { text, mentions } = await buildAction(msg, {
+      solo: (s) => `🤷 @${s}: ¯\\_(ツ)_/¯`,
+      pair: (s, t) => `🤷 @${s} shrugs at @${t}: ¯\\_(ツ)_/¯`,
+    });
+    msg.reply(text, undefined, { mentions });
+  },
+
+  // Left as self-only, intentionally NOT wired into buildAction's
+  // optional-target pattern — directing this specific joke's implication
+  // at another named person doesn't work the way the others do, so it
+  // keeps its original solo-only text unchanged.
+  async wank(client, msg, args) {
+    const contact = await msg.getContact();
+    msg.reply(
+      `😏 @${mentionTag(contact)} is... busy. Please do not disturb.`,
+      undefined,
+      { mentions: [contact.id._serialized] }
+    );
   },
 };

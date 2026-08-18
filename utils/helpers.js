@@ -28,6 +28,38 @@ function doubleStruck(text) {
   }).join('');
 }
 
+// ─── AniList description sanitizer ─────────────────────────────────────────
+// AniList character descriptions come formatted with AniList's own markdown
+// (bold/italic/strikethrough, spoiler markers, and — the one that was
+// showing up raw in card views — [label](url) links to other AniList
+// character pages) plus the occasional stray HTML tag. WhatsApp renders
+// none of that, so it was showing up as literal bracket/paren text instead
+// of a link.
+//
+// Single source of truth used in two places: commands/cardmanager.js calls
+// this once when a description is first pulled from AniList, AND
+// commands/cards.js calls it again at display time on whatever's already
+// saved. The display-time call is what matters for descriptions that were
+// saved to Mongo before this sanitizer existed (or gained the markdown-link
+// step) — cleaning at display time fixes those retroactively with no
+// database migration needed, since nothing about the stored data has to
+// change for it to display correctly.
+function cleanDescription(text) {
+  if (!text) return '';
+  return text
+    .replace(/<br\s*\/?>/gi, ' ')
+    .replace(/~!|!~/g, '') // AniList spoiler markers
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1') // [label](url) -> label
+    .replace(/\*\*([^*]+)\*\*/g, '$1') // **bold**
+    .replace(/__([^_]+)__/g, '$1')     // __bold__
+    .replace(/~~([^~]+)~~/g, '$1')     // ~~strikethrough~~
+    .replace(/<[^>]+>/g, '')
+    .replace(/\r?\n/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 500);
+}
+
 function formatNum(n) {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
@@ -428,6 +460,7 @@ async function generateUniqueCode(Model, field = 'code') {
 module.exports = {
   boldSans,
   doubleStruck,
+  cleanDescription,
   formatNum,
   parseAmount,
   formatCooldown,

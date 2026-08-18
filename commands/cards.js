@@ -1,10 +1,11 @@
 const { CardCatalogue, OwnedCard, Auction, TradeRequest, SaleRequest } = require('../models/Card');
 const { checkAchievements, formatUnlockNotice } = require('../utils/achievements');
 const { checkTitle, formatTitleUnlockNotice } = require('../utils/titles');
+const { renderCard } = require('../utils/cardRenderer');
 const { MessageMedia } = require('whatsapp-web.js');
 const User = require('../models/User');
 const Group = require('../models/Group');
-const { tierEmoji, rollTier, formatNum, pick, mentionName, mentionTag, generateUniqueCode, safeGetChat, cardValue, tierAbove, TIER_DROP_RATES, addXP, XP_REWARDS, parseAmount } = require('../utils/helpers');
+const { tierEmoji, rollTier, formatNum, pick, mentionName, mentionTag, generateUniqueCode, safeGetChat, cardValue, tierAbove, TIER_DROP_RATES, addXP, XP_REWARDS, parseAmount, boldSans, doubleStruck, cleanDescription } = require('../utils/helpers');
 const crypto = require('crypto');
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -19,6 +20,37 @@ function escapeHtml(str) {
     .replace(/'/g, '&#39;');
 }
 
+// ─── Shared card media resolution — custom render, then raw image, then none ──
+// Every single-card send point (sendCardDetail, sendOwnedCardInfo, .ci's
+// catalogue-search path, dropCard) wants the same thing: the finished
+// custom trading-card image if it can be produced, the original raw
+// AniList image if not, or nothing at all (caller falls back to a
+// text-only reply) if even that fails. This is that fallback chain,
+// written once instead of copy-pasted at each call site.
+//
+// catalogue must be a CardCatalogue document (not an OwnedCard) — that's
+// where imageUrl/description/render cache all live. Never throws.
+async function getCardMedia(client, catalogue) {
+  if (!catalogue?.imageUrl) return null;
+
+  try {
+    const result = await renderCard(client, catalogue);
+    if (result.cached) {
+      return await MessageMedia.fromUrl(result.url, { unsafeMime: true });
+    }
+    return new MessageMedia('image/png', result.buffer.toString('base64'), 'card.png');
+  } catch (err) {
+    console.error('getCardMedia: custom render failed, falling back to raw AniList image:', err.message);
+  }
+
+  try {
+    return await MessageMedia.fromUrl(catalogue.imageUrl, { unsafeMime: true });
+  } catch (err) {
+    console.error('getCardMedia: raw AniList image fetch also failed:', err.message);
+    return null;
+  }
+}
+
 async function getUserCards(userId) {
   const cards = await OwnedCard.find({ ownerId: userId });
   return cards.sort((a, b) => cardValue(a.tier) - cardValue(b.tier) || a.name.localeCompare(b.name));
@@ -27,6 +59,111 @@ async function getUserCards(userId) {
 async function getCardByIndex(userId, index) {
   const cards = await getUserCards(userId);
   return cards[index - 1] || null;
+}
+
+// ─── Shared single-card detail view — used by .card and .col <number> ─────
+// Both commands used to build their own near-identical caption text
+// independently, which is how they'd already drifted into slightly
+// different wording. Unified here in the same visual language as
+// .profile (economy.js): a doubleStruck box header + boldSans ꕥ-prefixed
+// label lines, instead of the old plain "📖 *name*" + bare emoji lines.
+//
+// The description also now runs through cleanDescription() at DISPLAY
+// time (not just when a card is first pulled from AniList in
+// cardmanager.js) — that's what fixes the raw "[label](url)" markdown
+// AniList sometimes embeds in a character's bio (e.g. links to other
+// AniList character pages) showing up as literal bracket/paren text.
+// Because this cleans whatever's already saved in Mongo on every view, it
+// also fixes descriptions saved before this sanitizing existed, with no
+// database migration needed.
+function renderCardDetail(card, catalogue) {
+  const line = (label, value) => `ꕥ ${boldSans(label)}: ${value}`;
+  const description = catalogue?.description ? cleanDescription(catalogue.description) : '';
+
+  const lines = [
+    `╭━━━★彡 ${doubleStruck('CARD')} 彡★━━━╮`,
+    '',
+    line('Name', `${tierEmoji(card.tier)} ${card.name}`),
+    line('Tier', card.tier),
+    line('Series', card.series),
+    line('Value', `${cardValue(card.tier).toLocaleString()} coins`),
+    line('Code', card.code || 'N/A'),
+    line('Times Traded', card.timesTraded),
+    line('Obtained', new Date(card.obtainedAt).toLocaleDateString()),
+  ];
+  if (description) lines.push(line('About', description));
+
+  return lines.join('\n');
+}
+
+// Sends the rendered detail above, with the card's image when the
+// catalogue entry has one. Always a genuine quoted reply — msg.reply()
+// supports media the same way it already does for GIFs in
+// commands/interaction.js, so this no longer needs chat.sendMessage()
+// (which sent a fresh, unquoted message instead of replying under the
+// triggering .card/.col command, same bug already fixed elsewhere in the
+// bot for other commands).
+async function sendCardDetail(client, msg, card, catalogue) {
+  const caption = renderCardDetail(card, catalogue);
+
+  const media = await getCardMedia(client, catalogue);
+  if (media) {
+    try {
+      return await msg.reply(media, undefined, { caption });
+    } catch (err) {
+      console.error('sendCardDetail: media send failed, falling back to text:', err.message);
+      // fall through to text-only reply below
+    }
+  }
+  return msg.reply(caption);
+}
+
+// Builds the same "Card Information" view .ci normally shows, but starting
+// from a specific OwnedCard (i.e. a ".ci [code]" lookup) instead of a
+// CardCatalogue name/tier search. Pulls description/imageUrl/added-date
+// from the linked catalogue entry when there is one — OwnedCard itself
+// only duplicates name/series/tier, not those fields.
+async function sendOwnedCardInfo(client, msg, owned) {
+  const catalogue = owned.catalogueId
+    ? await CardCatalogue.findOne({ cardId: owned.catalogueId })
+    : null;
+
+  const name = catalogue?.name || owned.name;
+  const series = catalogue?.series || owned.series;
+  const tier = catalogue?.tier || owned.tier;
+  const cardId = catalogue?.cardId || owned.catalogueId || owned.code;
+  const description = catalogue?.description ? cleanDescription(catalogue.description) : '';
+
+  const ownerShort = owned.ownerId ? owned.ownerId.split('@')[0] : 'Unknown';
+  const firstOwnerShort = owned.firstOwner ? owned.firstOwner.split('@')[0] : ownerShort;
+
+  const caption =
+`📖 *Card Information*
+
+${tierEmoji(tier)} *${name}*
+📚 Series: ${series}
+⭐ Tier: ${tier}
+💰 Value: ${cardValue(tier).toLocaleString()} coins
+🆔 Card ID: ${cardId}
+🎫 Claim Code: ${owned.code}
+
+👤 Owner: @${ownerShort}
+🥇 First Owner: @${firstOwnerShort}
+🔄 Times Traded: ${owned.timesTraded}
+📅 Claimed: ${new Date(owned.obtainedAt).toLocaleDateString()}${description ? `\n📝 ${description}` : ''}`;
+
+  const mentions = [...new Set([owned.ownerId, owned.firstOwner].filter(Boolean))];
+
+  const media = await getCardMedia(client, catalogue);
+  if (media) {
+    try {
+      return await msg.reply(media, undefined, { caption, mentions });
+    } catch (err) {
+      console.error('sendOwnedCardInfo: media send failed, falling back to text:', err.message);
+      // fall through to text-only reply below
+    }
+  }
+  return msg.reply(caption, undefined, { mentions });
 }
 
 // Resolves a user's deck (array of OwnedCard _id strings) into full card
@@ -44,7 +181,7 @@ async function getDeckCards(deckIds) {
 }
 
 // ─── Drop a Random Card in Group ─────────────────────────────────────────────
-async function dropCard(chat) {
+async function dropCard(chat, client) {
   const tier = rollTier();
 
   let card = null;
@@ -104,13 +241,14 @@ Type *.claim ${claimCode}* to claim it!`;
     : '';
   const fullCaption = caption + wishlistNote;
 
-  if (card.imageUrl) {
+  const media = client ? await getCardMedia(client, card) : null;
+  if (media) {
     try {
-      const media = await MessageMedia.fromUrl(card.imageUrl, { unsafeMime: true });
       await chat.sendMessage(media, { caption: fullCaption, mentions: matchedIds });
       return card;
-    } catch {
-      // image fetch failed — fall through to text-only drop below
+    } catch (err) {
+      console.error('dropCard: media send failed, falling back to text:', err.message);
+      // fall through to text-only drop below
     }
   }
 
@@ -121,10 +259,10 @@ Type *.claim ${claimCode}* to claim it!`;
 // ─── Track active drop intervals so toggling never leaks or duplicates them ──
 const cardIntervals = new Map(); // chatId -> intervalId
 
-function startDropInterval(chat) {
+function startDropInterval(chat, client) {
   const chatId = chat.id._serialized;
   if (cardIntervals.has(chatId)) clearInterval(cardIntervals.get(chatId));
-  const intervalId = setInterval(() => dropCard(chat), 5 * 60 * 1000);
+  const intervalId = setInterval(() => dropCard(chat, client), 5 * 60 * 1000);
   cardIntervals.set(chatId, intervalId);
 }
 
@@ -141,7 +279,7 @@ async function _initCardDrops(client) {
   for (const group of enabledGroups) {
     try {
       const chat = await client.getChatById(group.id);
-      startDropInterval(chat);
+      startDropInterval(chat, client);
     } catch (e) {
       // Group may no longer exist / bot may have been removed — skip it
     }
@@ -172,7 +310,7 @@ module.exports = {
     msg.reply(`🎴 Cards are now *${group.cardsEnabled ? 'ON' : 'OFF'}*`);
 
     if (group.cardsEnabled) {
-      startDropInterval(chat);
+      startDropInterval(chat, client);
     } else {
       stopDropInterval(chat.id._serialized);
     }
@@ -197,38 +335,39 @@ module.exports = {
       ? await CardCatalogue.findOne({ cardId: card.catalogueId })
       : null;
 
-    const caption =
-`📖 *${card.name}*
-
-${tierEmoji(card.tier)} Tier: ${card.tier}
-📚 Series: ${card.series}
-💰 Value: ${cardValue(card.tier).toLocaleString()} coins
-🆔 Code: ${card.code || 'N/A'}
-🔄 Times Traded: ${card.timesTraded}
-📅 Obtained: ${new Date(card.obtainedAt).toLocaleDateString()}${catalogue?.description ? `\n📝 ${catalogue.description}` : ''}`;
-
-    if (catalogue?.imageUrl) {
-      try {
-        const media = await MessageMedia.fromUrl(catalogue.imageUrl, { unsafeMime: true });
-        const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
-        if (!chat) return;
-        return await chat.sendMessage(media, { caption });
-      } catch {
-        // image fetch failed — fall through to text-only reply
-      }
-    }
-    return msg.reply(caption);
+    return sendCardDetail(client, msg, card, catalogue);
   },
 
-  // .ci [name] [tier] — card info from catalogue
+  // .ci [name] [tier] — card info from catalogue.
+  // .ci [code] — same command, but looks up one specific claimed card by
+  // its 6-character claim code instead (the same code shown by .card/.col
+  // and used with .claim). Codes only exist on OwnedCard once a card's
+  // been claimed — the master catalogue entries themselves don't have
+  // one — so a code hit shows that exact claimed instance (its real owner,
+  // times traded, etc.) rather than the generic catalogue listing.
+  //
+  // Code detection only fires for a single argument matching the exact
+  // 6-char code alphabet (generateUniqueCode() in utils/helpers.js:
+  // A-Z minus I/O, 2-9 minus 0/1), and only takes effect if that code
+  // actually exists — so a genuine one-word name search (e.g. ".ci Sakura")
+  // still works normally in the near-impossible case it happens to overlap
+  // the code pattern with no real card at that code.
   async ci(client, msg, args) {
-    const tier = args[args.length - 1]?.toUpperCase();
-    const name = args.slice(0, -1).join(' ');
-    if (!name) return msg.reply('❌ Usage: .ci [name] [tier]');
+    if (!args.length) return msg.reply('❌ Usage: .ci [name] [tier]  —or—  .ci [code]');
 
-    const query = tier && ['C','B','A','S','SS','SSS'].includes(tier)
+    if (args.length === 1 && /^[A-HJ-NP-Z2-9]{6}$/i.test(args[0])) {
+      const owned = await OwnedCard.findOne({ code: args[0].toUpperCase() });
+      if (owned) return sendOwnedCardInfo(client, msg, owned);
+      // No claimed card at that code — fall through and treat the same
+      // text as a name search below instead of giving up.
+    }
+
+    const tier = args[args.length - 1]?.toUpperCase();
+    const name = args.slice(0, -1).join(' ') || args.join(' ');
+
+    const query = tier && ['C','B','A','S','SS','SSS'].includes(tier) && args.length > 1
       ? { name: new RegExp(name, 'i'), tier }
-      : { name: new RegExp(name, 'i') };
+      : { name: new RegExp(args.join(' '), 'i') };
 
     const card = await CardCatalogue.findOne(query);
     if (!card) return msg.reply('❌ Card not found.');
@@ -252,7 +391,7 @@ ${tierEmoji(card.tier)} *${card.name}*
 🆔 Card ID: ${cardId}
 
 ${ownershipLines}
-📅 Added: ${card.createdAt ? new Date(card.createdAt).toLocaleDateString() : 'Unknown'}${card.description ? `\n📝 ${card.description}` : ''}
+📅 Added: ${card.createdAt ? new Date(card.createdAt).toLocaleDateString() : 'Unknown'}${card.description ? `\n📝 ${cleanDescription(card.description)}` : ''}
 
 Use *.claim* when this card drops!`;
 
@@ -260,14 +399,13 @@ Use *.claim* when this card drops!`;
       ? [...new Set([owned.ownerId, owned.firstOwner].filter(Boolean))]
       : [];
 
-    if (card.imageUrl) {
+    const media = await getCardMedia(client, card);
+    if (media) {
       try {
-        const media = await MessageMedia.fromUrl(card.imageUrl, { unsafeMime: true });
-        const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
-        if (!chat) return;
-        return await chat.sendMessage(media, { caption, mentions });
-      } catch {
-        // image fetch failed — fall through to text-only reply
+        return await msg.reply(media, undefined, { caption, mentions });
+      } catch (err) {
+        console.error('.ci: media send failed, falling back to text:', err.message);
+        // fall through to text-only reply below
       }
     }
     msg.reply(caption, undefined, { mentions });
@@ -554,27 +692,7 @@ const cards = await OwnedCard.find({
         ? await CardCatalogue.findOne({ cardId: card.catalogueId })
         : null;
 
-      const caption =
-`📖 *${card.name}*
-
-${tierEmoji(card.tier)} Tier: ${card.tier}
-📚 Series: ${card.series}
-💰 Value: ${cardValue(card.tier).toLocaleString()} coins
-🆔 Code: ${card.code || 'N/A'}
-🔄 Times Traded: ${card.timesTraded}
-📅 Obtained: ${new Date(card.obtainedAt).toLocaleDateString()}${catalogue?.description ? `\n📝 ${catalogue.description}` : ''}`;
-
-      if (catalogue?.imageUrl) {
-        try {
-          const media = await MessageMedia.fromUrl(catalogue.imageUrl, { unsafeMime: true });
-          const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
-          if (!chat) return;
-          return await chat.sendMessage(media, { caption });
-        } catch {
-          // image fetch failed — fall through to text-only reply
-        }
-      }
-      return msg.reply(caption);
+      return sendCardDetail(client, msg, card, catalogue);
     }
 
     // .col (no args) — page 1 of the rich list
@@ -592,17 +710,101 @@ ${tierEmoji(card.tier)} Tier: ${card.tier}
     msg.reply(text);
   },
 
-  // .cardshop
+  // .cardshop — combined shop listing: (1) cards other players have put up
+  // for sale via .sellc, real prices they set, real sellers; and (2)
+  // unclaimed catalogue cards, buyable directly at a fixed price for their
+  // tier. Both paginate together, 10 per page, listings first. Buying a
+  // player listing still goes through .claim <code> (unchanged). Buying a
+  // catalogue card goes through the new .buyc <code> below — deliberately
+  // NOT .claim, see the comment on .buyc for why.
   async cardshop(client, msg, args) {
-    const forSale = await OwnedCard.find({ isForSale: true }).limit(20);
-    if (!forSale.length) return msg.reply('🛒 The card shop is currently empty.');
+    const perPage = 10;
+    const page = args[0] === 'page' && parseInt(args[1]) > 0 ? parseInt(args[1]) : 1;
 
-    let text = `🛒 *Card Shop*\n\n`;
-    forSale.forEach((c) => {
-      text += `${tierEmoji(c.tier)} *${c.name}* [${c.tier}] — 💰 ${c.price} coins\n🆔 ${c.code || 'pending'} (Owner: ${c.ownerId})\n\n`;
+    const forSale = await OwnedCard.find({ isForSale: true }).sort({ price: 1 });
+    const claimedIds = await OwnedCard.distinct('catalogueId');
+    const catalogueAvailable = await CardCatalogue.find({ cardId: { $nin: claimedIds } }).sort({ tier: 1, name: 1 });
+
+    const entries = [
+      ...forSale.map(card => ({ kind: 'listing', card })),
+      ...catalogueAvailable.map(card => ({ kind: 'catalogue', card })),
+    ];
+
+    if (!entries.length) {
+      return msg.reply('🛒 The card shop is currently empty.');
+    }
+
+    const totalPages = Math.ceil(entries.length / perPage);
+    const start = (page - 1) * perPage;
+    const slice = entries.slice(start, start + perPage);
+
+    if (!slice.length) return msg.reply(`❌ No listings on page ${page}. You have ${totalPages} page(s) total.`);
+
+    let text = `🛒 *Card Shop* [Page ${page}/${totalPages}] (${entries.length} total)\n\n`;
+    slice.forEach(({ kind, card }) => {
+      if (kind === 'listing') {
+        text += `${tierEmoji(card.tier)} *${card.name}* [${card.tier}] — 💰 ${formatNum(card.price)} coins\n🆔 ${card.code || 'pending'} • Seller: @${card.ownerId.split('@')[0]}\nUse *.claim ${card.code}* to buy!\n\n`;
+      } else {
+        text += `${tierEmoji(card.tier)} *${card.name}* [${card.tier}] — 💰 ${formatNum(cardValue(card.tier))} coins (shop stock)\n🆔 ${card.cardId}\nUse *.buyc ${card.cardId}* to buy!\n\n`;
+      }
     });
-    text += `Use *.claim <code>* to buy!`;
-    msg.reply(text);
+    if (totalPages > 1) text += `Use *.cardshop page <n>* to see more (e.g. .cardshop page 2).`;
+
+    const mentions = forSale.map(c => c.ownerId).filter(Boolean);
+    msg.reply(text, undefined, { mentions });
+  },
+
+  // .buyc [code] — buy an unclaimed catalogue card directly (the "shop
+  // stock" half of .cardshop) at its fixed tier price.
+  //
+  // Kept entirely separate from .claim on purpose: .claim's drop-claim
+  // branch treats ANY known catalogue cardId as claimable for FREE the
+  // moment it matches CardCatalogue — that branch doesn't actually check
+  // that a drop is currently active for that specific code, only that
+  // *some* Group record exists for the chat. Routing a paid purchase
+  // through that path would either let people get catalogue cards for
+  // free (if it hit that branch first) or require reworking claim
+  // payment logic that's already had one real bug (see the BUGFIX note
+  // above .claim's shop-buy branch). Flagging this rather than quietly
+  // touching it — worth fixing as its own task.
+  async buyc(client, msg, args) {
+    const code = args[0]?.trim().toUpperCase();
+    if (!code) return msg.reply('❌ Usage: .buyc [code]\n\nUse *.cardshop* to see catalogue cards available to buy.');
+
+    const catalogue = await CardCatalogue.findOne({ cardId: code });
+    if (!catalogue) return msg.reply('❌ No catalogue card with that code — check *.cardshop* for what\'s available.');
+
+    const alreadyClaimed = await OwnedCard.findOne({ catalogueId: catalogue.cardId });
+    if (alreadyClaimed) {
+      return msg.reply('❌ That card has already been claimed — check *.cardshop* for what\'s still available, or *.claim* if someone has it listed for sale.');
+    }
+
+    const contact = await msg.getContact();
+    const user = await User.findOrCreate(contact.id._serialized, contact.pushname);
+    const price = cardValue(catalogue.tier);
+
+    if (user.bank < price) {
+      return msg.reply(`❌ Not enough in your bank. Need 💰 ${formatNum(price)}, you have ${formatNum(user.bank)}. Try *.deposit* first.`);
+    }
+
+    user.bank -= price;
+    await user.save();
+
+    const owned = await OwnedCard.create({
+      ownerId: contact.id._serialized,
+      catalogueId: catalogue.cardId,
+      code: await generateUniqueCode(OwnedCard),
+      name: catalogue.name,
+      series: catalogue.series,
+      tier: catalogue.tier,
+      firstOwner: contact.id._serialized,
+    });
+
+    const xpResult = await addXP(contact.id._serialized, XP_REWARDS.shopBuy);
+    const unlocked = await checkAchievements(contact.id._serialized);
+    const newTitle = await checkTitle(contact.id._serialized);
+    const xpLine = `\n⭐ +${XP_REWARDS.shopBuy} XP${xpResult.levelUp ? ` — 🎉 Level up! You're now level ${xpResult.level}!` : ''}`;
+    msg.reply(`✅ You bought *${owned.name}* [${owned.tier}] for 💰 ${formatNum(price)}!` + xpLine + formatUnlockNotice(unlocked) + formatTitleUnlockNotice(newTitle));
   },
 
   // .sellc [index] [price]

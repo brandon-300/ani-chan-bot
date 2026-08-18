@@ -34,6 +34,25 @@ const CardCatalogueSchema = new mongoose.Schema({
   imagePath: { type: String, default: '' },
   description: { type: String, default: '' },
   value: { type: Number, default: 0 },
+
+  // ─── Rendered card cache (utils/cardRenderer.js) ───────────────────────────
+  // The custom trading-card PNG is expensive to (re)build — a Puppeteer
+  // page render plus hair-color extraction — so it's cached here rather
+  // than regenerated on every view/drop/claim. Lives on the CATALOGUE entry
+  // (not OwnedCard) because the artwork and derived color theme are the
+  // same for every owner of a given card; only ownership/trade history
+  // differs per OwnedCard instance.
+  //
+  // renderVersion is compared against CARD_RENDER_VERSION (the one source
+  // of truth for the visual design, defined in utils/cardRenderer.js) to
+  // decide cache hit vs. miss — a version bump there invalidates every
+  // cached card at once without touching the database. .editcard
+  // (commands/cardmanager.js) also clears these three fields whenever a
+  // face-affecting field changes, so a stale render is never served after
+  // an edit.
+  renderedUrl: { type: String, default: null },
+  renderVersion: { type: Number, default: null },
+  renderedAt: { type: Date, default: null },
 }, { timestamps: true });
 
 // ─── User-Owned Card Instance ─────────────────────────────────────────────────

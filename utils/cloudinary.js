@@ -55,4 +55,27 @@ async function deleteFromCloud(publicId, resourceType = 'image') {
   }
 }
 
-module.exports = { uploadToCloud, deleteFromCloud, isCloudConfigured };
+// Same job as uploadToCloud, but for callers that already have the file's
+// bytes in memory (e.g. utils/cardRenderer.js's page.screenshot() output)
+// and would otherwise have to write a throwaway temp file just to hand a
+// path to the SDK. cloudinary.uploader.upload_stream() accepts a writable
+// stream instead, so the buffer goes straight to Cloudinary — no temp file
+// created, nothing to clean up on disk, one less filesystem write on a
+// phone-class device.
+async function uploadBufferToCloud(buffer, { folder, publicId, resourceType = 'image' } = {}) {
+  if (!configured) {
+    throw new Error('Cloudinary is not configured — set CLOUDINARY_URL (or CLOUDINARY_CLOUD_NAME/API_KEY/API_SECRET) in .env');
+  }
+  return new Promise((resolve, reject) => {
+    const stream = cloudinary.uploader.upload_stream(
+      { folder, public_id: publicId, overwrite: true, resource_type: resourceType },
+      (err, result) => {
+        if (err) return reject(err);
+        resolve({ url: result.secure_url, publicId: result.public_id });
+      }
+    );
+    stream.end(buffer);
+  });
+}
+
+module.exports = { uploadToCloud, uploadBufferToCloud, deleteFromCloud, isCloudConfigured };
