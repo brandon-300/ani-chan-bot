@@ -3,6 +3,7 @@ const { MessageMedia } = require('whatsapp-web.js');
 const { isOwner, rollTier, tierEmoji, safeGetChat, cardValue, cleanDescription } = require('../utils/helpers');
 const { CardCatalogue, OwnedCard, CatalogueGrowthState } = require('../models/Card');
 const Group = require('../models/Group');
+const { findCharacterArtwork } = require('../utils/danbooru');
 
 const TIERS = ['C', 'B', 'A', 'S', 'SS', 'SSS'];
 const EDITABLE_FIELDS = ['name', 'series', 'tier', 'description', 'imageUrl'];
@@ -675,6 +676,85 @@ module.exports = {
     if (remaining > 0) reply += `\n\n📦 ${remaining} more still missing AniList data — run *.backfillimages* again to keep going.`;
 
     msg.reply(reply.slice(0, 4000));
+  },
+
+  // .upgradeimages — replaces AniList art (utils/cardRenderer.js already
+  // requests AniList's biggest field, image.large — this isn't a smaller-
+  // field bug, AniList's own database is just inconsistent quality/crop for
+  // a lot of characters) with Danbooru art (utils/danbooru.js), which is
+  // generally sharper and better-composed for the same character.
+  //
+  // Unlike .backfillimages, this does NOT skip on an uncertain series
+  // match — findCharacterArtwork() already picks its single best guess
+  // (see that function's own comment for exactly how, and why a strict
+  // series check the way AniList gets one isn't reliable for Danbooru's
+  // tag slugs) and this applies it automatically. That's a deliberate
+  // choice, not an oversight: reviewing 300+ individual matches by hand
+  // isn't practical, so every card gets imageSource: 'danbooru' + the
+  // exact tag that was used, so a spot-check later has something concrete
+  // to check against instead of having to re-derive what changed.
+  //
+  // Only touches cards still on imageSource: 'anilist' (the schema
+  // default), so re-running this after a partial run — or after adding
+  // new cards later — only processes what's left, same "run it again to
+  // keep going" shape as .backfillimages. Capped at 25/run: each card costs
+  // 2 Danbooru requests (tag lookup + post search), and Danbooru's own
+  // anonymous rate limit is ~500 reads/hour — well inside that even run a
+  // few times back to back, but still slow enough on a phone-class
+  // connection that one call shouldn't try to do all 300+ at once.
+  async upgradeimages(client, msg, args) {
+    if (!(await checkOwner(msg))) return;
+
+    const BATCH_LIMIT = 25;
+    const pending = await CardCatalogue.find({
+      $or: [{ imageSource: 'anilist' }, { imageSource: { $exists: false } }],
+    }).limit(BATCH_LIMIT);
+
+    if (!pending.length) {
+      return msg.reply('✅ Every catalogue card is already on Danbooru art — nothing left to upgrade.');
+    }
+
+    await msg.reply(`🖼️ Upgrading images for ${pending.length} card(s) via Danbooru... this'll take a bit, hang tight.`);
+
+    const applied = [];
+    const skipped = [];
+
+    for (const doc of pending) {
+      try {
+        const art = await findCharacterArtwork(doc.name);
+        if (!art) {
+          skipped.push(`${doc.name} [${doc.cardId}] — no Danbooru match found; left on AniList art`);
+          await sleep(500);
+          continue;
+        }
+
+        doc.imageUrl = art.url;
+        doc.imageSource = 'danbooru';
+        // Same cache-invalidation as .editcard — imageUrl is one of the
+        // fields the renderer draws from, so the cached PNG is now stale.
+        doc.renderedUrl = null;
+        doc.renderVersion = null;
+        doc.renderedAt = null;
+        await doc.save();
+
+        applied.push(`✅ ${doc.name} [${doc.cardId}] — matched tag "${art.tagUsed}" (score ${art.score})`);
+      } catch (err) {
+        skipped.push(`${doc.name} [${doc.cardId}] — lookup failed (${err.message})`);
+      }
+      await sleep(500); // be a good citizen on Danbooru's shared free tier
+    }
+
+    const remainingUpgrade = await CardCatalogue.countDocuments({
+      $or: [{ imageSource: 'anilist' }, { imageSource: { $exists: false } }],
+    });
+
+    let upgradeReply = `🖼️ *Image Upgrade Complete*\n\n✅ Upgraded: ${applied.length}\n⚠️ No match: ${skipped.length}\n`;
+    if (applied.length) upgradeReply += `\n*Upgraded:*\n${applied.join('\n')}`;
+    if (skipped.length) upgradeReply += `\n\n*No Danbooru match:*\n${skipped.join('\n')}`;
+    if (remainingUpgrade > 0) upgradeReply += `\n\n📦 ${remainingUpgrade} more still on AniList art — run *.upgradeimages* again to keep going.`;
+    upgradeReply += `\n\nSpot-check any of these with *.ci [name]* (add the tier too if that name matches more than one card) — each upgraded card's Danbooru tag is listed above if something looks off.`;
+
+    msg.reply(upgradeReply.slice(0, 4000));
   },
 
   // .mergecards <keepId> <duplicateId> — for genuine duplicate catalogue
