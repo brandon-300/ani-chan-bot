@@ -6,9 +6,9 @@
 // This project already has a proven, zero-new-dependency way to composite
 // text + images on this exact phone: reusing the WhatsApp session's own
 // Chromium instance (client.pupBrowser) to render HTML/CSS/inline-SVG and
-// screenshot it — see utils/memeRender.js (captions on images) and
-// commands/cards.js's .cg command (a multi-card grid, same pattern applied
-// to card art specifically). Chromium renders real fonts, word-wrap,
+// screenshot it — see utils/memeRender.js (captions on images) and the
+// mini-grid inside .deck (commands/cards.js), which composites several
+// already-rendered cards from this same module the same way. Chromium renders real fonts, word-wrap,
 // gradients, and SVG natively; FFmpeg's drawtext/overlay filters can't do
 // any of that. So this reuses the same pattern rather than adding a second,
 // separate FFmpeg-based compositing pipeline. FFmpeg itself is completely
@@ -16,8 +16,8 @@
 // the bot (converter.js, downloaders, fishAudio.js). No Sharp anywhere.
 //
 // ── Why the source image is fetched with axios first, not <img src="url"> ──
-// .cg loads AniList images directly in the browser because it only ever
-// *displays* them. This renderer also needs to read the image's raw pixels
+// .cg (an earlier, now-removed multi-card grid command) loaded AniList
+// images directly in the browser because it only ever *displayed* them. This renderer also needs to read the image's raw pixels
 // (for hair-color extraction), and drawing a cross-origin image onto a
 // <canvas> then calling getImageData() throws a SecurityError ("tainted
 // canvas") unless the remote server sends the right CORS headers — not
@@ -65,7 +65,7 @@ const { TIER_ORDER, cleanDescription } = require('./helpers');
 const { BOT_NAME } = require('./config');
 const { uploadBufferToCloud, isCloudConfigured } = require('./cloudinary');
 
-const CARD_RENDER_VERSION = 1; // bump this — and only this — to force every cached card to re-render
+const CARD_RENDER_VERSION = 4; // v4: narrower inset artwork + blurred backdrop fills the letterbox gutters instead of a flat gradient — bump this, and only this, for future visual changes
 
 // ─── Fixed canvas + layout (all bands sum exactly to INNER_H — see math below) ─
 const CARD_WIDTH = 1080;
@@ -76,10 +76,28 @@ const CUT_INNER = 30; // octagon corner-cut size, inner content area
 const INNER_W = CARD_WIDTH - FRAME * 2; // 1036
 const INNER_H = CARD_HEIGHT - FRAME * 2; // 1396
 
-const BANNER_H = 148;
-const ART_H = 628;
+// v2: artwork band grew (628->700) and now uses background-size:contain
+// instead of cover (see buildCardHtml) — AniList character art is often
+// already a tight bust/face crop, and "cover" was zooming into just the
+// eyes on tight crops since it fills the box by cropping whatever
+// overflows. "contain" always shows the WHOLE source image with no
+// cropping. Banner/panel shrank slightly to give artwork the room without
+// changing INNER_H.
+const BANNER_H = 132;
+const ART_H = 700;
 const DIVIDER_H = 96;
-const PANEL_H = INNER_H - BANNER_H - ART_H - DIVIDER_H; // 524 — 148+628+96+524 = 1396 = INNER_H
+const PANEL_H = INNER_H - BANNER_H - ART_H - DIVIDER_H; // 468 — 132+700+96+468 = 1396 = INNER_H
+
+// v4: "contain" alone left wide dark gutters on either side of tall/narrow
+// AniList crops against this band's landscape-ish box (1036x700). Fixed
+// with two changes together, not either alone: the sharp image now sits
+// in a narrower inset box (closer to, but not all the way to, the
+// source's usual portrait ratio — going all the way would shrink the
+// character too far, and this is still "contain" so nothing crops), and
+// whatever gutter remains is filled with a blurred, scaled-up copy of the
+// SAME image (a common "gacha card" technique) instead of a flat gradient,
+// so it reads as a deliberate soft backdrop rather than dead space.
+const ART_INSET = 128;
 
 const STAR_SIZE = 80;
 const MIN_NAME_FONT_PX = 30;
@@ -109,6 +127,24 @@ function truncateText(text, maxChars) {
   const lastSpace = cut.lastIndexOf(' ');
   const trimmed = lastSpace > maxChars * 0.6 ? cut.slice(0, lastSpace) : cut;
   return trimmed.trim() + '…';
+}
+
+// AniList character descriptions often lead with a "Height: 164 cm (5'3")"
+// stat, originally on its own line — but cleanDescription() (utils/
+// helpers.js) collapses newlines to spaces, since that flowing-paragraph
+// behavior is correct and shared with other commands' plain-text captions.
+// That collapse is what turns it into a run-on like "Height: 164 cm (5'3")
+// Marin is an extravagant..." once it reaches this renderer. This pulls
+// that leading stat back out (matched on its own recognizable shape, not
+// on whitespace, so it works whether or not a separator survived) so the
+// card can show it as a distinct line above the bio instead of glued to
+// the first sentence. No match -> the whole text is just the bio, same as
+// before.
+const HEIGHT_STAT_RE = /^(Height:\s*[\d.,]+\s*cm(?:\s*\([^)]*\))?)\s*/i;
+function splitLeadingStat(text) {
+  const match = text.match(HEIGHT_STAT_RE);
+  if (!match) return { stat: '', body: text };
+  return { stat: match[1].trim(), body: text.slice(match[0].length).trim() };
 }
 
 // ─── Color math ─────────────────────────────────────────────────────────────
@@ -233,7 +269,9 @@ function buildCardHtml({ name, series, tier, description, botName, imageDataUri,
   const safeName = escapeHtml(name || 'Unknown');
   const safeSeries = escapeHtml(series || 'Unknown');
   const safeBotName = escapeHtml(botName || 'Bot');
-  const safeDesc = escapeHtml(truncateText(description || '', DESC_MAX_CHARS));
+  const { stat, body } = splitLeadingStat(description || '');
+  const safeStat = stat ? escapeHtml(stat) : '';
+  const safeDesc = escapeHtml(truncateText(body, DESC_MAX_CHARS));
   const monogram = escapeHtml(monogramFromBotName(botName));
 
   const starCount = starCountForTier(tier);
@@ -281,9 +319,17 @@ function buildCardHtml({ name, series, tier, description, botName, imageDataUri,
     box-shadow: 0 4px 10px rgba(0,0,0,.35);
     position: relative; z-index: 3;
   }
+  .logoBadge {
+    flex-shrink: 0; width: 64px; height: 64px;
+    border-radius: 14px;
+    background: linear-gradient(135deg, rgba(255,255,255,.24), rgba(255,255,255,.05));
+    border: 2px solid rgba(255,255,255,.42);
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 2px 5px rgba(0,0,0,.35);
+  }
   .logo {
-    flex-shrink: 0; font-size: 46px; font-weight: 900; font-style: italic;
-    color: ${colors.textOnBanner}; text-shadow: 0 2px 3px rgba(0,0,0,.4);
+    font-size: 34px; font-weight: 900; font-style: italic;
+    color: ${colors.textOnBanner}; text-shadow: 0 1px 2px rgba(0,0,0,.4);
   }
   .bannerNameWrap {
     flex: 1; min-width: 0;
@@ -295,13 +341,25 @@ function buildCardHtml({ name, series, tier, description, botName, imageDataUri,
     text-shadow: 0 2px 4px rgba(0,0,0,.35);
   }
   .artwork {
-    height: ${ART_H}px; flex-shrink: 0; position: relative;
+    height: ${ART_H}px; flex-shrink: 0; position: relative; overflow: hidden;
+  }
+  .artworkBlur {
+    position: absolute; inset: -24px;
     background-image: url('${imageDataUri}');
-    background-size: cover; background-position: center 22%; background-repeat: no-repeat;
+    background-size: cover; background-position: center 25%; background-repeat: no-repeat;
+    filter: blur(30px) brightness(.5) saturate(1.2);
+    transform: scale(1.15);
+  }
+  .artworkMain {
+    position: absolute; top: 0; bottom: 0;
+    left: ${ART_INSET}px; right: ${ART_INSET}px;
+    background-image: url('${imageDataUri}');
+    background-size: contain; background-position: center; background-repeat: no-repeat;
+    box-shadow: 0 0 40px 8px rgba(0,0,0,.5);
   }
   .artwork::after {
     content: ''; position: absolute; inset: 0;
-    background: linear-gradient(180deg, rgba(0,0,0,.28) 0%, transparent 16%, transparent 78%, rgba(0,0,0,.55) 100%);
+    background: linear-gradient(180deg, rgba(0,0,0,.10) 0%, transparent 10%, transparent 88%, rgba(0,0,0,.18) 100%);
   }
   .divider {
     height: ${DIVIDER_H}px; flex-shrink: 0; position: relative;
@@ -317,6 +375,11 @@ function buildCardHtml({ name, series, tier, description, botName, imageDataUri,
     display: flex; flex-direction: column;
     padding: 40px 44px 32px;
     background: linear-gradient(180deg, rgba(22,22,28,.97), rgba(9,9,13,.99));
+  }
+  .cardStat {
+    flex-shrink: 0; text-align: center; margin-bottom: 14px;
+    font-size: 22px; font-weight: 800; letter-spacing: 1.5px;
+    text-transform: uppercase; color: ${colors.light}; opacity: .92;
   }
   .cardDesc {
     flex: 1; min-height: 0; overflow: hidden;
@@ -345,14 +408,15 @@ function buildCardHtml({ name, series, tier, description, botName, imageDataUri,
   <div class="card${isSSS ? ' sss' : ''}">
     <div class="cardInner">
       <div class="banner">
-        <div class="logo">${monogram}</div>
+        <div class="logoBadge"><div class="logo">${monogram}</div></div>
         <div class="bannerNameWrap" id="cardNameWrap">
           <div class="bannerName" id="cardNameText">${safeName}</div>
         </div>
       </div>
-      <div class="artwork"></div>
+      <div class="artwork"><div class="artworkBlur"></div><div class="artworkMain"></div></div>
       <div class="divider"><div class="starsRow">${starsHtml}</div></div>
       <div class="infoPanel">
+        ${safeStat ? `<div class="cardStat">${safeStat}</div>` : ''}
         <div class="cardDesc" id="cardDesc">${safeDesc}</div>
         <div class="footer">
           <div class="series">${safeSeries}</div>
@@ -617,4 +681,4 @@ async function renderCard(client, catalogue) {
   return { buffer, url: null, cached: false };
 }
 
-module.exports = { renderCard, CARD_RENDER_VERSION };
+module.exports = { renderCard, fetchImageAsDataUri, CARD_RENDER_VERSION };

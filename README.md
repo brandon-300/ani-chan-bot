@@ -95,7 +95,9 @@ The bot's owner-only admin tools (card catalogue management, testing commands, e
 | `.rules` | View this group's saved rules |
 | `.setrules [text]` | Set this group's rules (admin only) |
 | `.ping / .test` | Check the bot is online and its response latency |
-| `.stats` | Bot-wide stats: uptime, command count, groups, users, memory |
+| `.stats` | Full bot + per-group usage stats, incl. daily 8AM WAT digest (owner only, DM only) |
+| `.users [page]` | List every registered user by group, with activity status (owner only, DM only) |
+| `.deluser [number] [confirm]` | Delete a user's profile by phone number (from .users) — cards untouched; auto-cleanup also runs after 60 days idle (owner only, DM only) |
 | `.mods` | List the bot's owner and moderators |
 | `.owner` | Send the bot owner's contact card |
 | `.url` | Get this group's invite link (admin only) |
@@ -107,7 +109,7 @@ The bot's owner-only admin tools (card catalogue management, testing commands, e
 |---|---|
 | `.cards [on/off]` | Enable/disable random card drops in this group |
 | `.card [index]` | View one of your cards up close (index from .col) |
-| `.ci [name] [tier] / .cardinfo` | Look up a card's full details in the catalogue |
+| `.ci [name] [tier] / .ci [code] / .cardinfo` | Look up a card's full details — by name+tier, or by claim code |
 | `.si [series]` | Info about a card series |
 | `.ss [series]` | Your owned cards from one series |
 | `.clb` | Leaderboard by total cards owned |
@@ -116,17 +118,19 @@ The bot's owner-only admin tools (card catalogue management, testing commands, e
 | `.sslb` | Leaderboard by number of SS/SSS cards owned |
 | `.mclb` | Leaderboard by best-completed series |
 | `.slb [series]` | Leaderboard for who owns the most of one series |
-| `.deck [add\|remove\|clear] [index]` | Manage your 5-card battle deck |
+| `.deck [page]` | Visual grid image of your whole card collection — full rendered card art, 12 per page |
 | `.col` | View your full card collection, numbered |
-| `.cardshop` | Browse cards other players have listed for sale |
+| `.cardshop` | Browse cards for sale — player listings and unclaimed catalogue cards |
 | `.sellc [index] [price]` | List one of your cards for sale to other players |
+| `.buyc [code]` | Buy an unclaimed catalogue card directly at its tier price |
 | `.rc [index]` | Remove your card listing from the shop |
-| `.vs @user` | Battle another player using your decks |
 | `.claim [id]` | Claim a dropped card, or buy one from the shop |
-| `.sc @user [index] [price]` | Sell a card directly to another user |
+| `.sc @user [index] [price]` | Propose selling a card directly to another user (they must .acceptsale) |
+| `.acceptsale / .declinesale` | Respond to a pending direct-sale offer |
 | `.tc @user [idx] [idx]` | Propose a card trade with another user |
 | `.accepttrade / .declinetrade` | Respond to a pending trade offer |
-| `.lendcard / .lc` | Temporarily lend your top card to the group |
+| `.lendcard [index] / .lc` | Temporarily lend one of your cards to the group |
+| `.unlendcard [index] / .ulc` | Reclaim a lent card early instead of waiting out the hour |
 | `.fuse / .fusion` | Fuse duplicate cards into a higher-tier card |
 | `.wishlist [add\|remove] [name]` | Manage (or view) your card wishlist |
 | `.wishlb` | Leaderboard by wishlist size |
@@ -136,7 +140,6 @@ The bot's owner-only admin tools (card catalogue management, testing commands, e
 | `.remauc [id]` | Cancel one of your auctions |
 | `.stardust` | Check your stardust balance (from converting duplicates) |
 | `.anticamp` | Check your camp count — hoarding duplicates decays them over time |
-| `.cg` | Generate an image grid of your whole card collection |
 | `.tier [tier]` | View drop-rate odds for every card tier |
 | `.cs [name/series]` | Search cards by name or series |
 | `.myseries` | View your collection grouped by series, with completion status |
@@ -174,6 +177,7 @@ The bot's owner-only admin tools (card catalogue management, testing commands, e
 | `.level / .xp [@user]` | View your (or someone else's) level and XP progress |
 | `.roast [@user]` | Get roasted (or roast someone else) |
 | `.gamble [amount]` | Gamble coins on a 50/50 coin flip |
+| `.loan request/repay/status` | Take a bank loan against a staked card, repay it, or check its status |
 | `.beg` | Beg for coins (cooldown: 5 min) |
 
 ### 🎮 GAMES
@@ -287,7 +291,7 @@ All four games play with real pixel-drawn board images and support both PvP (`@m
 | `.tovn` | Convert audio to a WhatsApp voice note |
 | `.rotate [degrees]` | Rotate a replied image |
 | `.flip` | Horizontally flip a replied image |
-| `.resize [width] [height]` | Resize a replied image |
+| `.resize [width] [height]` | Resize a replied image (pixels, min 100px per side — not a percentage) |
 | `.tourl` | Upload replied media and get a direct link |
 
 ### 🌸 ANIME SFW

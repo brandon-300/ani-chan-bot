@@ -1,24 +1,12 @@
 const { CardCatalogue, OwnedCard, Auction, TradeRequest, SaleRequest } = require('../models/Card');
 const { checkAchievements, formatUnlockNotice } = require('../utils/achievements');
 const { checkTitle, formatTitleUnlockNotice } = require('../utils/titles');
-const { renderCard } = require('../utils/cardRenderer');
+const { renderCard, fetchImageAsDataUri } = require('../utils/cardRenderer');
 const { MessageMedia } = require('whatsapp-web.js');
 const User = require('../models/User');
 const Group = require('../models/Group');
 const { tierEmoji, rollTier, formatNum, pick, mentionName, mentionTag, generateUniqueCode, safeGetChat, cardValue, tierAbove, TIER_DROP_RATES, addXP, XP_REWARDS, parseAmount, boldSans, doubleStruck, cleanDescription } = require('../utils/helpers');
 const crypto = require('crypto');
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-// Same escaping used by utils/memeRender.js's HTML-rendering path — needed
-// here too now that .cg (below) builds an HTML grid via client.pupBrowser.
-function escapeHtml(str) {
-  return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
 
 // ─── Shared card media resolution — custom render, then raw image, then none ──
 // Every single-card send point (sendCardDetail, sendOwnedCardInfo, .ci's
@@ -49,6 +37,96 @@ async function getCardMedia(client, catalogue) {
     console.error('getCardMedia: raw AniList image fetch also failed:', err.message);
     return null;
   }
+}
+
+// Same idea as getCardMedia, but returns a data: URI instead of a
+// MessageMedia — for embedding an already-rendered card INSIDE another
+// Puppeteer page (the paginated collection grid inside .deck, below)
+// rather than sending it directly. This is what keeps the grid page's own
+// page.setContent() from ever touching the network: a cache-miss render
+// already returns an in-memory buffer; a cache-hit only gives a Cloudinary
+// URL, so that one case fetches it once via the same retry-safe helper the
+// main renderer uses for AniList — never via a live <img src="url"> inside
+// the grid page itself, which is exactly what made the old .cg (the
+// earlier, raw-AniList-image grid command .deck now replaces) time out on
+// a bad connection.
+// Never throws — returns null on any failure so one bad card just gets
+// skipped from the grid instead of taking the whole thing down.
+async function getCardPngDataUri(client, catalogue) {
+  if (!catalogue?.imageUrl) return null;
+  try {
+    const result = await renderCard(client, catalogue);
+    if (result.cached) {
+      return await fetchImageAsDataUri(result.url);
+    }
+    return `data:image/png;base64,${result.buffer.toString('base64')}`;
+  } catch (err) {
+    console.error('getCardPngDataUri: render failed, skipping this card:', err.message);
+    return null;
+  }
+}
+
+const GRID_CELL_W = 260;
+const GRID_CELL_H = 347; // matches the card renderer's fixed 1080x1440 (3:4) ratio, so object-fit:cover never crops
+const GRID_COLS = 3;
+const GRID_PER_PAGE = 12; // 3 cols x 4 rows
+
+// cells are { uri, index } — uri is already a finished, full trading-card
+// PNG (from getCardPngDataUri), index is that card's position in .col/
+// .card numbering. This just lays them out in a grid with a small badge
+// showing that index, so a viewer can jump straight to `.card [index]`
+// for a closer look. No other text/colors/escaping needed here at all;
+// all of that already happened once, inside each card's own render.
+//
+// The index badge sits in the top-RIGHT corner of each cell, not top-left
+// — every card's own render (utils/cardRenderer.js) already draws a small
+// tier-letter badge in ITS top-left corner (the "logoBadge"), and an idx
+// badge placed on top of that just hid it. Top-right is empty on every
+// card's own design, so nothing gets covered.
+//
+// The grid backdrop is a fixed, hand-tuned CSS gradient (a few overlapping
+// radial blobs + a scattering of tiny star dots) rather than a photo or
+// texture file — same reasoning as everywhere else in this renderer: the
+// grid page must never touch the network (see getCardPngDataUri's header
+// comment above for why that mattered for the old .cg), and Chromium
+// renders gradients/radial-gradients natively with zero extra cost, so
+// there's no reason to reach for an actual image file here either.
+function buildCollectionGridHtml(cells) {
+  const cols = Math.min(GRID_COLS, cells.length);
+  const cellsHtml = cells
+    .map(({ uri, index }) => `<div class="cell"><span class="idx">#${index}</span><img src="${uri}"></div>`)
+    .join('');
+  return `<!DOCTYPE html>
+<html>
+<head>
+<style>
+  html, body {
+    margin: 0; padding: 24px; box-sizing: border-box;
+    background-color: #0a0714;
+    background-image:
+      radial-gradient(circle at 18% 12%, rgba(168,85,247,.38), transparent 52%),
+      radial-gradient(circle at 82% 20%, rgba(56,110,255,.32), transparent 50%),
+      radial-gradient(circle at 30% 92%, rgba(236,72,153,.24), transparent 55%),
+      radial-gradient(circle at 88% 88%, rgba(99,60,220,.28), transparent 50%),
+      radial-gradient(1.5px 1.5px at 12% 30%, rgba(255,255,255,.85), transparent 100%),
+      radial-gradient(1.5px 1.5px at 40% 8%, rgba(255,255,255,.7), transparent 100%),
+      radial-gradient(1.5px 1.5px at 65% 45%, rgba(255,255,255,.8), transparent 100%),
+      radial-gradient(1.5px 1.5px at 90% 15%, rgba(255,255,255,.65), transparent 100%),
+      radial-gradient(1.5px 1.5px at 25% 70%, rgba(255,255,255,.75), transparent 100%),
+      radial-gradient(1.5px 1.5px at 78% 65%, rgba(255,255,255,.6), transparent 100%),
+      radial-gradient(1.5px 1.5px at 55% 90%, rgba(255,255,255,.7), transparent 100%),
+      linear-gradient(160deg, #1b1035 0%, #100c24 45%, #0a0713 100%);
+    background-repeat: no-repeat;
+    background-size: cover;
+  }
+  .grid { display: grid; grid-template-columns: repeat(${cols}, ${GRID_CELL_W}px); gap: 20px; justify-content: center; }
+  .cell { position: relative; width: ${GRID_CELL_W}px; height: ${GRID_CELL_H}px; border-radius: 16px; overflow: hidden; box-shadow: 0 6px 16px rgba(0,0,0,.55); }
+  .cell img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .idx { position: absolute; top: 8px; right: 8px; z-index: 2; background: rgba(0,0,0,.65); color: #fff; font-weight: 900; font-size: 22px; line-height: 1; padding: 5px 10px; border-radius: 8px; font-family: Arial, Helvetica, sans-serif; }
+</style>
+</head>
+<body><div class="grid">${cellsHtml}</div></body>
+</html>`;
 }
 
 async function getUserCards(userId) {
@@ -164,20 +242,6 @@ ${tierEmoji(tier)} *${name}*
     }
   }
   return msg.reply(caption, undefined, { mentions });
-}
-
-// Resolves a user's deck (array of OwnedCard _id strings) into full card
-// docs, in the exact order they were added — Mongo's $in query does NOT
-// preserve array order, so this can't just be a plain .find(). Stale ids
-// (the card was traded/sold away after being added to the deck) come back
-// as null rather than being dropped, so slot numbers always line up with
-// real array positions — that matters because .deck remove [index] trusts
-// those same positions.
-async function getDeckCards(deckIds) {
-  if (!deckIds.length) return [];
-  const cards = await OwnedCard.find({ _id: { $in: deckIds } });
-  const byId = new Map(cards.map(c => [c._id.toString(), c]));
-  return deckIds.map(id => byId.get(id) || null);
 }
 
 // ─── Drop a Random Card in Group ─────────────────────────────────────────────
@@ -567,89 +631,99 @@ const cards = await OwnedCard.find({
     msg.reply(text, undefined, { mentions: ranked.map(([id]) => id) });
   },
 
-  // .deck [add|remove|clear] [index] — view/manage your battle deck (max 5 cards)
+  // .deck [page] — visual grid image of your whole card collection,
+  // rendered with the same finished, professionally-styled card art every
+  // other card view uses (renderCard()/getCardPngDataUri, utils/
+  // cardRenderer.js) — never raw AniList images. This is the direct
+  // replacement for the old .cg (which rendered a similar grid, but from
+  // raw AniList image URLs with a plain tier-colored fallback tile) AND
+  // for the old .deck (a separate, curatable 5-card "battle deck" with
+  // .deck add/remove/clear subcommands). That battle-deck concept is gone
+  // completely: there is no more way to add/remove/clear cards into a
+  // deck, no more per-user deck array, and no more .vs battle command that
+  // read from one. .deck is now purely a paginated gallery of every card
+  // you own, full stop.
+  //
+  // 12 cards per page (3 cols x 4 rows). Rendered sequentially, not in
+  // parallel — this phone only has so much RAM/CPU for Chromium, and a
+  // slow render on a bad connection should just be slow, not compound
+  // into several timing out together. First-ever view of an unrendered
+  // card is the slow part (Puppeteer + hair-color extraction + Cloudinary
+  // upload, inside renderCard()); every view after that is a fast
+  // Cloudinary URL fetch, same caching every other card view already gets.
   async deck(client, msg, args) {
+    if (!client.pupBrowser) {
+      return msg.reply('❌ Card grid needs the WhatsApp browser session, which isn\'t ready yet — try again in a moment.');
+    }
+
     const contact = await msg.getContact();
     const userId = contact.id._serialized;
-    const user = await User.findOrCreate(userId, contact.pushname);
-    const sub = args[0]?.toLowerCase();
+    const cards = await getUserCards(userId); // already sorted: tier asc (lowest first), then name
+    if (!cards.length) return msg.reply('❌ You have no cards yet. Wait for one to drop and use *.claim*!');
 
-    // .deck add [index] — index = position in your full collection (.col / .card)
-    if (sub === 'add') {
-      const index = parseInt(args[1]);
-      if (!index || index < 1) {
-        return msg.reply('❌ Usage: .deck add [index]\n\nUse the position shown in *.col* or *.card [index]*.');
-      }
-      if (user.deck.length >= 5) {
-        return msg.reply('❌ Your deck is full (5/5). Use *.deck remove [index]* to make room first.');
-      }
+    const totalPages = Math.max(1, Math.ceil(cards.length / GRID_PER_PAGE));
+    let page = parseInt(args[0]) || 1;
+    if (page < 1) page = 1;
+    if (page > totalPages) page = totalPages;
 
-      const card = await getCardByIndex(userId, index);
-      if (!card) {
-        const total = (await getUserCards(userId)).length;
-        return msg.reply(`❌ No card at position ${index}. You have ${total} card(s) — check *.col*.`);
-      }
+    const startIdx = (page - 1) * GRID_PER_PAGE;
+    const pageCards = cards.slice(startIdx, startIdx + GRID_PER_PAGE);
 
-      const cardId = card._id.toString();
-      if (user.deck.includes(cardId)) {
-        return msg.reply(`❌ *${card.name}* is already in your deck.`);
-      }
+    const catalogueIds = [...new Set(pageCards.map(c => c.catalogueId).filter(Boolean))];
+    const catalogues = catalogueIds.length
+      ? await CardCatalogue.find({ cardId: { $in: catalogueIds } })
+      : [];
+    const catalogueById = new Map(catalogues.map(c => [c.cardId, c]));
 
-      user.deck.push(cardId);
-      await user.save();
-      return msg.reply(`✅ Added ${tierEmoji(card.tier)} *${card.name}* to your deck (${user.deck.length}/5).`);
-    }
+    msg.reply(`🖼️ Rendering your card grid (page ${page}/${totalPages})...`);
 
-    // .deck remove [index] — index = slot number shown by plain .deck (1-5)
-    if (sub === 'remove') {
-      const index = parseInt(args[1]);
-      if (!index || index < 1) {
-        return msg.reply('❌ Usage: .deck remove [index]\n\nUse the position shown in *.deck*.');
-      }
-      if (!user.deck.length) return msg.reply('❌ Your deck is already empty.');
-
-      const targetId = user.deck[index - 1];
-      if (!targetId) {
-        return msg.reply(`❌ No card in deck slot ${index}. You have ${user.deck.length} card(s) in your deck.`);
-      }
-
-      const removedCard = await OwnedCard.findById(targetId).catch(() => null);
-      user.deck = user.deck.filter(id => id !== targetId);
-      await user.save();
-
-      const label = removedCard ? `${tierEmoji(removedCard.tier)} *${removedCard.name}*` : 'that card';
-      return msg.reply(`✅ Removed ${label} from your deck (${user.deck.length}/5).`);
-    }
-
-    // .deck clear — empty the whole deck
-    if (sub === 'clear') {
-      if (!user.deck.length) return msg.reply('❌ Your deck is already empty.');
-      user.deck = [];
-      await user.save();
-      return msg.reply('✅ Your deck has been cleared.');
-    }
-
-    // .deck (no args) — view, in the order cards were added
-    if (!user.deck.length) return msg.reply('❌ Your deck is empty. Use *.deck add [index]* (see *.col* for positions) to add cards.');
-
-    const cards = await getDeckCards(user.deck);
-    let text = `⚔️ *Your Deck*\n\n`;
-    let power = 0;
-    let staleCount = 0;
-    cards.forEach((c, i) => {
-      if (c) {
-        text += `${i + 1}. ${tierEmoji(c.tier)} ${c.name} — ${c.tier}\n`;
-        power += ({ C: 10, B: 25, A: 50, S: 100, SS: 200, SSS: 500 }[c.tier] || 0);
+    // cells only ever holds successes — a missing catalogue link or a
+    // failed render just drops that one card from the grid (counted in
+    // renderFailures for the caption) rather than breaking the page.
+    const cells = [];
+    let renderFailures = 0;
+    for (let i = 0; i < pageCards.length; i++) {
+      const c = pageCards[i];
+      const catalogue = c.catalogueId ? catalogueById.get(c.catalogueId) : null;
+      if (!catalogue) { renderFailures++; continue; }
+      const uri = await getCardPngDataUri(client, catalogue);
+      if (uri) {
+        cells.push({ uri, index: startIdx + i + 1 });
       } else {
-        text += `${i + 1}. ⚠️ Unavailable (likely traded/sold) — use *.deck remove ${i + 1}* to clear this slot\n`;
-        staleCount++;
+        renderFailures++;
       }
-    });
-    text += `\n⚡ Total Power: ${power}`;
-    if (staleCount) {
-      text += `\n\n${staleCount} slot(s) above need cleanup — the cards were traded/sold away after being added.`;
     }
-    msg.reply(text);
+
+    if (!cells.length) {
+      return msg.reply('❌ Card grid render failed for every card on this page (likely a network timeout loading card art). Try again, or use *.col* for a text list in the meantime.');
+    }
+
+    try {
+      const cols = Math.min(GRID_COLS, cells.length);
+      const rows = Math.ceil(cells.length / cols);
+      const pad = 24, gap = 20;
+      const width = cols * GRID_CELL_W + (cols - 1) * gap + pad * 2;
+      const height = rows * GRID_CELL_H + (rows - 1) * gap + pad * 2;
+
+      const gridPage = await client.pupBrowser.newPage();
+      try {
+        await gridPage.setViewport({ width, height, deviceScaleFactor: 1 });
+        await gridPage.setContent(buildCollectionGridHtml(cells), { waitUntil: 'load', timeout: 15000 });
+        const buffer = await gridPage.screenshot({ type: 'png' });
+        const media = new MessageMedia('image/png', buffer.toString('base64'), 'deck.png');
+
+        const statusParts = [`${cells.length}/${pageCards.length} rendered`];
+        if (renderFailures) statusParts.push(`${renderFailures} failed (missing art or a render/network error)`);
+        const caption = `🎴 *Your Cards — Page ${page}/${totalPages}*\n${statusParts.join(' • ')}\n\nUse *.deck ${page < totalPages ? page + 1 : 1}* for the next page, or *.card [index]* to view one card in detail.`;
+
+        return msg.reply(media, undefined, { caption });
+      } finally {
+        await gridPage.close().catch(() => {});
+      }
+    } catch (err) {
+      console.error('.deck: grid render failed:', err.message);
+      return msg.reply('❌ Card grid render failed (likely a network timeout loading card art). Try again, or use *.col* for a text list in the meantime.');
+    }
   },
 
   // .col — view your collection
@@ -835,37 +909,6 @@ const cards = await OwnedCard.find({
     card.price = 0;
     await card.save();
     msg.reply(`✅ *${card.name}* removed from shop.`);
-  },
-
-  // .vs — battle with decks
-  async vs(client, msg, args) {
-    const contact = await msg.getContact();
-    const mentioned = await msg.getMentions();
-    if (!mentioned.length) return msg.reply('❌ Mention someone to battle! .vs @user');
-
-    const opponent = mentioned[0];
-    const user = await User.findOrCreate(contact.id._serialized);
-    const opp = await User.findOrCreate(opponent.id._serialized);
-
-    const userCards = await OwnedCard.find({ _id: { $in: user.deck } });
-    const oppCards = await OwnedCard.find({ _id: { $in: opp.deck } });
-
-    const tierVal = { C: 10, B: 25, A: 50, S: 100, SS: 200, SSS: 500 };
-    const userPower = userCards.reduce((s, c) => s + (tierVal[c.tier] || 0), 0) + Math.random() * 50;
-    const oppPower = oppCards.reduce((s, c) => s + (tierVal[c.tier] || 0), 0) + Math.random() * 50;
-
-    const winner = userPower >= oppPower ? contact.pushname : opponent.pushname;
-    const prize = 200;
-
-    if (userPower >= oppPower) {
-      user.coins += prize; await user.save();
-    } else {
-      opp.coins += prize; await opp.save();
-    }
-
-    msg.reply(
-      `⚔️ *Card Battle!*\n\n🔵 ${contact.pushname} Power: ${Math.round(userPower)}\n🔴 ${opponent.pushname} Power: ${Math.round(oppPower)}\n\n🏆 *Winner: ${winner}* (+${prize} coins)`
-    );
   },
 
   // .claim [id] — claim a dropped card or buy from shop
@@ -1749,170 +1792,5 @@ if (existing)
     });
     text += `\nUse *.ss [series]* to see your cards from one series, or *.si [series]* for the full catalogue.`;
     msg.reply(text);
-  },
-
-  // .cg [page] — visual grid image of your collection, rendered as an HTML
-  // page and screenshotted via the same already-running Chromium instance
-  // whatsapp-web.js keeps open for the WhatsApp session (client.pupBrowser)
-  // — same technique utils/memeRender.js uses, for the same reason: this
-  // project deliberately has no canvas/sharp/jimp dependency (sharp already
-  // failed to install as a native binary on this Termux/Android setup — see
-  // the note at the top of commands/games/chessBoardImage.js), so reusing
-  // the browser that's already open costs zero new npm installs.
-  //
-  // Card art loads directly from each card's catalogue imageUrl (AniList),
-  // over whatever network the phone has at render time — given how unstable
-  // that can get, every image tile has an onerror fallback (a plain
-  // tier-colored tile) so one slow/broken image never breaks the whole grid,
-  // and the overall render has a hard timeout so a bad connection fails
-  // loudly with a clear error instead of hanging the command queue.
-  //
-  // UNTESTED against the real device — this is the first command in the
-  // project compositing MULTIPLE external network images into one grid via
-  // Puppeteer (memeRender.js only ever handles one attached image). Please
-  // test with a small collection first and share the pm2 logs either way —
-  // if page.setContent's timeout or the network proves too unreliable in
-  // practice, the fix is almost certainly just lowering CG_PER_PAGE/timeout,
-  // not a rewrite.
-  async cg(client, msg, args) {
-    if (!client.pupBrowser) {
-      return msg.reply('❌ Card grid needs the WhatsApp browser session, which isn\'t ready yet — try again in a moment.');
-    }
-
-    const contact = await msg.getContact();
-    const userId = contact.id._serialized;
-    const cards = await getUserCards(userId); // already sorted: tier asc (lowest first), then name
-    if (!cards.length) return msg.reply('❌ You have no cards yet. Wait for one to drop and use *.claim*!');
-
-    const CG_COLS = 3;
-    const CG_PER_PAGE = 9;
-    const CG_CELL_W = 190;
-    const CG_CELL_H = 250;
-    const CG_TIMEOUT_MS = 20000;
-    const TIER_COLORS = { C: '#9e9e9e', B: '#4caf50', A: '#2196f3', S: '#ffc107', SS: '#ff9800', SSS: '#f44336' };
-
-    const totalPages = Math.max(1, Math.ceil(cards.length / CG_PER_PAGE));
-    let page = parseInt(args[0]) || 1;
-    if (page < 1) page = 1;
-    if (page > totalPages) page = totalPages;
-
-    const startIdx = (page - 1) * CG_PER_PAGE;
-    const pageCards = cards.slice(startIdx, startIdx + CG_PER_PAGE);
-
-    const catalogueIds = [...new Set(pageCards.map(c => c.catalogueId).filter(Boolean))];
-    const catalogues = catalogueIds.length
-      ? await CardCatalogue.find({ cardId: { $in: catalogueIds } })
-      : [];
-    const imageByCatalogueId = new Map(catalogues.map(c => [c.cardId, c.imageUrl]));
-
-    msg.reply(`🖼️ Rendering your card grid (page ${page}/${totalPages})...`);
-
-    const cells = pageCards.map((c, i) => ({
-      index: startIdx + i + 1,
-      name: c.name,
-      tier: c.tier,
-      imageUrl: (c.catalogueId && imageByCatalogueId.get(c.catalogueId)) || '',
-    }));
-
-    const rows = Math.ceil(cells.length / CG_COLS);
-    const width = CG_COLS * CG_CELL_W;
-    const height = rows * CG_CELL_H + 70; // + header
-
-    const cellsHtml = cells.map(c => {
-      const color = TIER_COLORS[c.tier] || '#9e9e9e';
-      if (c.imageUrl) {
-        // Had a saved URL — if THIS still shows a fallback tile after
-        // rendering, the URL itself failed to load (network/CDN issue), not
-        // a missing-data issue. Distinct fallback text + a data attribute
-        // the load-stats check below reads, so the two failure modes never
-        // look identical.
-        return `
-      <div class="cell">
-        <div class="imgwrap" style="border-color:${color}">
-          <img src="${escapeHtml(c.imageUrl)}" data-had-url="1" onerror="this.style.display='none';this.nextElementSibling.style.display='flex';">
-          <div class="fallback" style="display:none;background:${color}">
-            <div>${c.tier}</div><div class="fallback-note">⚠️ load failed</div>
-          </div>
-        </div>
-        <div class="label">
-          <span class="tierpill" style="background:${color}">${c.tier}</span>
-          <span class="name">#${c.index} ${escapeHtml(c.name)}</span>
-        </div>
-      </div>`;
-      }
-      return `
-      <div class="cell">
-        <div class="imgwrap" style="border-color:${color}">
-          <div class="fallback" style="display:flex;background:${color}">
-            <div>${c.tier}</div><div class="fallback-note">no image saved</div>
-          </div>
-        </div>
-        <div class="label">
-          <span class="tierpill" style="background:${color}">${c.tier}</span>
-          <span class="name">#${c.index} ${escapeHtml(c.name)}</span>
-        </div>
-      </div>`;
-    }).join('');
-
-    const html = `<!DOCTYPE html>
-<html>
-<head>
-<style>
-  html, body { margin: 0; padding: 0; background: #1a1a1a; font-family: Arial, Helvetica, sans-serif; }
-  .header { color: #fff; text-align: center; padding: 14px 0 6px; font-size: 20px; font-weight: 900; }
-  .grid { display: grid; grid-template-columns: repeat(${CG_COLS}, ${CG_CELL_W}px); justify-content: center; }
-  .cell { width: ${CG_CELL_W}px; height: ${CG_CELL_H}px; box-sizing: border-box; padding: 6px; position: relative; }
-  .imgwrap { width: 100%; height: 74%; border-radius: 8px; border: 3px solid; overflow: hidden; position: relative; background: #000; }
-  .imgwrap img { width: 100%; height: 100%; object-fit: cover; display: block; }
-  .fallback { width: 100%; height: 100%; flex-direction: column; align-items: center; justify-content: center; color: #fff; font-size: 28px; font-weight: 900; gap: 4px; }
-  .fallback-note { font-size: 11px; font-weight: 600; opacity: .85; }
-  .label { display: flex; align-items: center; justify-content: center; gap: 6px; margin-top: 7px; }
-  .tierpill { color: #fff; font-weight: 900; font-size: 14px; padding: 2px 8px; border-radius: 6px; flex-shrink: 0; text-shadow: 0 1px 2px rgba(0,0,0,.6); }
-  .name { color: #fff; font-size: 13px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 120px; }
-</style>
-</head>
-<body>
-  <div class="header">🎴 Card Grid — Page ${page}/${totalPages}</div>
-  <div class="grid">${cellsHtml}</div>
-</body>
-</html>`;
-
-    const page_ = await client.pupBrowser.newPage();
-    try {
-      await page_.setViewport({ width, height, deviceScaleFactor: 1 });
-      await page_.setContent(html, { waitUntil: 'load', timeout: CG_TIMEOUT_MS });
-
-      // window's 'load' event only fires once every <img> has settled
-      // (loaded or errored), so this reading is reliable right after
-      // setContent resolves — no extra wait needed.
-      const loadStats = await page_.evaluate(() => {
-        const imgs = Array.from(document.querySelectorAll('img[data-had-url]'));
-        let loaded = 0, failedToLoad = 0;
-        imgs.forEach(img => {
-          if (img.complete && img.naturalWidth > 0) loaded++;
-          else failedToLoad++;
-        });
-        return { loaded, failedToLoad };
-      });
-
-      const buffer = await page_.screenshot({ type: 'png' });
-
-      const media = new MessageMedia('image/png', buffer.toString('base64'), 'cardgrid.png');
-      const chat = await safeGetChat(msg);
-      if (!chat) return;
-
-      const noUrlCount = cells.filter(c => !c.imageUrl).length;
-      const statusParts = [`${loadStats.loaded}/${cells.length} loaded`];
-      if (loadStats.failedToLoad) statusParts.push(`${loadStats.failedToLoad} had a saved image but failed to load (network/CDN issue)`);
-      if (noUrlCount) statusParts.push(`${noUrlCount} have no image saved (.backfillimages or .editcard)`);
-
-      const caption = `🎴 *Card Grid — Page ${page}/${totalPages}*\n${statusParts.join(' • ')}\n\nUse *.cg ${page < totalPages ? page + 1 : 1}* for the next page, or *.card [index]* to view one card in detail.`;
-      await chat.sendMessage(media, { caption });
-    } catch (err) {
-      console.error('Card grid render error:', err.message);
-      msg.reply('❌ Card grid render failed (likely a network timeout loading card art). Try again, or use *.col* for a text list in the meantime.');
-    } finally {
-      await page_.close().catch(() => {});
-    }
   },
 };

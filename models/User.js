@@ -17,7 +17,6 @@ const UserSchema = new mongoose.Schema({
   lastBeg: { type: Number, default: 0 },
   inventory: { type: [String], default: [] },
   cards: { type: [String], default: [] },       // array of Card _id strings
-  deck: { type: [String], default: [] },         // up to 5 card ids
   warns: { type: Number, default: 0 },
   nsfwEnabled: { type: Boolean, default: false },
   guildId: { type: String, default: null },

@@ -406,7 +406,7 @@ async lottery(client, msg, args) {
     // ever writes to (not .claim, not .sc, not .tc/accepttrade), so it was
     // permanently stuck at 0 regardless of how many cards someone actually
     // owned. The real source of truth for ownership is the OwnedCard
-    // collection (same place .col and .cg read from), so count from there
+    // collection (same place .col reads from), so count from there
     // instead.
     const cardCount = await OwnedCard.countDocuments({ ownerId: targetId });
 
@@ -547,7 +547,7 @@ async lottery(client, msg, args) {
           await OwnedCard.create({
             ownerId: contact.id._serialized,
             // catalogueId must be the 6-char CardCatalogue.cardId, not the
-            // Mongo _id — every join (.col, .cg, .ci) looks cards up via
+            // Mongo _id — every join (.col, .ci, .deck) looks cards up via
             // `CardCatalogue.findOne({ cardId: owned.catalogueId })`, so
             // storing c._id here silently broke images/series lookups for
             // anything pulled from a Card Pack specifically.

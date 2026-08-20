@@ -34,7 +34,7 @@ async function generateCardId() {
 
 // Same ownership query + sort as commands/cards.js's (private, unexported)
 // getUserCards/getCardByIndex — duplicated here rather than importing across
-// files, so .diagcard's numbering lines up exactly with .col/.cg/.card.
+// files, so .diagcard's numbering lines up exactly with .col/.card.
 async function getOwnedCardByIndex(userId, index) {
   const cards = await OwnedCard.find({ ownerId: userId });
   cards.sort((a, b) => cardValue(a.tier) - cardValue(b.tier) || a.name.localeCompare(b.name));
@@ -569,9 +569,9 @@ module.exports = {
 
   // .backfillimages — fixes catalogue entries that predate the AniList
   // pipeline. utils/seedCards.js (the original bulk-seed script) only ever
-  // wrote name/series/tier — no anilistId or imageUrl — which is why .cg
-  // (card grid) and .card/.ci show blank tiles for those cards instead of
-  // real art. migrateCardIds.js was run separately at some point and
+  // wrote name/series/tier — no anilistId or imageUrl — which is why
+  // .card/.ci/.deck fall back to a text-only reply for those cards instead
+  // of the rendered art (utils/cardRenderer.js requires imageUrl). migrateCardIds.js was run separately at some point and
   // already gave every catalogue entry a cardId (and fixed up matching
   // OwnedCard.catalogueId links to it), so cardId is NOT a useful signal
   // here — anilistId is: it's only ever set by createCardFromAniList
@@ -830,7 +830,7 @@ module.exports = {
   },
 
   // .diagcard <index> — raw diagnostic dump for one of YOUR owned cards
-  // (same numbering as .col/.cg/.card). Answers, with no guessing: what
+  // (same numbering as .col/.card). Answers, with no guessing: what
   // catalogueId is actually stored on the OwnedCard doc, whether that id
   // resolves to a real CardCatalogue row at all, what that row's anilistId/
   // imageUrl actually are, and — the real duplicate check — every catalogue
@@ -842,7 +842,7 @@ module.exports = {
 
     const index = parseInt(args[0]);
     if (!index || index < 1) {
-      return msg.reply('❌ Usage: .diagcard [index] — same numbering as .col/.cg/.card.');
+      return msg.reply('❌ Usage: .diagcard [index] — same numbering as .col/.card.');
     }
 
     const contact = await msg.getContact();
