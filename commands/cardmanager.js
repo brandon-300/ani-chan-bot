@@ -681,26 +681,29 @@ module.exports = {
   // .upgradeimages — replaces AniList art (utils/cardRenderer.js already
   // requests AniList's biggest field, image.large — this isn't a smaller-
   // field bug, AniList's own database is just inconsistent quality/crop for
-  // a lot of characters) with Danbooru art (utils/danbooru.js), which is
-  // generally sharper and better-composed for the same character.
+  // a lot of characters) with booru art (utils/danbooru.js: Danbooru first,
+  // Gelbooru as a fallback for characters Danbooru has nothing usable for),
+  // which is generally sharper and better-composed for the same character.
   //
   // Unlike .backfillimages, this does NOT skip on an uncertain series
   // match — findCharacterArtwork() already picks its single best guess
   // (see that function's own comment for exactly how, and why a strict
-  // series check the way AniList gets one isn't reliable for Danbooru's
-  // tag slugs) and this applies it automatically. That's a deliberate
-  // choice, not an oversight: reviewing 300+ individual matches by hand
-  // isn't practical, so every card gets imageSource: 'danbooru' + the
-  // exact tag that was used, so a spot-check later has something concrete
-  // to check against instead of having to re-derive what changed.
+  // series check the way AniList gets one isn't reliable for booru tag
+  // slugs) and this applies it automatically. That's a deliberate choice,
+  // not an oversight: reviewing 300+ individual matches by hand isn't
+  // practical, so every card gets imageSource set to whichever source
+  // actually supplied the art, plus the exact tag that was used, so a
+  // spot-check later has something concrete to check against instead of
+  // having to re-derive what changed.
   //
   // Only touches cards still on imageSource: 'anilist' (the schema
   // default), so re-running this after a partial run — or after adding
   // new cards later — only processes what's left, same "run it again to
-  // keep going" shape as .backfillimages. Capped at 25/run: each card costs
-  // 2 Danbooru requests (tag lookup + post search), and Danbooru's own
-  // anonymous rate limit is ~500 reads/hour — well inside that even run a
-  // few times back to back, but still slow enough on a phone-class
+  // keep going" shape as .backfillimages. Capped at 25/run: each card can
+  // cost several Danbooru/Gelbooru requests (tag lookup + up to a few post
+  // searches, doubled if it has to fall back), and both sites' anonymous
+  // rate limits are generous enough that even running this a few times back
+  // to back stays well inside them — but still slow enough on a phone-class
   // connection that one call shouldn't try to do all 300+ at once.
   async upgradeimages(client, msg, args) {
     if (!(await checkOwner(msg))) return;
@@ -711,10 +714,10 @@ module.exports = {
     }).limit(BATCH_LIMIT);
 
     if (!pending.length) {
-      return msg.reply('✅ Every catalogue card is already on Danbooru art — nothing left to upgrade.');
+      return msg.reply('✅ Every catalogue card is already on booru art — nothing left to upgrade.');
     }
 
-    await msg.reply(`🖼️ Upgrading images for ${pending.length} card(s) via Danbooru... this'll take a bit, hang tight.`);
+    await msg.reply(`🖼️ Upgrading images for ${pending.length} card(s) via Danbooru (Gelbooru fallback)... this'll take a bit, hang tight.`);
 
     const applied = [];
     const skipped = [];
@@ -723,13 +726,13 @@ module.exports = {
       try {
         const art = await findCharacterArtwork(doc.name);
         if (!art) {
-          skipped.push(`${doc.name} [${doc.cardId}] — no Danbooru match found; left on AniList art`);
+          skipped.push(`${doc.name} [${doc.cardId}] — no match on Danbooru or Gelbooru; left on AniList art`);
           await sleep(500);
           continue;
         }
 
         doc.imageUrl = art.url;
-        doc.imageSource = 'danbooru';
+        doc.imageSource = art.source || 'danbooru';
         // Same cache-invalidation as .editcard — imageUrl is one of the
         // fields the renderer draws from, so the cached PNG is now stale.
         doc.renderedUrl = null;
@@ -737,11 +740,11 @@ module.exports = {
         doc.renderedAt = null;
         await doc.save();
 
-        applied.push(`✅ ${doc.name} [${doc.cardId}] — matched tag "${art.tagUsed}" (score ${art.score})`);
+        applied.push(`✅ ${doc.name} [${doc.cardId}] — matched ${art.source} tag "${art.tagUsed}" (score ${art.score})`);
       } catch (err) {
         skipped.push(`${doc.name} [${doc.cardId}] — lookup failed (${err.message})`);
       }
-      await sleep(500); // be a good citizen on Danbooru's shared free tier
+      await sleep(500); // be a good citizen on both sites' shared free tiers
     }
 
     const remainingUpgrade = await CardCatalogue.countDocuments({
@@ -750,9 +753,9 @@ module.exports = {
 
     let upgradeReply = `🖼️ *Image Upgrade Complete*\n\n✅ Upgraded: ${applied.length}\n⚠️ No match: ${skipped.length}\n`;
     if (applied.length) upgradeReply += `\n*Upgraded:*\n${applied.join('\n')}`;
-    if (skipped.length) upgradeReply += `\n\n*No Danbooru match:*\n${skipped.join('\n')}`;
+    if (skipped.length) upgradeReply += `\n\n*No match:*\n${skipped.join('\n')}`;
     if (remainingUpgrade > 0) upgradeReply += `\n\n📦 ${remainingUpgrade} more still on AniList art — run *.upgradeimages* again to keep going.`;
-    upgradeReply += `\n\nSpot-check any of these with *.ci [name]* (add the tier too if that name matches more than one card) — each upgraded card's Danbooru tag is listed above if something looks off.`;
+    upgradeReply += `\n\nSpot-check any of these with *.ci [code]* or *.ci [name]* (add the tier too if that name matches more than one card) — each upgraded card's source tag is listed above if something looks off.`;
 
     msg.reply(upgradeReply.slice(0, 4000));
   },

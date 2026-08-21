@@ -1,0 +1,2240 @@
+[
+  {
+    "cardId": "5Z5DXD",
+    "oldName": "Rem",
+    "oldSeries": "Re:Zero",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "WRY79P",
+    "oldName": "Emilia",
+    "oldSeries": "Re:Zero",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "YBZM8Y",
+    "oldName": "Beatrice",
+    "oldSeries": "Re:Zero",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "CBRR8S",
+    "oldName": "Asuna",
+    "oldSeries": "Sword Art Online",
+    "newName": "Asuna Yuuki",
+    "newSeries": "Sword Art Online",
+    "status": "proposed"
+  },
+  {
+    "cardId": "Y5RU4A",
+    "oldName": "Kirito",
+    "oldSeries": "Sword Art Online",
+    "newName": "Kazuto Kirigaya",
+    "newSeries": "Sword Art Online",
+    "status": "proposed"
+  },
+  {
+    "cardId": "9FR8JN",
+    "oldName": "Levi",
+    "oldSeries": "Attack on Titan",
+    "newName": "Levi Ackerman",
+    "newSeries": "Attack on Titan",
+    "status": "proposed"
+  },
+  {
+    "cardId": "18X66U",
+    "oldName": "Mikasa",
+    "oldSeries": "Attack on Titan",
+    "newName": "Mikasa Ackerman",
+    "newSeries": "Attack on Titan",
+    "status": "proposed"
+  },
+  {
+    "cardId": "3XKPYZ",
+    "oldName": "Eren",
+    "oldSeries": "Attack on Titan",
+    "newName": "Eren Yeager",
+    "newSeries": "Attack on Titan",
+    "status": "proposed"
+  },
+  {
+    "cardId": "LYK9XA",
+    "oldName": "Naruto",
+    "oldSeries": "Naruto",
+    "newName": "Naruto Uzumaki",
+    "newSeries": "Naruto",
+    "status": "proposed"
+  },
+  {
+    "cardId": "H94DY6",
+    "oldName": "Sasuke",
+    "oldSeries": "Naruto",
+    "newName": "Sasuke Uchiha",
+    "newSeries": "Naruto",
+    "status": "proposed"
+  },
+  {
+    "cardId": "0YPRVW",
+    "oldName": "Goku",
+    "oldSeries": "Dragon Ball Z",
+    "newName": "Son Goku",
+    "newSeries": "Dragon Ball Z",
+    "status": "proposed"
+  },
+  {
+    "cardId": "ZOB5XN",
+    "oldName": "Vegeta",
+    "oldSeries": "Dragon Ball Z",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "VB5FTI",
+    "oldName": "Frieza",
+    "oldSeries": "Dragon Ball Z",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "Y2UFQ1",
+    "oldName": "Luffy",
+    "oldSeries": "One Piece",
+    "newName": "Monkey D. Luffy",
+    "newSeries": "One Piece",
+    "status": "proposed"
+  },
+  {
+    "cardId": "UFU7EF",
+    "oldName": "Zoro",
+    "oldSeries": "One Piece",
+    "newName": "Roronoa Zoro",
+    "newSeries": "One Piece",
+    "status": "proposed"
+  },
+  {
+    "cardId": "EROTZJ",
+    "oldName": "Nami",
+    "oldSeries": "One Piece",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "P9M401",
+    "oldName": "Zero Two",
+    "oldSeries": "Darling in the FranXX",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "V9WIYD",
+    "oldName": "Ichigo",
+    "oldSeries": "Darling in the FranXX",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "GJQAIO",
+    "oldName": "Aqua",
+    "oldSeries": "KonoSuba",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "BZOL31",
+    "oldName": "Megumin",
+    "oldSeries": "KonoSuba",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "1UAKOJ",
+    "oldName": "Darkness",
+    "oldSeries": "KonoSuba",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "PJ4XPF",
+    "oldName": "Ai Hoshino",
+    "oldSeries": "Oshi no Ko",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "QIY9ZI",
+    "oldName": "Ruby Hoshino",
+    "oldSeries": "Oshi no Ko",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "AQNJ5X",
+    "oldName": "Kaguya Shinomiya",
+    "oldSeries": "Kaguya-sama",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "0VEJ1D",
+    "oldName": "Chika Fujiwara",
+    "oldSeries": "Kaguya-sama",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "PJPRGN",
+    "oldName": "Nezuko",
+    "oldSeries": "Demon Slayer",
+    "newName": "Nezuko Kamado",
+    "newSeries": "Demon Slayer",
+    "status": "proposed"
+  },
+  {
+    "cardId": "QRACDD",
+    "oldName": "Tanjiro",
+    "oldSeries": "Demon Slayer",
+    "newName": "Tanjiro Kamado",
+    "newSeries": "Demon Slayer",
+    "status": "proposed"
+  },
+  {
+    "cardId": "FNMOES",
+    "oldName": "Rengoku",
+    "oldSeries": "Demon Slayer",
+    "newName": "Kyojuro Rengoku",
+    "newSeries": "Demon Slayer",
+    "status": "proposed"
+  },
+  {
+    "cardId": "PFOGB9",
+    "oldName": "Inosuke",
+    "oldSeries": "Demon Slayer",
+    "newName": "Inosuke Hashibira",
+    "newSeries": "Demon Slayer",
+    "status": "proposed"
+  },
+  {
+    "cardId": "PAZNXG",
+    "oldName": "Gojo Satoru",
+    "oldSeries": "Jujutsu Kaisen",
+    "newName": "Satoru Gojo",
+    "newSeries": "Jujutsu Kaisen",
+    "status": "proposed"
+  },
+  {
+    "cardId": "WP4ITG",
+    "oldName": "Megumi",
+    "oldSeries": "Jujutsu Kaisen",
+    "newName": "Megumi Fushiguro",
+    "newSeries": "Jujutsu Kaisen",
+    "status": "proposed"
+  },
+  {
+    "cardId": "GCD4GW",
+    "oldName": "Nobara",
+    "oldSeries": "Jujutsu Kaisen",
+    "newName": "Nobara Kugisaki",
+    "newSeries": "Jujutsu Kaisen",
+    "status": "proposed"
+  },
+  {
+    "cardId": "YVFY09",
+    "oldName": "Marin Kitagawa",
+    "oldSeries": "My Dress-Up Darling",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "WDTT2H",
+    "oldName": "Yor Forger",
+    "oldSeries": "Spy x Family",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "F3NZES",
+    "oldName": "Anya Forger",
+    "oldSeries": "Spy x Family",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "SFC8C4",
+    "oldName": "Loid Forger",
+    "oldSeries": "Spy x Family",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "YXIFS4",
+    "oldName": "Hu Tao",
+    "oldSeries": "Genshin Impact",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "7ZHXH1",
+    "oldName": "Ganyu",
+    "oldSeries": "Genshin Impact",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "30RNBO",
+    "oldName": "Ayaka",
+    "oldSeries": "Genshin Impact",
+    "newName": "Aki Hayakawa",
+    "newSeries": "Chainsaw Man",
+    "status": "proposed"
+  },
+  {
+    "cardId": "S2ISBA",
+    "oldName": "Venti",
+    "oldSeries": "Genshin Impact",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "25OQOT",
+    "oldName": "Mori Calliope",
+    "oldSeries": "Hololive EN",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "Q4KVY0",
+    "oldName": "Gawr Gura",
+    "oldSeries": "Hololive EN",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "AUZ05A",
+    "oldName": "Ninomae Inanis",
+    "oldSeries": "Hololive EN",
+    "newName": "Ninomae Ina'nis",
+    "newSeries": "Hololive EN",
+    "status": "proposed"
+  },
+  {
+    "cardId": "0CPDTD",
+    "oldName": "Slime",
+    "oldSeries": "Common",
+    "newName": "Rimuru Tempest",
+    "newSeries": "That Time I Got Reincarnated as a Slime",
+    "status": "proposed"
+  },
+  {
+    "cardId": "ALV6A6",
+    "oldName": "Goblin",
+    "oldSeries": "Common",
+    "newName": "Goblin Slayer",
+    "newSeries": "Goblin Slayer",
+    "status": "proposed"
+  },
+  {
+    "cardId": "YUP0FP",
+    "oldName": "Fairy",
+    "oldSeries": "Common",
+    "newName": "Yuri Plisetsky",
+    "newSeries": "Yuri on Ice",
+    "status": "proposed"
+  },
+  {
+    "cardId": "QO9I57",
+    "oldName": "Knight",
+    "oldSeries": "Common",
+    "newName": "Karma Akabane",
+    "newSeries": "Assassination Classroom",
+    "status": "proposed"
+  },
+  {
+    "cardId": "FD69AS",
+    "oldName": "Muzan Kibutsuji",
+    "oldSeries": "Demon Slayer: Kimetsu no Yaiba",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "8FHCCJ",
+    "oldName": "Rias Gremory",
+    "oldSeries": "High School DxD",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "KDEYMM",
+    "oldName": "Inuyasha",
+    "oldSeries": "InuYasha",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "VKWM99",
+    "oldName": "Spike Spiegel",
+    "oldSeries": "Cowboy Bebop",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "UJ7U8Q",
+    "oldName": "Edward Elric",
+    "oldSeries": "Fullmetal Alchemist: Brotherhood",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "YX9KZB",
+    "oldName": "Saitama",
+    "oldSeries": "One-Punch Man",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "ZLEU6K",
+    "oldName": "Yuuji Itadori",
+    "oldSeries": "JUJUTSU KAISEN",
+    "newName": "Yuuji Itadori",
+    "newSeries": "Jujutsu Kaisen",
+    "status": "proposed"
+  },
+  {
+    "cardId": "M2T6U6",
+    "oldName": "L Lawliet",
+    "oldSeries": "Death Note",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "3KTKJE",
+    "oldName": "Light Yagami",
+    "oldSeries": "Death Note",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "LJXXLC",
+    "oldName": "Ryuk",
+    "oldSeries": "Death Note",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "4GJEKS",
+    "oldName": "Shouto Todoroki",
+    "oldSeries": "My Hero Academia",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "BUA7ST",
+    "oldName": "Katsuki Bakugou",
+    "oldSeries": "My Hero Academia",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "27P3CN",
+    "oldName": "Izuku Midoriya",
+    "oldSeries": "My Hero Academia",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "5TCU4D",
+    "oldName": "Killua Zoldyck",
+    "oldSeries": "Hunter x Hunter (2011)",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "GD78Q4",
+    "oldName": "Kurapika",
+    "oldSeries": "Hunter x Hunter (2011)",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "7UE2VM",
+    "oldName": "Gon Freecss",
+    "oldSeries": "Hunter x Hunter (2011)",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "VUJY6A",
+    "oldName": "Tatsumaki",
+    "oldSeries": "One-Punch Man",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "VPU2SW",
+    "oldName": "Genos",
+    "oldSeries": "One-Punch Man",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "9KA588",
+    "oldName": "Sanji",
+    "oldSeries": "ONE PIECE",
+    "newName": "Vinsmoke Sanji",
+    "newSeries": "ONE PIECE",
+    "status": "proposed"
+  },
+  {
+    "cardId": "ZRT9QU",
+    "oldName": "Ken Kaneki",
+    "oldSeries": "Tokyo Ghoul",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "XP9JQA",
+    "oldName": "Touka Kirishima",
+    "oldSeries": "Tokyo Ghoul",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "AGWTBU",
+    "oldName": "Juuzou Suzuya",
+    "oldSeries": "Tokyo Ghoul",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "MLUYD7",
+    "oldName": "Roy Mustang",
+    "oldSeries": "Fullmetal Alchemist: Brotherhood",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "FLTU3X",
+    "oldName": "Alphonse Elric",
+    "oldSeries": "Fullmetal Alchemist: Brotherhood",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "VLFKJ5",
+    "oldName": "Itachi Uchiha",
+    "oldSeries": "Naruto",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "AVRTCM",
+    "oldName": "Kakashi Hatake",
+    "oldSeries": "Naruto",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "XP2WYD",
+    "oldName": "Yui",
+    "oldSeries": "Sword Art Online",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "W7CFVR",
+    "oldName": "Shouko Nishimiya",
+    "oldSeries": "A Silent Voice",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "4SB6P4",
+    "oldName": "Shouya Ishida",
+    "oldSeries": "A Silent Voice",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "EXKQJ4",
+    "oldName": "Naoka Ueno",
+    "oldSeries": "A Silent Voice",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "XJVZM5",
+    "oldName": "Mitsuha Miyamizu",
+    "oldSeries": "Your Name.",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "CLRW8P",
+    "oldName": "Taki Tachibana",
+    "oldSeries": "Your Name.",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "GUTTX2",
+    "oldName": "Yukari Yukino",
+    "oldSeries": "Your Name.",
+    "newName": "Yukari Yukino",
+    "newSeries": "The Garden of Words",
+    "status": "proposed"
+  },
+  {
+    "cardId": "F2M2K4",
+    "oldName": "Ray",
+    "oldSeries": "The Promised Neverland",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "C4M7A4",
+    "oldName": "Norman",
+    "oldSeries": "The Promised Neverland",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "XDPKVM",
+    "oldName": "Emma",
+    "oldSeries": "The Promised Neverland",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "YB6FGB",
+    "oldName": "Koro-sensei",
+    "oldSeries": "Assassination Classroom",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "NDWALA",
+    "oldName": "Nagisa Shiota",
+    "oldSeries": "Assassination Classroom",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "29428J",
+    "oldName": "Makima",
+    "oldSeries": "Chainsaw Man",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "WYQJKB",
+    "oldName": "Denji",
+    "oldSeries": "Chainsaw Man",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "H99U8X",
+    "oldName": "Power",
+    "oldSeries": "Chainsaw Man",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "5K4NXY",
+    "oldName": "Arataka Reigen",
+    "oldSeries": "Mob Psycho 100",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "C9L766",
+    "oldName": "Shigeo Kageyama",
+    "oldSeries": "Mob Psycho 100",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "DP96AU",
+    "oldName": "Ekubo",
+    "oldSeries": "Mob Psycho 100",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "4NMGWX",
+    "oldName": "Subaru Natsuki",
+    "oldSeries": "Re:ZERO -Starting Life in Another World-",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "WFFGGW",
+    "oldName": "Kaori Miyazono",
+    "oldSeries": "Your lie in April",
+    "newName": "Kaori Miyazono",
+    "newSeries": "Your Lie in April",
+    "status": "proposed"
+  },
+  {
+    "cardId": "2QDKY7",
+    "oldName": "Kousei Arima",
+    "oldSeries": "Your lie in April",
+    "newName": "Kousei Arima",
+    "newSeries": "Your Lie in April",
+    "status": "proposed"
+  },
+  {
+    "cardId": "8JT87D",
+    "oldName": "Ryouta Watari",
+    "oldSeries": "Your lie in April",
+    "newName": "Ryouta Watari",
+    "newSeries": "Your Lie in April",
+    "status": "proposed"
+  },
+  {
+    "cardId": "VCE4DV",
+    "oldName": "Satoru Fujinuma",
+    "oldSeries": "ERASED",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "SJE8R3",
+    "oldName": "Kayo Hinazuki",
+    "oldSeries": "ERASED",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "BDTNTF",
+    "oldName": "Kenya Kobayashi",
+    "oldSeries": "ERASED",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "RZBQ46",
+    "oldName": "Kurisu Makise",
+    "oldSeries": "Steins;Gate",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "GPH9D3",
+    "oldName": "Rintarou Okabe",
+    "oldSeries": "Steins;Gate",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "QPD74V",
+    "oldName": "Mayuri Shiina",
+    "oldSeries": "Steins;Gate",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "KTLP9J",
+    "oldName": "Shouyou Hinata",
+    "oldSeries": "HAIKYU!!",
+    "newName": "Shouyou Hinata",
+    "newSeries": "Haikyu!!",
+    "status": "proposed"
+  },
+  {
+    "cardId": "T7SGAN",
+    "oldName": "Tobio Kageyama",
+    "oldSeries": "HAIKYU!!",
+    "newName": "Tobio Kageyama",
+    "newSeries": "Haikyu!!",
+    "status": "proposed"
+  },
+  {
+    "cardId": "WV62KM",
+    "oldName": "Yuu Nishinoya",
+    "oldSeries": "HAIKYU!!",
+    "newName": "Yuu Nishinoya",
+    "newSeries": "Haikyu!!",
+    "status": "proposed"
+  },
+  {
+    "cardId": "Z8AGKU",
+    "oldName": "Yami Sukehiro",
+    "oldSeries": "Black Clover",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "4KJAC5",
+    "oldName": "Asta",
+    "oldSeries": "Black Clover",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "4S6FLZ",
+    "oldName": "Noelle Silva",
+    "oldSeries": "Black Clover",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "JCDSMM",
+    "oldName": "Mai Sakurajima",
+    "oldSeries": "Rascal Does Not Dream of Bunny Girl Senpai",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "3ZFVG5",
+    "oldName": "Sakuta Azusagawa",
+    "oldSeries": "Rascal Does Not Dream of Bunny Girl Senpai",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "5VCTKU",
+    "oldName": "Rio Futaba",
+    "oldSeries": "Rascal Does Not Dream of Bunny Girl Senpai",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "L42N84",
+    "oldName": "Miko Iino",
+    "oldSeries": "Kaguya-sama: Love is War",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "A3QSC6",
+    "oldName": "Senkuu Ishigami",
+    "oldSeries": "Dr. STONE",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "JGZ9V2",
+    "oldName": "Gen Asagiri",
+    "oldSeries": "Dr. STONE",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "GY8XZH",
+    "oldName": "Kohaku",
+    "oldSeries": "Dr. STONE",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "WBWKFH",
+    "oldName": "Violet Evergarden",
+    "oldSeries": "Violet Evergarden",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "69NJ7V",
+    "oldName": "Gilbert Bougainvillea",
+    "oldSeries": "Violet Evergarden",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "KA9GRK",
+    "oldName": "Benedict Blue",
+    "oldSeries": "Violet Evergarden",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "RWEY59",
+    "oldName": "Thorfinn Karlsefni",
+    "oldSeries": "Vinland Saga",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "BHXC8N",
+    "oldName": "Askeladd",
+    "oldSeries": "Vinland Saga",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "LP3FWH",
+    "oldName": "Thorkell",
+    "oldSeries": "Vinland Saga",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "ZLTV8H",
+    "oldName": "Taiga Aisaka",
+    "oldSeries": "Toradora!",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "PKHNXD",
+    "oldName": "Ryuuji Takasu",
+    "oldSeries": "Toradora!",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "AEV7R3",
+    "oldName": "Ami Kawashima",
+    "oldSeries": "Toradora!",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "AK3RXJ",
+    "oldName": "Shiro",
+    "oldSeries": "No Game, No Life",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "3DF4C3",
+    "oldName": "Sora",
+    "oldSeries": "No Game, No Life",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "YJLUR4",
+    "oldName": "Jibril",
+    "oldSeries": "No Game, No Life",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "V2CBBP",
+    "oldName": "Yato",
+    "oldSeries": "Noragami",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "QBMHKH",
+    "oldName": "Hiyori Iki",
+    "oldSeries": "Noragami",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "LAZMDE",
+    "oldName": "Yukine",
+    "oldSeries": "Noragami",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "2HMN9A",
+    "oldName": "Akame",
+    "oldSeries": "Akame ga Kill!",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "HS6CG8",
+    "oldName": "Esdeath",
+    "oldSeries": "Akame ga Kill!",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "LBL22N",
+    "oldName": "Mine",
+    "oldSeries": "Akame ga Kill!",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "JDKL87",
+    "oldName": "Izumi Miyamura",
+    "oldSeries": "Horimiya",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "P4DHTD",
+    "oldName": "Kyouko Hori",
+    "oldSeries": "Horimiya",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "K2E68F",
+    "oldName": "Yuki Yoshikawa",
+    "oldSeries": "Horimiya",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "UEC9AV",
+    "oldName": "Ban",
+    "oldSeries": "The Seven Deadly Sins",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "98TP2R",
+    "oldName": "Meliodas",
+    "oldSeries": "The Seven Deadly Sins",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "KF79SH",
+    "oldName": "King",
+    "oldSeries": "The Seven Deadly Sins",
+    "newName": "Harlequin",
+    "newSeries": "The Seven Deadly Sins",
+    "status": "proposed"
+  },
+  {
+    "cardId": "TJRYY4",
+    "oldName": "Kazuma Satou",
+    "oldSeries": "KONOSUBA -God's blessing on this wonderful world!",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "ZYYNPA",
+    "oldName": "Ichigo Kurosaki",
+    "oldSeries": "Bleach",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "DY4E8T",
+    "oldName": "Kisuke Urahara",
+    "oldSeries": "Bleach",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "Q29P83",
+    "oldName": "Rukia Kuchiki",
+    "oldSeries": "Bleach",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "37JTAW",
+    "oldName": "Shinichi Izumi",
+    "oldSeries": "Parasyte -the maxim-",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "69JTYR",
+    "oldName": "Migi",
+    "oldSeries": "Parasyte -the maxim-",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "M6PMD9",
+    "oldName": "Kana Kimishima",
+    "oldSeries": "Parasyte -the maxim-",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "NSKH6V",
+    "oldName": "Hiro",
+    "oldSeries": "DARLING in the FRANXX",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "DQMDEC",
+    "oldName": "Lelouch Lamperouge",
+    "oldSeries": "Code Geass: Lelouch of the Rebellion",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "YGKQB8",
+    "oldName": "C.C.",
+    "oldSeries": "Code Geass: Lelouch of the Rebellion",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "XDTS4W",
+    "oldName": "Shirley Fenette",
+    "oldSeries": "Code Geass: Lelouch of the Rebellion",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "BWPD34",
+    "oldName": "Asuka Langley Souryuu",
+    "oldSeries": "Neon Genesis Evangelion",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "TX8S5Q",
+    "oldName": "Rei Ayanami",
+    "oldSeries": "Neon Genesis Evangelion",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "BRE3R2",
+    "oldName": "Shinji Ikari",
+    "oldSeries": "Neon Genesis Evangelion",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "SSAEJE",
+    "oldName": "Benimaru Shinmon",
+    "oldSeries": "Fire Force",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "Y3XAJJ",
+    "oldName": "Shinra Kusakabe",
+    "oldSeries": "Fire Force",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "7VCJV5",
+    "oldName": "Iris",
+    "oldSeries": "Fire Force",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "RKQQK2",
+    "oldName": "Haku",
+    "oldSeries": "Spirited Away",
+    "newName": "Nigihayami Kohaku Nushi",
+    "newSeries": "Spirited Away",
+    "status": "proposed"
+  },
+  {
+    "cardId": "HEKWNN",
+    "oldName": "Kaonashi",
+    "oldSeries": "Spirited Away",
+    "newName": "No Face",
+    "newSeries": "Spirited Away",
+    "status": "proposed"
+  },
+  {
+    "cardId": "PPKK6L",
+    "oldName": "Chihiro Ogino",
+    "oldSeries": "Spirited Away",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "6SBZXE",
+    "oldName": "Joseph Joestar",
+    "oldSeries": "JoJo's Bizarre Adventure (TV)",
+    "newName": "Joseph Joestar",
+    "newSeries": "JoJo's Bizarre Adventure",
+    "status": "proposed"
+  },
+  {
+    "cardId": "F92NS6",
+    "oldName": "Joutarou Kuujou",
+    "oldSeries": "JoJo's Bizarre Adventure (TV)",
+    "newName": "Jotaro Kujo",
+    "newSeries": "JoJo's Bizarre Adventure",
+    "status": "proposed"
+  },
+  {
+    "cardId": "NNLRJK",
+    "oldName": "Dio Brando",
+    "oldSeries": "JoJo's Bizarre Adventure (TV)",
+    "newName": "Dio Brando",
+    "newSeries": "JoJo's Bizarre Adventure",
+    "status": "proposed"
+  },
+  {
+    "cardId": "6PPX26",
+    "oldName": "Frieren",
+    "oldSeries": "Frieren: Beyond Journey’s End",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "D24344",
+    "oldName": "Fern",
+    "oldSeries": "Frieren: Beyond Journey’s End",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "LFYWZA",
+    "oldName": "Stark",
+    "oldSeries": "Frieren: Beyond Journey’s End",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "FN4BCF",
+    "oldName": "Decim",
+    "oldSeries": "Death Parade",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "74P5ZZ",
+    "oldName": "Kurokami no Onna",
+    "oldSeries": "Death Parade",
+    "newName": "Chiyuki",
+    "newSeries": "Death Parade",
+    "status": "proposed"
+  },
+  {
+    "cardId": "8L48B3",
+    "oldName": "Faye Valentine",
+    "oldSeries": "Cowboy Bebop",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "7TDVWR",
+    "oldName": "Edward Wong Hau Pepelu Tivrusky IV",
+    "oldSeries": "Cowboy Bebop",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "7CVF6X",
+    "oldName": "Rin Okumura",
+    "oldSeries": "Blue Exorcist",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "P6NBKX",
+    "oldName": "Shura Kirigakure",
+    "oldSeries": "Blue Exorcist",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "9H9UED",
+    "oldName": "Mephisto Pheles",
+    "oldSeries": "Blue Exorcist",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "XUTNSB",
+    "oldName": "Milim Nava",
+    "oldSeries": "That Time I Got Reincarnated as a Slime",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "BVZQDJ",
+    "oldName": "Shion",
+    "oldSeries": "That Time I Got Reincarnated as a Slime",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "8XSSUX",
+    "oldName": "Raphtalia",
+    "oldSeries": "The Rising of the Shield Hero",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "X7T56N",
+    "oldName": "Naofumi Iwatani",
+    "oldSeries": "The Rising of the Shield Hero",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "PGVL8C",
+    "oldName": "Filo",
+    "oldSeries": "The Rising of the Shield Hero",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "2WZBVW",
+    "oldName": "Yumeko Jabami",
+    "oldSeries": "Kakegurui",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "SB84YU",
+    "oldName": "Mary Saotome",
+    "oldSeries": "Kakegurui",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "TQ7ABQ",
+    "oldName": "Midari Ikishima",
+    "oldSeries": "Kakegurui",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "73DFTW",
+    "oldName": "Roxy Migurdia",
+    "oldSeries": "Mushoku Tensei: Jobless Reincarnation",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "MQHPTB",
+    "oldName": "Rudeus Greyrat",
+    "oldSeries": "Mushoku Tensei: Jobless Reincarnation",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "YH3BRZ",
+    "oldName": "Eris Boreas Greyrat",
+    "oldSeries": "Mushoku Tensei: Jobless Reincarnation",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "MA7TGW",
+    "oldName": "Shino Asada",
+    "oldSeries": "Sword Art Online II",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "DCU938",
+    "oldName": "Kiyotaka Ayanokouji",
+    "oldSeries": "Classroom of the Elite",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "HF5USR",
+    "oldName": "Suzune Horikita",
+    "oldSeries": "Classroom of the Elite",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "8D2ETN",
+    "oldName": "Kei Karuizawa",
+    "oldSeries": "Classroom of the Elite",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "UG6JCE",
+    "oldName": "Manjirou Sano",
+    "oldSeries": "Tokyo Revengers",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "J2NQFU",
+    "oldName": "Chifuyu Matsuno",
+    "oldSeries": "Tokyo Revengers",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "ANMK6P",
+    "oldName": "Ken Ryuuguji",
+    "oldSeries": "Tokyo Revengers",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "GXQ9B2",
+    "oldName": "Kanade Tachibana",
+    "oldSeries": "Angel Beats!",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "V8GGKN",
+    "oldName": "Yuri Nakamura",
+    "oldSeries": "Angel Beats!",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "5AF5DQ",
+    "oldName": "Yui Yoshioka",
+    "oldSeries": "Angel Beats!",
+    "newName": "Yui",
+    "newSeries": "Angel Beats!",
+    "status": "proposed"
+  },
+  {
+    "cardId": "YU6Q3F",
+    "oldName": "Jin-U Seong",
+    "oldSeries": "Solo Leveling",
+    "newName": "Jin-Woo Sung",
+    "newSeries": "Solo Leveling",
+    "status": "proposed"
+  },
+  {
+    "cardId": "VUAN3Z",
+    "oldName": "Hae-In Cha",
+    "oldSeries": "Solo Leveling",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "WQEWNP",
+    "oldName": "Narrator",
+    "oldSeries": "Solo Leveling",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "DFXJZ3",
+    "oldName": "Kento Nanami",
+    "oldSeries": "JUJUTSU KAISEN 0",
+    "newName": "Kento Nanami",
+    "newSeries": "Jujutsu Kaisen",
+    "status": "proposed"
+  },
+  {
+    "cardId": "E538FU",
+    "oldName": "Maki Zenin",
+    "oldSeries": "JUJUTSU KAISEN 0",
+    "newName": "Maki Zenin",
+    "newSeries": "Jujutsu Kaisen",
+    "status": "proposed"
+  },
+  {
+    "cardId": "F85UWE",
+    "oldName": "Nao Tomori",
+    "oldSeries": "Charlotte",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "BENPAR",
+    "oldName": "Yuu Otosaka",
+    "oldSeries": "Charlotte",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "3R47Y8",
+    "oldName": "Yuno Gasai",
+    "oldSeries": "The Future Diary",
+    "newName": "Yuno Gasai",
+    "newSeries": "Future Diary",
+    "status": "proposed"
+  },
+  {
+    "cardId": "M5KVLL",
+    "oldName": "Minene Uryuu",
+    "oldSeries": "The Future Diary",
+    "newName": "Minene Uryuu",
+    "newSeries": "Future Diary",
+    "status": "proposed"
+  },
+  {
+    "cardId": "G2ZVAE",
+    "oldName": "Aru Akise",
+    "oldSeries": "The Future Diary",
+    "newName": "Aru Akise",
+    "newSeries": "Future Diary",
+    "status": "proposed"
+  },
+  {
+    "cardId": "5Y8N3B",
+    "oldName": "Wakana Gojou",
+    "oldSeries": "My Dress-Up Darling",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "HEG3R6",
+    "oldName": "Osamu Dazai",
+    "oldSeries": "Bungo Stray Dogs",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "ZF2UBD",
+    "oldName": "Ranpo Edogawa",
+    "oldSeries": "Bungo Stray Dogs",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "QHGMKP",
+    "oldName": "Chuuya Nakahara",
+    "oldSeries": "Bungo Stray Dogs",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "VN4229",
+    "oldName": "Ryuuko Matoi",
+    "oldSeries": "Kill la Kill",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "UXDNVD",
+    "oldName": "Mako Mankanshoku",
+    "oldSeries": "Kill la Kill",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "JYYZ5K",
+    "oldName": "Satsuki Kiryuuin",
+    "oldSeries": "Kill la Kill",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "LPNF4K",
+    "oldName": "Nanachi",
+    "oldSeries": "Made in Abyss",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "VU5UWS",
+    "oldName": "Bondrewd",
+    "oldSeries": "Made in Abyss",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "LRWGZ8",
+    "oldName": "Reg",
+    "oldSeries": "Made in Abyss",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "LC7SME",
+    "oldName": "Souma Yukihira",
+    "oldSeries": "Food Wars!",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "FRAP7P",
+    "oldName": "Erina Nakiri",
+    "oldSeries": "Food Wars!",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "ZXAD5N",
+    "oldName": "Alice Nakiri",
+    "oldSeries": "Food Wars!",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "3P69X8",
+    "oldName": "Albedo",
+    "oldSeries": "Overlord",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "34PDHB",
+    "oldName": "Momonga",
+    "oldSeries": "Overlord",
+    "newName": "Ainz Ooal Gown",
+    "newSeries": "Overlord",
+    "status": "proposed"
+  },
+  {
+    "cardId": "H4TVGX",
+    "oldName": "Shalltear Bloodfallen",
+    "oldSeries": "Overlord",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "5NUDRE",
+    "oldName": "Ais Wallenstein",
+    "oldSeries": "Is It Wrong to Try to Pick Up Girls in a Dungeon?",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "XM6URN",
+    "oldName": "Bell Cranel",
+    "oldSeries": "Is It Wrong to Try to Pick Up Girls in a Dungeon?",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "XFXYPB",
+    "oldName": "Hestia",
+    "oldSeries": "Is It Wrong to Try to Pick Up Girls in a Dungeon?",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "48FYY4",
+    "oldName": "Satan Jacob",
+    "oldSeries": "The Devil is a Part-Timer!",
+    "newName": "Sadao Maou",
+    "newSeries": "The Devil is a Part-Timer!",
+    "status": "proposed"
+  },
+  {
+    "cardId": "WDJQ5C",
+    "oldName": "Emilia Justina",
+    "oldSeries": "The Devil is a Part-Timer!",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "2RG89H",
+    "oldName": "Lucifer",
+    "oldSeries": "The Devil is a Part-Timer!",
+    "newName": "Hanzo Urushihara",
+    "newSeries": "The Devil is a Part-Timer!",
+    "status": "proposed"
+  },
+  {
+    "cardId": "38KVPW",
+    "oldName": "Meiko Honma",
+    "oldSeries": "Anohana: The Flower We Saw That Day",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "HDJNGV",
+    "oldName": "Naruko Anjou",
+    "oldSeries": "Anohana: The Flower We Saw That Day",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "H532C7",
+    "oldName": "Jinta Yadomi",
+    "oldSeries": "Anohana: The Flower We Saw That Day",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "4T2GAA",
+    "oldName": "Death the Kid",
+    "oldSeries": "Soul Eater",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "8W2ETE",
+    "oldName": "Maka Albarn",
+    "oldSeries": "Soul Eater",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "GZYQJX",
+    "oldName": "Soul Eater Evans",
+    "oldSeries": "Soul Eater",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "7VUY4Q",
+    "oldName": "Mei Misaki",
+    "oldSeries": "Another",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "8MFF4K",
+    "oldName": "Kouichi Sakakibara",
+    "oldSeries": "Another",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "7VK8Y9",
+    "oldName": "Izumi Akazawa",
+    "oldSeries": "Another",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "QKD74Y",
+    "oldName": "Lucy",
+    "oldSeries": "Cyberpunk: Edgerunners",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "KDJKL2",
+    "oldName": "Rebecca",
+    "oldSeries": "Cyberpunk: Edgerunners",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "2PRXU5",
+    "oldName": "David Martinez",
+    "oldSeries": "Cyberpunk: Edgerunners",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "SKSWL3",
+    "oldName": "Momo Ayase",
+    "oldSeries": "DAN DA DAN",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "BPWFX8",
+    "oldName": "Aira Shiratori",
+    "oldSeries": "DAN DA DAN",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "6MDMYT",
+    "oldName": "Ken Takakura",
+    "oldSeries": "DAN DA DAN",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "Z5N9XH",
+    "oldName": "Hachiman Hikigaya",
+    "oldSeries": "My Teen Romantic Comedy SNAFU",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "A2Y3KW",
+    "oldName": "Yukino Yukinoshita",
+    "oldSeries": "My Teen Romantic Comedy SNAFU",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "AD3BTS",
+    "oldName": "Yui Yuigahama",
+    "oldSeries": "My Teen Romantic Comedy SNAFU",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "E822XN",
+    "oldName": "Erza Scarlet",
+    "oldSeries": "Fairy Tail",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "KUC35A",
+    "oldName": "Natsu Dragneel",
+    "oldSeries": "Fairy Tail",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "TAZF7F",
+    "oldName": "Lucy Heartfilia",
+    "oldSeries": "Fairy Tail",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "SR527U",
+    "oldName": "Kamina",
+    "oldSeries": "Gurren Lagann",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "RH9QBS",
+    "oldName": "Simon",
+    "oldSeries": "Gurren Lagann",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "T65L7D",
+    "oldName": "Youko Littner",
+    "oldSeries": "Gurren Lagann",
+    "newName": "Yoko Littner",
+    "newSeries": "Gurren Lagann",
+    "status": "proposed"
+  },
+  {
+    "cardId": "MHVBPG",
+    "oldName": "Hyakkimaru",
+    "oldSeries": "Dororo",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "YCCYL3",
+    "oldName": "Dororo",
+    "oldSeries": "Dororo",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "5DU9Q2",
+    "oldName": "Sakura Yamauchi",
+    "oldSeries": "I Want to Eat Your Pancreas",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "4M2VQA",
+    "oldName": "Haruki Shiga",
+    "oldSeries": "I Want to Eat Your Pancreas",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "UJTUKL",
+    "oldName": "Issei Miyata",
+    "oldSeries": "I Want to Eat Your Pancreas",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "TA8DRU",
+    "oldName": "Kusuo Saiki",
+    "oldSeries": "Assassination Classroom Second Season",
+    "newName": "Kusuo Saiki",
+    "newSeries": "The Disastrous Life of Saiki K.",
+    "status": "proposed"
+  },
+  {
+    "cardId": "3B3AD7",
+    "oldName": "Howl",
+    "oldSeries": "Howl‘s Moving Castle",
+    "newName": "Howl Pendragon",
+    "newSeries": "Howl's Moving Castle",
+    "status": "proposed"
+  },
+  {
+    "cardId": "A4XNWS",
+    "oldName": "Calcifer",
+    "oldSeries": "Howl‘s Moving Castle",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "FBPMQE",
+    "oldName": "Sophie Hatter",
+    "oldSeries": "Howl‘s Moving Castle",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "TAQBP4",
+    "oldName": "Gabimaru",
+    "oldSeries": "Hell’s Paradise",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "T4U7HM",
+    "oldName": "Sagiri",
+    "oldSeries": "Hell’s Paradise",
+    "newName": "Yamada Asaemon Sagiri",
+    "newSeries": "Hell’s Paradise",
+    "status": "proposed"
+  },
+  {
+    "cardId": "P2D2TT",
+    "oldName": "Yuzuriha",
+    "oldSeries": "Hell’s Paradise",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "F54ABE",
+    "oldName": "Shun Kaidou",
+    "oldSeries": "The Disastrous Life of Saiki K.",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "3MYVQ7",
+    "oldName": "Shinya Kougami",
+    "oldSeries": "PSYCHO-PASS",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "DES83S",
+    "oldName": "Shougo Makishima",
+    "oldSeries": "PSYCHO-PASS",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "2JN6SH",
+    "oldName": "Akane Tsunemori",
+    "oldSeries": "PSYCHO-PASS",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "J2E3WK",
+    "oldName": "Hina Amano",
+    "oldSeries": "Weathering With You",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "T5W4HJ",
+    "oldName": "Rikka Takanashi",
+    "oldSeries": "Love, Chunibyo & Other Delusions",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "KYQBWW",
+    "oldName": "Yuuta Togashi",
+    "oldSeries": "Love, Chunibyo & Other Delusions",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "4E3DUX",
+    "oldName": "Akira Fudou",
+    "oldSeries": "Devilman Crybaby",
+    "newName": "Akira Fudo",
+    "newSeries": "Devilman Crybaby",
+    "status": "proposed"
+  },
+  {
+    "cardId": "MW7JL3",
+    "oldName": "Ryo Asuka",
+    "oldSeries": "Devilman Crybaby",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "VLJAAS",
+    "oldName": "Miki Makimura",
+    "oldSeries": "Devilman Crybaby",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "CCVX6F",
+    "oldName": "Houtarou Oreki",
+    "oldSeries": "Hyouka",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "KK5XPN",
+    "oldName": "Eru Chitanda",
+    "oldSeries": "Hyouka",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "HQQJZV",
+    "oldName": "Mayaka Ibara",
+    "oldSeries": "Hyouka",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "VCRL7G",
+    "oldName": "Sakura Matou",
+    "oldSeries": "Fate/Zero",
+    "newName": "Sakura Matou",
+    "newSeries": "Fate/stay night",
+    "status": "proposed"
+  },
+  {
+    "cardId": "YZPRG4",
+    "oldName": "Rin Tohsaka",
+    "oldSeries": "Fate/Zero",
+    "newName": "Rin Tohsaka",
+    "newSeries": "Fate/stay night",
+    "status": "proposed"
+  },
+  {
+    "cardId": "TDBXV2",
+    "oldName": "Artoria Pendragon",
+    "oldSeries": "Fate/Zero",
+    "newName": "Artoria Pendragon",
+    "newSeries": "Fate/stay night",
+    "status": "proposed"
+  },
+  {
+    "cardId": "UR3R4X",
+    "oldName": "Hitagi Senjougahara",
+    "oldSeries": "Bakemonogatari",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "M8ECL7",
+    "oldName": "Shinobu Oshino",
+    "oldSeries": "Bakemonogatari",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "LYNFXF",
+    "oldName": "Koyomi Araragi",
+    "oldSeries": "Bakemonogatari",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "ZGXA4Q",
+    "oldName": "Johan Liebert",
+    "oldSeries": "Monster",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "2ENYA5",
+    "oldName": "Kenzou Tenma",
+    "oldSeries": "Monster",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "5PDCAQ",
+    "oldName": "Wolfgang Grimmer",
+    "oldSeries": "Monster",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "R8D8H6",
+    "oldName": "Aguero Agnis Khun",
+    "oldSeries": "Tower of God",
+    "newName": "Khun Aguero Agnis",
+    "newSeries": "Tower of God",
+    "status": "proposed"
+  },
+  {
+    "cardId": "6UYPJ2",
+    "oldName": "Twenty-Fifth Baam",
+    "oldSeries": "Tower of God",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "P7ZNT2",
+    "oldName": "Rak Wraithraiser",
+    "oldSeries": "Tower of God",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "4W3MRE",
+    "oldName": "Kanna Kamui",
+    "oldSeries": "Miss Kobayashi's Dragon Maid",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "5XHAZK",
+    "oldName": "Tohru",
+    "oldSeries": "Miss Kobayashi's Dragon Maid",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "LEP672",
+    "oldName": "Kobayashi",
+    "oldSeries": "Miss Kobayashi's Dragon Maid",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "8S3355",
+    "oldName": "Shinoa Hiiragi",
+    "oldSeries": "Seraph of the End: Vampire Reign",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "CBBDM4",
+    "oldName": "Mikaela Hyakuya",
+    "oldSeries": "Seraph of the End: Vampire Reign",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "5LHFFS",
+    "oldName": "Guren Ichinose",
+    "oldSeries": "Seraph of the End: Vampire Reign",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "PKWEJ2",
+    "oldName": "Kana Arima",
+    "oldSeries": "OSHI NO KO",
+    "newName": "Kana Arima",
+    "newSeries": "Oshi no Ko",
+    "status": "proposed"
+  },
+  {
+    "cardId": "52N6JQ",
+    "oldName": "Akane Kurokawa",
+    "oldSeries": "OSHI NO KO",
+    "newName": "Akane Kurokawa",
+    "newSeries": "Oshi no Ko",
+    "status": "proposed"
+  },
+  {
+    "cardId": "WADWHJ",
+    "oldName": "Hirotaka Nifuji",
+    "oldSeries": "Wotakoi: Love is Hard for Otaku",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "EQK9EF",
+    "oldName": "Hanako Koyanagi",
+    "oldSeries": "Wotakoi: Love is Hard for Otaku",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "K4WPQA",
+    "oldName": "Narumi Momose",
+    "oldSeries": "Wotakoi: Love is Hard for Otaku",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "9SHQZX",
+    "oldName": "Homura Akemi",
+    "oldSeries": "Puella Magi Madoka Magica",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "3S7QCH",
+    "oldName": "Madoka Kaname",
+    "oldSeries": "Puella Magi Madoka Magica",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "XXVN87",
+    "oldName": "Kyouko Sakura",
+    "oldSeries": "Puella Magi Madoka Magica",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "TUDLQA",
+    "oldName": "Meguru Bachira",
+    "oldSeries": "BLUE LOCK",
+    "newName": "Meguru Bachira",
+    "newSeries": "Blue Lock",
+    "status": "proposed"
+  },
+  {
+    "cardId": "WF5YGD",
+    "oldName": "Seishirou Nagi",
+    "oldSeries": "BLUE LOCK",
+    "newName": "Seishiro Nagi",
+    "newSeries": "BLUE LOCK",
+    "status": "proposed"
+  },
+  {
+    "cardId": "NP7V2U",
+    "oldName": "Yoichi Isagi",
+    "oldSeries": "BLUE LOCK",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "FKUMR5",
+    "oldName": "Vladilena Milizé",
+    "oldSeries": "86 EIGHTY-SIX",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "HXR3TV",
+    "oldName": "Kurena Kukumila",
+    "oldSeries": "86 EIGHTY-SIX",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "ALCLK7",
+    "oldName": "Shinei Nouzen",
+    "oldSeries": "86 EIGHTY-SIX",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "YDCCJ7",
+    "oldName": "Itsuki Nakano",
+    "oldSeries": "The Quintessential Quintuplets",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "4VQPUE",
+    "oldName": "Miku Nakano",
+    "oldSeries": "The Quintessential Quintuplets",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "F6TP2V",
+    "oldName": "Nino Nakano",
+    "oldSeries": "The Quintessential Quintuplets",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "WUSV48",
+    "oldName": "Maomao",
+    "oldSeries": "The Apothecary Diaries",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "WGMLYF",
+    "oldName": "Jinshi",
+    "oldSeries": "The Apothecary Diaries",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "4AJ2CB",
+    "oldName": "Shouko Komi",
+    "oldSeries": "Komi Can’t Communicate",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "Q9VXDX",
+    "oldName": "Hitohito Tadano",
+    "oldSeries": "Komi Can’t Communicate",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "KZD4BB",
+    "oldName": "Fushi",
+    "oldSeries": "To Your Eternity",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "NA9MXB",
+    "oldName": "Gugu",
+    "oldSeries": "To Your Eternity",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "Z3T7Z2",
+    "oldName": "March",
+    "oldSeries": "To Your Eternity",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "CVRC9K",
+    "oldName": "Akeno Himejima",
+    "oldSeries": "High School DxD",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "PAU7MR",
+    "oldName": "Koneko Toujou",
+    "oldSeries": "High School DxD",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "95QVXF",
+    "oldName": "Cid Kagenou",
+    "oldSeries": "The Eminence in Shadow",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "FU5UZN",
+    "oldName": "Delta",
+    "oldSeries": "The Eminence in Shadow",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "9ATKSD",
+    "oldName": "Alpha",
+    "oldSeries": "The Eminence in Shadow",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "4QR8LR",
+    "oldName": "Kyou Souma",
+    "oldSeries": "Fruits Basket (2019)",
+    "newName": "Kyo Sohma",
+    "newSeries": "Fruits Basket (2019)",
+    "status": "proposed"
+  },
+  {
+    "cardId": "ZCU4HW",
+    "oldName": "Tooru Honda",
+    "oldSeries": "Fruits Basket (2019)",
+    "newName": "Tohru Honda",
+    "newSeries": "Fruits Basket (2019)",
+    "status": "proposed"
+  },
+  {
+    "cardId": "2QLV5N",
+    "oldName": "Yuki Souma",
+    "oldSeries": "Fruits Basket (2019)",
+    "newName": "Yuki Sohma",
+    "newSeries": "Fruits Basket (2019)",
+    "status": "proposed"
+  },
+  {
+    "cardId": "MEDT9F",
+    "oldName": "Ash Lynx",
+    "oldSeries": "BANANA FISH",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "YCSCCF",
+    "oldName": "Eiji Okumura",
+    "oldSeries": "BANANA FISH",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "ZBC5Q2",
+    "oldName": "Shorter Wong",
+    "oldSeries": "BANANA FISH",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "7LN5QG",
+    "oldName": "Mami Nanami",
+    "oldSeries": "Rent-a-Girlfriend",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "GUZ2NF",
+    "oldName": "Chizuru Ichinose",
+    "oldSeries": "Rent-a-Girlfriend",
+    "newName": "Chizuru Mizuhara",
+    "newSeries": "Rent-a-Girlfriend",
+    "status": "proposed"
+  },
+  {
+    "cardId": "HR8KVN",
+    "oldName": "Sumi Sakurasawa",
+    "oldSeries": "Rent-a-Girlfriend",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "E5FSXT",
+    "oldName": "Ushikai Musume",
+    "oldSeries": "GOBLIN SLAYER",
+    "newName": "Cow Girl",
+    "newSeries": "GOBLIN SLAYER",
+    "status": "proposed"
+  },
+  {
+    "cardId": "AS5E3P",
+    "oldName": "San",
+    "oldSeries": "Princess Mononoke",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "JSU89J",
+    "oldName": "Ashitaka",
+    "oldSeries": "Princess Mononoke",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "H4BJQV",
+    "oldName": "Moro no Kimi",
+    "oldSeries": "Princess Mononoke",
+    "newName": "Moro",
+    "newSeries": "Princess Mononoke",
+    "status": "proposed"
+  },
+  {
+    "cardId": "3TJM9M",
+    "oldName": "Tomoya Okazaki",
+    "oldSeries": "Clannad",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "FY95DC",
+    "oldName": "Nagisa Furukawa",
+    "oldSeries": "Clannad",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "UDL4FB",
+    "oldName": "Tomoyo Sakagami",
+    "oldSeries": "Clannad",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "FDWX6K",
+    "oldName": "Mo-Ri Jin",
+    "oldSeries": "The God of High School",
+    "newName": "Jin Mori",
+    "newSeries": "The God of High School",
+    "status": "proposed"
+  },
+  {
+    "cardId": "UJVL9J",
+    "oldName": "Dae-Wi Han",
+    "oldSeries": "The God of High School",
+    "newName": "Han Dae-wi",
+    "newSeries": "The God of High School",
+    "status": "proposed"
+  },
+  {
+    "cardId": "YFKP5S",
+    "oldName": "Mi-Ra Yu",
+    "oldSeries": "The God of High School",
+    "newName": "Yu Mi-ra",
+    "newSeries": "The God of High School",
+    "status": "proposed"
+  },
+  {
+    "cardId": "G4SNB7",
+    "oldName": "Gintoki Sakata",
+    "oldSeries": "Gintama",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "DLSVJV",
+    "oldName": "Kagura",
+    "oldSeries": "Gintama",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "MTC63N",
+    "oldName": "Kotarou Katsura",
+    "oldSeries": "Gintama",
+    "newName": "Kotaro Katsura",
+    "newSeries": "Gintama",
+    "status": "proposed"
+  },
+  {
+    "cardId": "QRP94E",
+    "oldName": "Izaya Orihara",
+    "oldSeries": "Durarara!!",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "NG565E",
+    "oldName": "Shizuo Heiwajima",
+    "oldSeries": "Durarara!!",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "MQ36VS",
+    "oldName": "Celty Sturluson",
+    "oldSeries": "Durarara!!",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "576A7X",
+    "oldName": "Twelve",
+    "oldSeries": "Terror in Resonance",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "3T66XZ",
+    "oldName": "Nine",
+    "oldSeries": "Terror in Resonance",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "5X62CZ",
+    "oldName": "Kenjirou Shibasaki",
+    "oldSeries": "Terror in Resonance",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "52EEUH",
+    "oldName": "Takumi Usui",
+    "oldSeries": "Maid-Sama!",
+    "status": "unchanged"
+  }
+]

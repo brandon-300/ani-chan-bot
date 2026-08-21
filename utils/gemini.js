@@ -112,7 +112,14 @@ function buildGenerationConfig(maxOutputTokens) {
 // maxOutputTokens default raised from the original 800 to 2048 — 800 was
 // tight enough that even minimal thinking + a genuinely detailed answer
 // (e.g. solving a math problem) could hit MAX_TOKENS and cut off mid-reply.
-async function generateText({ systemPrompt, history = [], prompt, maxOutputTokens = 2048 }) {
+//
+// `model` override added (Aug 2026) for callers that need a DIFFERENT model
+// than whatever the live bot's GEMINI_TEXT_MODEL is currently pointed at —
+// e.g. renameCardsWithGemini.js, a bulk one-off classification task that
+// doesn't need a heavier model and specifically wants a lighter one with a
+// more generous free-tier request quota. Optional and defaults to
+// TEXT_MODEL, so every existing call site (ai.js, etc.) is unaffected.
+async function generateText({ systemPrompt, history = [], prompt, maxOutputTokens = 2048, model = TEXT_MODEL }) {
   assertKey();
 
   const contents = history.map(h => ({
@@ -131,7 +138,7 @@ async function generateText({ systemPrompt, history = [], prompt, maxOutputToken
 
   try {
     const res = await axios.post(
-      `${BASE_URL}/${TEXT_MODEL}:generateContent`,
+      `${BASE_URL}/${model}:generateContent`,
       body,
       {
         headers: { 'Content-Type': 'application/json', 'x-goog-api-key': GEMINI_API_KEY },

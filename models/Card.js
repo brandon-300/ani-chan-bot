@@ -37,14 +37,16 @@ const CardCatalogueSchema = new mongoose.Schema({
 
   // Which service imageUrl currently points at — 'anilist' (the original
   // pipeline, commands/cardmanager.js's createCardFromAniList/
-  // .backfillimages) or 'danbooru' (.upgradeimages, utils/danbooru.js).
-  // Exists purely so a later spot-check can find what changed:
+  // .backfillimages), 'danbooru' (.upgradeimages, utils/danbooru.js), or
+  // 'gelbooru' (same command — utils/danbooru.js's fallback source for
+  // characters Danbooru itself has no usable art for). Exists purely so a
+  // later spot-check can find what changed:
   // db.cardcatalogues.find({ imageSource: 'danbooru' }) in mongosh, or
   // filter on it from a future review command — .upgradeimages applies its
   // best guess automatically (no per-card confirmation), so this is what
   // makes "I'll check it after the fact" actually practical instead of
   // having to remember/diff which 300 cards changed.
-  imageSource: { type: String, enum: ['anilist', 'danbooru'], default: 'anilist' },
+  imageSource: { type: String, enum: ['anilist', 'danbooru', 'gelbooru'], default: 'anilist' },
 
   // ─── Rendered card cache (utils/cardRenderer.js) ───────────────────────────
   // The custom trading-card PNG is expensive to (re)build — a Puppeteer

@@ -1,0 +1,66 @@
+[
+  {
+    "cardId": "5Z5DXD",
+    "oldName": "Rem",
+    "oldSeries": "Re:Zero",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "WRY79P",
+    "oldName": "Emilia",
+    "oldSeries": "Re:Zero",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "YBZM8Y",
+    "oldName": "Beatrice",
+    "oldSeries": "Re:Zero",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "CBRR8S",
+    "oldName": "Asuna",
+    "oldSeries": "Sword Art Online",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "Y5RU4A",
+    "oldName": "Kirito",
+    "oldSeries": "Sword Art Online",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "9FR8JN",
+    "oldName": "Levi",
+    "oldSeries": "Attack on Titan",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "18X66U",
+    "oldName": "Mikasa",
+    "oldSeries": "Attack on Titan",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "3XKPYZ",
+    "oldName": "Eren",
+    "oldSeries": "Attack on Titan",
+    "status": "unchanged"
+  },
+  {
+    "cardId": "LYK9XA",
+    "oldName": "Naruto",
+    "oldSeries": "Naruto",
+    "newName": "Naruto Uzumaki",
+    "newSeries": "Naruto",
+    "status": "proposed"
+  },
+  {
+    "cardId": "H94DY6",
+    "oldName": "Sasuke",
+    "oldSeries": "Naruto",
+    "newName": "Sasuke Uchiha",
+    "newSeries": "Naruto",
+    "status": "proposed"
+  }
+]

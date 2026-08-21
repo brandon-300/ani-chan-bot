@@ -403,37 +403,56 @@ module.exports = {
   },
 
   // .ci [name] [tier] — card info from catalogue.
-  // .ci [code] — same command, but looks up one specific claimed card by
-  // its 6-character claim code instead (the same code shown by .card/.col
-  // and used with .claim). Codes only exist on OwnedCard once a card's
-  // been claimed — the master catalogue entries themselves don't have
-  // one — so a code hit shows that exact claimed instance (its real owner,
-  // times traded, etc.) rather than the generic catalogue listing.
+  // .ci [code] — same command, but looks up one specific card by its
+  // 6-character code instead. Two different things share this code
+  // alphabet and BOTH need to be checked here:
+  //   - OwnedCard.code — a claimed card's trade code (shown by .card/.col,
+  //     used with .claim). Only exists once a card's been claimed.
+  //   - CardCatalogue.cardId — every catalogue entry's own permanent ID,
+  //     claimed or not. This is the code shown in brackets by
+  //     .upgradeimages/.backfillimages/.diagcard/etc for spot-checking, so
+  //     it has to resolve here too, or "spot-check this with .ci" doesn't
+  //     actually work for anything still sitting unclaimed in the catalogue
+  //     (which, right after a fresh .upgradeimages run, is most of them).
+  //     BUGFIX (Aug 2026): this branch used to only check OwnedCard.code,
+  //     so .ci <code> always failed with "Card not found" for any card
+  //     that hadn't been claimed yet, even with the exact right code.
   //
   // Code detection only fires for a single argument matching the exact
-  // 6-char code alphabet (generateUniqueCode() in utils/helpers.js:
-  // A-Z minus I/O, 2-9 minus 0/1), and only takes effect if that code
-  // actually exists — so a genuine one-word name search (e.g. ".ci Sakura")
-  // still works normally in the near-impossible case it happens to overlap
-  // the code pattern with no real card at that code.
+  // 6-char code alphabet (generateUniqueCode()/generateCardId(): A-Z minus
+  // I/O, 2-9 minus 0/1), and only takes effect if that code actually
+  // exists in one of the two places above — so a genuine one-word name
+  // search (e.g. ".ci Sakura") still works normally in the near-impossible
+  // case it happens to overlap the code pattern with no real card at that
+  // code.
   async ci(client, msg, args) {
     if (!args.length) return msg.reply('❌ Usage: .ci [name] [tier]  —or—  .ci [code]');
 
+    let card = null;
+
     if (args.length === 1 && /^[A-HJ-NP-Z2-9]{6}$/i.test(args[0])) {
-      const owned = await OwnedCard.findOne({ code: args[0].toUpperCase() });
+      const code = args[0].toUpperCase();
+
+      const owned = await OwnedCard.findOne({ code });
       if (owned) return sendOwnedCardInfo(client, msg, owned);
-      // No claimed card at that code — fall through and treat the same
-      // text as a name search below instead of giving up.
+
+      card = await CardCatalogue.findOne({ cardId: code });
+      // Neither a claimed card nor a catalogue entry at that code — fall
+      // through and treat the same text as a name search below instead of
+      // giving up.
     }
 
-    const tier = args[args.length - 1]?.toUpperCase();
-    const name = args.slice(0, -1).join(' ') || args.join(' ');
+    if (!card) {
+      const tier = args[args.length - 1]?.toUpperCase();
+      const name = args.slice(0, -1).join(' ') || args.join(' ');
 
-    const query = tier && ['C','B','A','S','SS','SSS'].includes(tier) && args.length > 1
-      ? { name: new RegExp(name, 'i'), tier }
-      : { name: new RegExp(args.join(' '), 'i') };
+      const query = tier && ['C','B','A','S','SS','SSS'].includes(tier) && args.length > 1
+        ? { name: new RegExp(name, 'i'), tier }
+        : { name: new RegExp(args.join(' '), 'i') };
 
-    const card = await CardCatalogue.findOne(query);
+      card = await CardCatalogue.findOne(query);
+    }
+
     if (!card) return msg.reply('❌ Card not found.');
 
     const cardId = card.cardId || card._id;
