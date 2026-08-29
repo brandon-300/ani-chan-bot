@@ -3,6 +3,7 @@ const tictactoe = require('./games/tictactoe');
 const connect4 = require('./games/connect4');
 const chessGame = require('./games/chess');
 const battle = require('./games/battle');
+const quiz = require('./games/quiz');
 
 const GREEK_GODS = [
   { name: 'Zeus', domain: 'Sky & Thunder', symbol: '⚡' },
@@ -74,8 +75,24 @@ module.exports = {
       return msg.reply(`🚩 *${battleResult.quitterName}* fled the battle.\n🏆 *${battleResult.winnerName} wins by forfeit!*`);
     }
 
+    // Anime Quiz — no single "opponent" to declare a winner against, so
+    // this just ends the round early and reports whatever scoreboard had
+    // built up so far. Anyone in the chat can end it this way, same as
+    // '.quiz stop'.
+    const quizResult = quiz.quitQuiz(chatId);
+    if (quizResult) {
+      return msg.reply(
+        `🚩 *${mentionName(contact)}* stopped the Anime Quiz (${quizResult.askedSoFar}/${quizResult.total} questions asked).\n\n🏆 *Scoreboard*\n\n${quizResult.board}`
+      );
+    }
+
     return msg.reply("❌ You're not currently in any game.");
   },
+
+  // .quiz — anime character guessing quiz, sourced from the card catalogue
+  // .quiz [easy|normal|hard] / .quiz start [easy|normal|hard] — start
+  // .quiz stop / .quiz end — end early
+  quiz: quiz.quiz,
 
   // .startbattle
   startbattle: battle.startbattle,

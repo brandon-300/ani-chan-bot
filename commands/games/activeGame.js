@@ -29,6 +29,7 @@ const LABELS = {
   ttt: 'Tic Tac Toe',
   c4: 'Connect 4',
   battle: 'Battle',
+  quiz: 'Anime Quiz',
 };
 
 // Returns { type, label } if `chatId` currently has any game active

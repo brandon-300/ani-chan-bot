@@ -3,7 +3,7 @@ const { MessageMedia } = require('whatsapp-web.js');
 const { isOwner, rollTier, tierEmoji, safeGetChat, cardValue, cleanDescription } = require('../utils/helpers');
 const { CardCatalogue, OwnedCard, CatalogueGrowthState } = require('../models/Card');
 const Group = require('../models/Group');
-const { findCharacterArtwork } = require('../utils/danbooru');
+const { findCharacterArtwork, fetchArtworkForExactTag } = require('../utils/danbooru');
 
 const TIERS = ['C', 'B', 'A', 'S', 'SS', 'SSS'];
 const EDITABLE_FIELDS = ['name', 'series', 'tier', 'description', 'imageUrl'];
@@ -164,7 +164,7 @@ async function createCardFromAniList(name, tierOverride) {
   if (!character) return { error: `No AniList character found for "${name}".` };
 
   const dup = await CardCatalogue.findOne({ anilistId: character.id });
-  if (dup) return { error: `*${dup.name}* is already in the catalogue [${dup.cardId}].` };
+  if (dup) return { error: `*${dup.name}* is already in the catalogue [\`${dup.cardId}\`].` };
 
   const card = await CardCatalogue.create({
     cardId: await generateCardId(),
@@ -526,7 +526,7 @@ module.exports = {
 
     if (!card) return msg.reply('❌ Card not found.');
 
-    msg.reply(`✅ Updated *${field}* for ${card.name} [${card.cardId}]\n${field}: ${card[field]}`);
+    msg.reply(`✅ Updated *${field}* for ${card.name} [\`${card.cardId}\`]\n${field}: ${card[field]}`);
   },
 
   // .reloadcards — there's no in-memory cache anywhere in the bot; every
@@ -624,14 +624,14 @@ module.exports = {
       try {
         const character = await fetchAniListCharacterSmart(doc.name);
         if (!character) {
-          skipped.push(`${doc.name} [${doc.cardId}] — no AniList match found; add the image by hand with .editcard ${doc.cardId} imageUrl <url>`);
+          skipped.push(`${doc.name} [\`${doc.cardId}\`] — no AniList match found; add the image by hand with .editcard ${doc.cardId} imageUrl <url>`);
           await sleep(500);
           continue;
         }
 
         const foundSeries = extractSeries(character);
         if (!seriesLooselyMatches(doc.series, foundSeries)) {
-          skipped.push(`${doc.name} [${doc.cardId}] — AniList matched "${foundSeries}", doesn't look like your "${doc.series}"; review manually with .editcard`);
+          skipped.push(`${doc.name} [\`${doc.cardId}\`] — AniList matched "${foundSeries}", doesn't look like your "${doc.series}"; review manually with .editcard`);
           await sleep(500);
           continue;
         }
@@ -649,7 +649,7 @@ module.exports = {
           const suggestion = dup.series === 'Common'
             ? `.stealimage ${dup.cardId} ${doc.cardId}`
             : `.mergecards ${dup.cardId} ${doc.cardId}`;
-          skipped.push(`${doc.name} [${doc.cardId}] — that AniList character is already used by ${dup.name} [${dup.cardId}]. Try: ${suggestion}`);
+          skipped.push(`${doc.name} [\`${doc.cardId}\`] — that AniList character is already used by ${dup.name} [\`${dup.cardId}\`]. Try: ${suggestion}`);
           await sleep(500);
           continue;
         }
@@ -659,7 +659,7 @@ module.exports = {
         doc.description = cleanDescription(character.description);
         await doc.save();
 
-        applied.push(`✅ ${doc.name} [${doc.cardId}]`);
+        applied.push(`✅ ${doc.name} [\`${doc.cardId}\`]`);
       } catch (err) {
         skipped.push(`${doc.name} — lookup failed (${err.message})`);
       }
@@ -682,80 +682,192 @@ module.exports = {
   // requests AniList's biggest field, image.large — this isn't a smaller-
   // field bug, AniList's own database is just inconsistent quality/crop for
   // a lot of characters) with booru art (utils/danbooru.js: Danbooru first,
-  // Gelbooru as a fallback for characters Danbooru has nothing usable for),
-  // which is generally sharper and better-composed for the same character.
+  // then Gelbooru, then Safebooru — each only tried if the previous source
+  // has nothing usable), which is generally sharper and better-composed for
+  // the same character.
   //
   // Unlike .backfillimages, this does NOT skip on an uncertain series
   // match — findCharacterArtwork() already picks its single best guess
-  // (see that function's own comment for exactly how, and why a strict
-  // series check the way AniList gets one isn't reliable for booru tag
-  // slugs) and this applies it automatically. That's a deliberate choice,
-  // not an oversight: reviewing 300+ individual matches by hand isn't
-  // practical, so every card gets imageSource set to whichever source
-  // actually supplied the art, plus the exact tag that was used, so a
-  // spot-check later has something concrete to check against instead of
-  // having to re-derive what changed.
+  // (see that function's own comment for exactly how — including the
+  // series soft-boost it now applies — and why a strict series check the
+  // way AniList gets one isn't reliable for booru tag slugs) and this
+  // applies it automatically. Every card gets imageSource set to whichever
+  // source actually supplied the art, plus the exact tag used, so a
+  // spot-check has something concrete to check against.
   //
-  // Only touches cards still on imageSource: 'anilist' (the schema
-  // default), so re-running this after a partial run — or after adding
-  // new cards later — only processes what's left, same "run it again to
-  // keep going" shape as .backfillimages. Capped at 25/run: each card can
-  // cost several Danbooru/Gelbooru requests (tag lookup + up to a few post
-  // searches, doubled if it has to fall back), and both sites' anonymous
-  // rate limits are generous enough that even running this a few times back
-  // to back stays well inside them — but still slow enough on a phone-class
-  // connection that one call shouldn't try to do all 300+ at once.
+  // BUGFIX (Aug 2026): this used to cap at 25 cards/run, requiring the
+  // owner to manually re-type the command over a dozen times to get
+  // through a 300+ card catalogue. Now processes EVERY matching card in
+  // one invocation — safe to do because progress is checkpointed two ways:
+  // (1) each card's MongoDB write happens immediately as it succeeds, so
+  // an interruption mid-run never loses anything already done, and (2) a
+  // WhatsApp progress update posts every PROGRESS_CHUNK cards so a run
+  // that takes several minutes doesn't look hung. If Danbooru/Gelbooru/
+  // Safebooru starts hard rate-limiting (a 429 that survives their own
+  // internal retries — see utils/danbooru.js), the run stops itself early
+  // rather than burning through the rest of the list with guaranteed
+  // failures, and tells you how many cards are left for next time.
+  //
+  // .upgradeimages retry <code1> <code2> ... / .upgradeimages retry all
+  // — for cards that already got booru art (imageSource isn't 'anilist',
+  // so the normal path above never looks at them again) but the art is
+  // wrong — e.g. matched under an old name before a rename, or a
+  // technically-valid pick you just don't like. Re-runs the same lookup
+  // against specific cards (or, with `all`, every previously-upgraded
+  // card) regardless of current imageSource, excluding whichever post is
+  // already stored so a retry can't just hand back the identical image.
+  //
+  // .upgradeimages settag <code> <tag> [danbooru|gelbooru|safebooru]
+  // — manual override for cases the automatic matching genuinely can't
+  // resolve on its own (e.g. a name shared by two unrelated characters
+  // where even the series soft-boost has nothing to go on). Skips
+  // candidate discovery entirely and applies one specific tag you've
+  // already verified by hand on the site.
   async upgradeimages(client, msg, args) {
     if (!(await checkOwner(msg))) return;
 
-    const BATCH_LIMIT = 25;
-    const pending = await CardCatalogue.find({
-      $or: [{ imageSource: 'anilist' }, { imageSource: { $exists: false } }],
-    }).limit(BATCH_LIMIT);
+    const PROGRESS_CHUNK = 25;
+    const sub = args[0]?.toLowerCase();
 
-    if (!pending.length) {
-      return msg.reply('✅ Every catalogue card is already on booru art — nothing left to upgrade.');
-    }
+    // ── .upgradeimages settag <code> <tag> [source] ──────────────────────
+    if (sub === 'settag') {
+      const [, rawCode, tag, rawSource] = args;
+      if (!rawCode || !tag) {
+        return msg.reply('❌ Usage: *.upgradeimages settag <code> <tag> [danbooru|gelbooru|safebooru]*\n\nFor a card the automatic matching keeps getting wrong — look up the correct tag yourself on the site, then set it directly. Defaults to danbooru if no source given.');
+      }
+      const doc = await CardCatalogue.findOne({ cardId: rawCode.toUpperCase() });
+      if (!doc) return msg.reply(`❌ No catalogue card with code \`${rawCode.toUpperCase()}\`.`);
 
-    await msg.reply(`🖼️ Upgrading images for ${pending.length} card(s) via Danbooru (Gelbooru fallback)... this'll take a bit, hang tight.`);
+      const source = ['danbooru', 'gelbooru', 'safebooru'].includes(rawSource?.toLowerCase())
+        ? rawSource.toLowerCase() : 'danbooru';
 
-    const applied = [];
-    const skipped = [];
-
-    for (const doc of pending) {
       try {
-        const art = await findCharacterArtwork(doc.name);
-        if (!art) {
-          skipped.push(`${doc.name} [${doc.cardId}] — no match on Danbooru or Gelbooru; left on AniList art`);
-          await sleep(500);
-          continue;
-        }
+        const art = await fetchArtworkForExactTag(tag, source);
+        if (!art) return msg.reply(`❌ No usable ${source} post found for tag "${tag}" (must be rating:general, not a comic/group shot/style-mismatch — see utils/danbooru.js's filters).`);
 
         doc.imageUrl = art.url;
-        doc.imageSource = art.source || 'danbooru';
-        // Same cache-invalidation as .editcard — imageUrl is one of the
-        // fields the renderer draws from, so the cached PNG is now stale.
+        doc.imageSource = art.source;
+        doc.sourcePostId = String(art.postId);
         doc.renderedUrl = null;
         doc.renderVersion = null;
         doc.renderedAt = null;
         await doc.save();
 
-        applied.push(`✅ ${doc.name} [${doc.cardId}] — matched ${art.source} tag "${art.tagUsed}" (score ${art.score})`);
+        return msg.reply(`✅ ${doc.name} [\`${doc.cardId}\`] set to ${art.source} tag "${tag}" (score ${art.score}).`);
       } catch (err) {
-        skipped.push(`${doc.name} [${doc.cardId}] — lookup failed (${err.message})`);
+        return msg.reply(`❌ Lookup failed: ${err.message}`);
       }
-      await sleep(500); // be a good citizen on both sites' shared free tiers
     }
 
-    const remainingUpgrade = await CardCatalogue.countDocuments({
-      $or: [{ imageSource: 'anilist' }, { imageSource: { $exists: false } }],
-    });
+    const isRetry = sub === 'retry';
 
-    let upgradeReply = `🖼️ *Image Upgrade Complete*\n\n✅ Upgraded: ${applied.length}\n⚠️ No match: ${skipped.length}\n`;
-    if (applied.length) upgradeReply += `\n*Upgraded:*\n${applied.join('\n')}`;
-    if (skipped.length) upgradeReply += `\n\n*No match:*\n${skipped.join('\n')}`;
-    if (remainingUpgrade > 0) upgradeReply += `\n\n📦 ${remainingUpgrade} more still on AniList art — run *.upgradeimages* again to keep going.`;
-    upgradeReply += `\n\nSpot-check any of these with *.ci [code]* or *.ci [name]* (add the tier too if that name matches more than one card) — each upgraded card's source tag is listed above if something looks off.`;
+    let pending;
+    if (isRetry) {
+      const retryArgs = args.slice(1);
+      if (!retryArgs.length) {
+        return msg.reply('❌ Usage: *.upgradeimages retry <code1> <code2> ...* for specific cards, or *.upgradeimages retry all* to re-check every previously-upgraded card.');
+      }
+
+      if (retryArgs[0].toLowerCase() === 'all') {
+        pending = await CardCatalogue.find({
+          imageSource: { $in: ['danbooru', 'gelbooru', 'safebooru'] },
+        });
+        if (!pending.length) return msg.reply('✅ No previously-upgraded cards to re-check.');
+      } else {
+        const codes = [...new Set(retryArgs.map(c => c.toUpperCase()))];
+        pending = await CardCatalogue.find({ cardId: { $in: codes } });
+        const foundIds = new Set(pending.map(c => c.cardId));
+        const notFound = codes.filter(c => !foundIds.has(c));
+        if (notFound.length) await msg.reply(`⚠️ Not found in catalogue, skipping: ${notFound.map(c => `\`${c}\``).join(', ')}`);
+        if (!pending.length) return msg.reply('❌ None of those codes matched a catalogue card.');
+      }
+    } else {
+      pending = await CardCatalogue.find({
+        $or: [{ imageSource: 'anilist' }, { imageSource: { $exists: false } }],
+      });
+
+      if (!pending.length) {
+        return msg.reply('✅ Every catalogue card is already on booru art — nothing left to upgrade. If some of those images are actually wrong, use *.upgradeimages retry <code>* to force a re-check, or *.upgradeimages settag <code> <tag>* to set one manually.');
+      }
+    }
+
+    await msg.reply(`🖼️ ${isRetry ? 'Re-checking' : 'Upgrading'} images for ${pending.length} card(s) via Danbooru → Gelbooru → Safebooru. This runs to completion in one go now — I'll post progress every ${PROGRESS_CHUNK} cards, so it may take a few messages on a run this size.`);
+
+    const applied = [];
+    const skipped = [];
+    let stoppedEarly = false;
+    let processedCount = 0;
+
+    for (const doc of pending) {
+      try {
+        // On retry, exclude whatever post was already tried — otherwise a
+        // technically-valid match the owner just doesn't like would
+        // deterministically come back identical every time.
+        const excludePostId = isRetry ? doc.sourcePostId : null;
+        const art = await findCharacterArtwork(doc.name, excludePostId, doc.series);
+        if (!art) {
+          const line = `${doc.name} [\`${doc.cardId}\`] — no ${isRetry ? 'other ' : ''}match on Danbooru, Gelbooru, or Safebooru; left on current art`;
+          skipped.push(line);
+          console.log(`[upgradeimages] SKIP: ${line}`);
+        } else {
+          doc.imageUrl = art.url;
+          doc.imageSource = art.source || 'danbooru';
+          doc.sourcePostId = String(art.postId);
+          // Same cache-invalidation as .editcard — imageUrl is one of the
+          // fields the renderer draws from, so the cached PNG is now stale.
+          doc.renderedUrl = null;
+          doc.renderVersion = null;
+          doc.renderedAt = null;
+          await doc.save();
+
+          const line = `✅ ${doc.name} [\`${doc.cardId}\`] — matched ${art.source} tag "${art.tagUsed}" (score ${art.score})`;
+          applied.push(line);
+          console.log(`[upgradeimages] ${line}`);
+        }
+      } catch (err) {
+        if (err.status === 429) {
+          // Hard rate-limit wall (survived that source's own internal
+          // retries) — stop here instead of guaranteed-failing through
+          // every remaining card. Whatever's already applied is already
+          // safely in MongoDB regardless.
+          stoppedEarly = true;
+          console.error(`[upgradeimages] Stopping early — rate limited after ${processedCount}/${pending.length} card(s): ${err.message}`);
+          break;
+        }
+        const line = `${doc.name} [\`${doc.cardId}\`] — lookup failed (${err.message})`;
+        skipped.push(line);
+        console.error(`[upgradeimages] ERROR: ${line}`);
+      }
+
+      processedCount++;
+      if (processedCount % PROGRESS_CHUNK === 0 && processedCount < pending.length) {
+        await msg.reply(`⏳ Progress: ${processedCount}/${pending.length} processed (${applied.length} upgraded, ${skipped.length} no match so far)...`);
+      }
+      await sleep(500); // be a good citizen on these sites' shared free tiers
+    }
+
+    let upgradeReply = `🖼️ *Image ${isRetry ? 'Re-check' : 'Upgrade'} ${stoppedEarly ? 'Stopped Early' : 'Complete'}*\n\n`;
+    if (stoppedEarly) {
+      const remaining = pending.length - processedCount;
+      upgradeReply += `⚠️ Hit a rate limit after ${processedCount}/${pending.length} cards — stopped here rather than guaranteed-fail through the rest. Run *.upgradeimages${isRetry ? ' retry all' : ''}* again in about an hour to continue with the remaining ${remaining}.\n\n`;
+    }
+    upgradeReply += `✅ Upgraded: ${applied.length}\n⚠️ No match: ${skipped.length}\n`;
+
+    // Full lists always go to pm2 logs (console.log/console.error above,
+    // as each one happens) — the WhatsApp reply itself is capped to a
+    // reasonable number inline so a 300+ card run doesn't produce one
+    // giant unreadable message that gets silently truncated anyway.
+    const MAX_LISTED = 15;
+    if (applied.length) {
+      upgradeReply += `\n*Upgraded${applied.length > MAX_LISTED ? ` (first ${MAX_LISTED} of ${applied.length})` : ''}:*\n${applied.slice(0, MAX_LISTED).join('\n')}`;
+      if (applied.length > MAX_LISTED) upgradeReply += `\n…and ${applied.length - MAX_LISTED} more — full list in pm2 logs.`;
+    }
+    if (skipped.length) {
+      upgradeReply += `\n\n*No match${skipped.length > MAX_LISTED ? ` (first ${MAX_LISTED} of ${skipped.length})` : ''}:*\n${skipped.slice(0, MAX_LISTED).join('\n')}`;
+      if (skipped.length > MAX_LISTED) upgradeReply += `\n…and ${skipped.length - MAX_LISTED} more — full list in pm2 logs.`;
+    }
+
+    upgradeReply += `\n\nSpot-check with *.ci [code]* or *.ci [name]* — each upgraded card's source tag is listed above if something looks off. Found a wrong one? *.upgradeimages retry [code]* forces a fresh lookup excluding the current pick. Still wrong after that (e.g. an ambiguous shared name)? *.upgradeimages settag [code] [tag]* sets one manually.`;
 
     msg.reply(upgradeReply.slice(0, 4000));
   },
@@ -942,13 +1054,13 @@ module.exports = {
     }\n\n`;
 
     reply += catalogue
-      ? `✅ Resolves to catalogue row [${catalogue.cardId}]\n• anilistId: ${catalogue.anilistId ?? 'none'}\n• imageUrl: ${catalogue.imageUrl ? `set (${catalogue.imageUrl.length} chars)` : 'EMPTY'}\n`
+      ? `✅ Resolves to catalogue row [\`${catalogue.cardId}\`]\n• anilistId: ${catalogue.anilistId ?? 'none'}\n• imageUrl: ${catalogue.imageUrl ? `set (${catalogue.imageUrl.length} chars)` : 'EMPTY'}\n`
       : `❌ Does NOT resolve to any catalogue row — "${rawId}" doesn't exist in CardCatalogue at all (dangling reference).\n`;
 
     reply += `\nCatalogue rows named exactly "${owned.name}": ${sameName.length}\n`;
     sameName.forEach(c => {
       const marker = c.cardId === rawId ? '  ← your card is linked to this one' : '';
-      reply += `• [${c.cardId}] anilistId:${c.anilistId ?? 'none'} image:${c.imageUrl ? 'yes' : 'no'}${marker}\n`;
+      reply += `• [\`${c.cardId}\`] anilistId:${c.anilistId ?? 'none'} image:${c.imageUrl ? 'yes' : 'no'}${marker}\n`;
     });
 
     msg.reply(reply.slice(0, 4000));
@@ -996,13 +1108,13 @@ module.exports = {
 
       const match = candidates[0];
       if (card.series && match.series && card.series !== match.series) {
-        skipped.push(`${card.name} [code ${card.code}] — name matches but series doesn't (yours: "${card.series}", catalogue: "${match.series}"); review manually`);
+        skipped.push(`${card.name} [code \`${card.code}\`] — name matches but series doesn't (yours: "${card.series}", catalogue: "${match.series}"); review manually`);
         continue;
       }
 
       card.catalogueId = match.cardId;
       await card.save();
-      fixed.push(`✅ ${card.name} [code ${card.code}] → linked to [${match.cardId}]`);
+      fixed.push(`✅ ${card.name} [code \`${card.code}\`] → linked to [\`${match.cardId}\`]`);
     }
 
     let reply = `🔧 *Link Repair*\n\n✅ Fixed: ${fixed.length}\n⚠️ Skipped: ${skipped.length}\n`;

@@ -142,6 +142,8 @@ const COMMAND_REFERENCE = [
       { cmd: '.akinator / .aki', desc: 'Guess-the-character game' },
       { cmd: '.greekgod / .gg', desc: 'Find out which Greek god you embody' },
       { cmd: '.wcg', desc: 'Group "Would You Rather" game' },
+      { cmd: '.quiz start [easy|normal|hard]', desc: 'Start an Anime Character Quiz round — guess the character from an image, first correct reply wins the point' },
+      { cmd: '.quiz stop', desc: 'End the current quiz early and show the scoreboard' },
     ],
   },
   {

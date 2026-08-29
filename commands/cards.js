@@ -139,6 +139,19 @@ async function getCardByIndex(userId, index) {
   return cards[index - 1] || null;
 }
 
+// Batch-fetches CardCatalogue entries for a page of OwnedCard docs (by
+// their catalogueId) and returns a cardId -> catalogue Map. Used by .col's
+// list views so each row shows the live, possibly-renamed name/series
+// instead of OwnedCard's own stale snapshot from claim time — same
+// reasoning as renderCardDetail's catalogue-preferred fix, just applied to
+// a page of rows instead of one card's detail view.
+async function getCatalogueMap(ownedCards) {
+  const catalogueIds = [...new Set(ownedCards.map(c => c.catalogueId).filter(Boolean))];
+  if (!catalogueIds.length) return new Map();
+  const catalogues = await CardCatalogue.find({ cardId: { $in: catalogueIds } });
+  return new Map(catalogues.map(c => [c.cardId, c]));
+}
+
 // ─── Shared single-card detail view — used by .card and .col <number> ─────
 // Both commands used to build their own near-identical caption text
 // independently, which is how they'd already drifted into slightly
@@ -154,18 +167,31 @@ async function getCardByIndex(userId, index) {
 // Because this cleans whatever's already saved in Mongo on every view, it
 // also fixes descriptions saved before this sanitizing existed, with no
 // database migration needed.
+// BUGFIX (Aug 2026): this used to read card.name/card.series/card.tier
+// directly — OwnedCard's OWN denormalized copy, snapshotted at claim time
+// — even though `catalogue` (the live, authoritative CardCatalogue entry)
+// was already being passed in and used for description/image right below.
+// That's why renameCardsWithGemini.js correcting the catalogue (e.g.
+// "Kirito" -> "Kazuto Kirigaya") didn't show up here or in .col's list
+// view: the corrected value was sitting in MongoDB the whole time, this
+// just wasn't looking at it for the two most prominent fields on the
+// card. Same catalogue-preferred pattern sendOwnedCardInfo already uses
+// for the .ci [code] path, applied here too so .card/.col match it.
 function renderCardDetail(card, catalogue) {
   const line = (label, value) => `ꕥ ${boldSans(label)}: ${value}`;
+  const name = catalogue?.name || card.name;
+  const series = catalogue?.series || card.series;
+  const tier = catalogue?.tier || card.tier;
   const description = catalogue?.description ? cleanDescription(catalogue.description) : '';
 
   const lines = [
     `╭━━━★彡 ${doubleStruck('CARD')} 彡★━━━╮`,
     '',
-    line('Name', `${tierEmoji(card.tier)} ${card.name}`),
-    line('Tier', card.tier),
-    line('Series', card.series),
-    line('Value', `${cardValue(card.tier).toLocaleString()} coins`),
-    line('Code', card.code || 'N/A'),
+    line('Name', `${tierEmoji(tier)} ${name}`),
+    line('Tier', tier),
+    line('Series', series),
+    line('Value', `${cardValue(tier).toLocaleString()} coins`),
+    line('Code', card.code ? `\`${card.code}\`` : 'N/A'),
     line('Times Traded', card.timesTraded),
     line('Obtained', new Date(card.obtainedAt).toLocaleDateString()),
   ];
@@ -222,8 +248,8 @@ ${tierEmoji(tier)} *${name}*
 📚 Series: ${series}
 ⭐ Tier: ${tier}
 💰 Value: ${cardValue(tier).toLocaleString()} coins
-🆔 Card ID: ${cardId}
-🎫 Claim Code: ${owned.code}
+🆔 Card ID: \`${cardId}\`
+🎫 Claim Code: \`${owned.code}\`
 
 👤 Owner: @${ownerShort}
 🥇 First Owner: @${firstOwnerShort}
@@ -430,7 +456,23 @@ module.exports = {
 
     let card = null;
 
-    if (args.length === 1 && /^[A-HJ-NP-Z2-9]{6}$/i.test(args[0])) {
+    // BUGFIX (Aug 2026): this used to require the CURRENT generator's
+    // restricted alphabet (A-H,J-N,P-Z,2-9 — generateCardId() skips
+    // 0/O/1/I so new codes can't be confused with each other). That's only
+    // true for codes generated going forward — migrateCardIds.js only
+    // assigns a fresh ID to a card that doesn't already have one, it never
+    // regenerates an existing cardId, so any card old enough to predate
+    // that convention (e.g. one from the catalogue's original seed data)
+    // can have a real, valid cardId that DOES contain a 0, O, 1, or I. The
+    // strict regex was rejecting a 100% correct code on exactly that kind
+    // of card, and a prior version of this fix wrongly told people
+    // "codes never contain 0/O/1/I" — confirmed false by zooming into an
+    // actual screenshot pixel-by-pixel: the "0" and "1" typed were
+    // genuinely a zero and a one, not a misread O/I. Now this just accepts
+    // any 6-character alphanumeric string and lets the actual database
+    // lookup decide, rather than pre-rejecting based on an alphabet that
+    // doesn't hold for all existing data.
+    if (args.length === 1 && /^[A-Z0-9]{6}$/i.test(args[0])) {
       const code = args[0].toUpperCase();
 
       const owned = await OwnedCard.findOne({ code });
@@ -444,11 +486,21 @@ module.exports = {
 
     if (!card) {
       const tier = args[args.length - 1]?.toUpperCase();
-      const name = args.slice(0, -1).join(' ') || args.join(' ');
+      const hasTier = tier && ['C','B','A','S','SS','SSS'].includes(tier) && args.length > 1;
+      const name = hasTier ? args.slice(0, -1).join(' ') : args.join(' ');
+      const nameRegex = new RegExp(name, 'i');
 
-      const query = tier && ['C','B','A','S','SS','SSS'].includes(tier) && args.length > 1
-        ? { name: new RegExp(name, 'i'), tier }
-        : { name: new RegExp(args.join(' '), 'i') };
+      // BUGFIX (Aug 2026): after renameCardsWithGemini.js corrected a bunch
+      // of cards from a nickname to a full/formal name (e.g. "Kirito" ->
+      // "Kazuto Kirigaya", "Goblin" -> "Goblin Slayer"), searching by the
+      // OLD familiar name could go from "matches, since it's a substring"
+      // to "no match at all" — "Kirito" isn't a substring of "Kazuto
+      // Kirigaya" the way it was trivially a substring of itself before.
+      // Checking `aliases` alongside `name` keeps the old name findable.
+      // (aliases is empty on a card until it's been renamed at least
+      // once — see the aliases field comment in models/Card.js.)
+      const nameMatch = { $or: [{ name: nameRegex }, { aliases: nameRegex }] };
+      const query = hasTier ? { ...nameMatch, tier } : nameMatch;
 
       card = await CardCatalogue.findOne(query);
     }
@@ -471,7 +523,7 @@ ${tierEmoji(card.tier)} *${card.name}*
 📚 Series: ${card.series}
 ⭐ Tier: ${card.tier}
 💰 Value: ${cardValue(card.tier).toLocaleString()} coins
-🆔 Card ID: ${cardId}
+🆔 Card ID: \`${cardId}\`
 
 ${ownershipLines}
 📅 Added: ${card.createdAt ? new Date(card.createdAt).toLocaleDateString() : 'Unknown'}${card.description ? `\n📝 ${cleanDescription(card.description)}` : ''}
@@ -766,9 +818,15 @@ const cards = await OwnedCard.find({
 
       if (!slice.length) return msg.reply(`❌ No cards on page ${page}. You have ${totalPages} page(s) total.`);
 
+      const catalogueById = await getCatalogueMap(slice);
+
       let text = `🗃️ *Your Collection* [Page ${page}/${totalPages}] (${cards.length} total)\n\n`;
       slice.forEach((c, i) => {
-        text += `${start + i + 1}. ${tierEmoji(c.tier)} *${c.name}* — ${c.tier}\n   📚 ${c.series}\n\n`;
+        const cat = catalogueById.get(c.catalogueId);
+        const name = cat?.name || c.name;
+        const series = cat?.series || c.series;
+        const tier = cat?.tier || c.tier;
+        text += `${start + i + 1}. ${tierEmoji(tier)} *${name}* — ${tier}\n   📚 ${series}\n\n`;
       });
       text += `Use *.col <number>* to view a card's full details.`;
       if (totalPages > 1) text += `\nUse *.col page <n>* to see more (e.g. .col page 2).`;
@@ -793,9 +851,15 @@ const cards = await OwnedCard.find({
     const slice = cards.slice(0, perPage);
     const totalPages = Math.ceil(cards.length / perPage);
 
+    const catalogueById = await getCatalogueMap(slice);
+
     let text = `🗃️ *Your Collection* [Page 1/${totalPages}] (${cards.length} total)\n\n`;
     slice.forEach((c, i) => {
-      text += `${i + 1}. ${tierEmoji(c.tier)} *${c.name}* — ${c.tier}\n   📚 ${c.series}\n\n`;
+      const cat = catalogueById.get(c.catalogueId);
+      const name = cat?.name || c.name;
+      const series = cat?.series || c.series;
+      const tier = cat?.tier || c.tier;
+      text += `${i + 1}. ${tierEmoji(tier)} *${name}* — ${tier}\n   📚 ${series}\n\n`;
     });
     text += `Use *.col <number>* to view a card's full details.`;
     if (totalPages > 1) text += `\nUse *.col page <n>* to see more (e.g. .col page 2).`;
@@ -836,9 +900,9 @@ const cards = await OwnedCard.find({
     let text = `🛒 *Card Shop* [Page ${page}/${totalPages}] (${entries.length} total)\n\n`;
     slice.forEach(({ kind, card }) => {
       if (kind === 'listing') {
-        text += `${tierEmoji(card.tier)} *${card.name}* [${card.tier}] — 💰 ${formatNum(card.price)} coins\n🆔 ${card.code || 'pending'} • Seller: @${card.ownerId.split('@')[0]}\nUse *.claim ${card.code}* to buy!\n\n`;
+        text += `${tierEmoji(card.tier)} *${card.name}* [${card.tier}] — 💰 ${formatNum(card.price)} coins\n🆔 ${card.code ? `\`${card.code}\`` : 'pending'} • Seller: @${card.ownerId.split('@')[0]}\nUse *.claim ${card.code}* to buy!\n\n`;
       } else {
-        text += `${tierEmoji(card.tier)} *${card.name}* [${card.tier}] — 💰 ${formatNum(cardValue(card.tier))} coins (shop stock)\n🆔 ${card.cardId}\nUse *.buyc ${card.cardId}* to buy!\n\n`;
+        text += `${tierEmoji(card.tier)} *${card.name}* [${card.tier}] — 💰 ${formatNum(cardValue(card.tier))} coins (shop stock)\n🆔 \`${card.cardId}\`\nUse *.buyc ${card.cardId}* to buy!\n\n`;
       }
     });
     if (totalPages > 1) text += `Use *.cardshop page <n>* to see more (e.g. .cardshop page 2).`;

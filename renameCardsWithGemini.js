@@ -17,75 +17,56 @@
 // field unchanged if it isn't confident.
 //
 // SAFETY: defaults to DRY RUN — prints every proposed change and writes an
-// audit log AFTER EVERY BATCH (not just at the end — see the Aug 2026
-// bugfix note below), but touches nothing in MongoDB unless you pass
-// --apply. Only touches CardCatalogue.name/series (+ resets the render
-// cache on anything that changes, same as .editcard) — never tier,
+// audit log after every batch, but touches nothing in MongoDB unless you
+// pass --apply. Only touches CardCatalogue.name/series (+ resets the
+// render cache on anything that changes, same as .editcard) — never tier,
 // description, imageUrl, or OwnedCard, matching how .editcard already
 // behaves.
 //
 // USAGE:
 //   node renameCardsWithGemini.js                        dry run, all cards
 //   node renameCardsWithGemini.js --limit=10              dry run, first 10 only (test this first!)
-//   node renameCardsWithGemini.js --apply                 actually writes changes
-//   node renameCardsWithGemini.js --resume=rename-audit-....json
-//                                                          continue a previous run using the SAME
-//                                                          log file, skipping anything already
-//                                                          resolved (applied/unchanged/proposed) —
-//                                                          only retries cards that were skipped
-//                                                          last time (almost always quota
-//                                                          exhaustion, not a real "can't tell").
-//                                                          Combine with --apply as needed.
+//   node renameCardsWithGemini.js --apply                 actually writes changes (asks Gemini fresh)
+//   node renameCardsWithGemini.js --resume=<path-to-a-previous-audit-log.json>
 //
-// BUGFIX (Aug 2026, after a live run hit Gemini's free-tier request quota
-// partway through and got Ctrl-C'd): the first version of this script only
-// wrote its audit log once, after the ENTIRE run finished — so interrupting
-// it (deliberately, or via an unrecoverable quota error) lost every
-// proposed change from the whole run, dry-run or not, with no way to see
-// what had already been figured out. It also retried rate limits on a
-// fixed 4.5s/9s schedule regardless of what Gemini's own error said to
-// wait, and kept using that same short pacing for every LATER batch even
-// after repeatedly getting rate-limited — so it kept re-triggering the
-// same wall instead of backing off. Fixed here: the audit log is
-// (re)written after every single batch, and the delay between batches
-// grows for the rest of the run whenever a rate limit is hit (see
-// `throttle` below), rather than resetting straight back to the original
-// pace next batch.
+// WHAT --resume DOES (BUGFIX, Aug 2026 — this is the second version of
+// this behavior, see below for what was wrong with the first):
+//   Every card in the resume log that was already fully decided last time
+//   ('applied' or 'unchanged') is carried forward as-is and NEVER asked
+//   about again — no wasted Gemini call.
+//   Cards marked 'proposed' (a DRY RUN decided a rename but nothing was
+//   written yet) are handled based on THIS run's mode:
+//     - dry run + --resume  -> still just carried forward as 'proposed',
+//       nothing written, exactly like before.
+//     - --apply + --resume  -> the already-decided name/series is now
+//       WRITTEN to MongoDB directly, with NO new Gemini call — you're
+//       replaying a decision you already reviewed, not re-asking.
+//   Only cards marked 'skipped' (almost always a quota failure, not a
+//   real "couldn't tell") are actually sent to Gemini again.
 //
-// MODEL CHOICE (this is what actually caused the quota wall): your .env's
-// GEMINI_TEXT_MODEL is set to gemini-3.5-flash, which — per the error your
-// run hit — has a very small free-tier requests-per-minute allowance.
-// That's presumably deliberately chosen for the bot's live chat/persona
-// features. This bulk classification task doesn't need that model at all,
-// so rather than touch your live GEMINI_TEXT_MODEL (which could break
-// something that specifically depends on it), this script reads a
-// SEPARATE env var, GEMINI_RENAME_MODEL, and only falls back to whatever
-// TEXT_MODEL is if that's unset.
+//   THE BUG THIS FIXES: the first version of --apply --resume treated
+//   'proposed' entries as "already resolved, nothing to do" and filtered
+//   them out entirely — so running `--apply --resume=<dry-run-log>` after
+//   a clean dry run printed "Nothing left to process" and silently wrote
+//   NOTHING to the database, even though every change had already been
+//   manually verified and was sitting right there in the log. If you hit
+//   exactly that ("Nothing left to process" right after --apply --resume
+//   on a dry-run log with proposed changes in it), that older version is
+//   why — this version actually applies them.
 //
-// I'm not hardcoding a specific "lighter" model name as the default here —
-// utils/gemini.js's own comments already document that Google has been
-// restricting which models a given key can use every few weeks, and you
-// already have probe-gemini-models.sh in this project for exactly this
-// reason. Run that, note whichever *-lite model comes back ✅ WORKS for
-// your actual key, and set GEMINI_RENAME_MODEL to it before running this
-// at scale — a Lite-tier model's free quota is typically far more
-// generous for a bulk job like this than a full Flash model's.
+// MODEL CHOICE: reads a separate GEMINI_RENAME_MODEL env var so this bulk
+// job can use a different (typically higher-free-quota) model than
+// whatever the live bot's GEMINI_TEXT_MODEL is set to, without touching
+// that. Falls back to TEXT_MODEL if unset. Run probe-gemini-models.sh
+// (already in this project) to see which models your actual key can use —
+// don't guess a model name, Google's available-model list for a given key
+// changes over time.
 //
 // Other optional env overrides (.env):
-//   GEMINI_RENAME_BATCH_SIZE   cards per Gemini call (default 15 — for a
-//                              free-tier quota counted in REQUESTS, not
-//                              tokens, fewer/larger batches cost less than
-//                              more/smaller ones)
+//   GEMINI_RENAME_BATCH_SIZE   cards per Gemini call (default 15)
 //   GEMINI_RENAME_DELAY_MS     starting pause between calls (default 8000)
 //   GEMINI_RENAME_MAX_DELAY_MS ceiling the adaptive backoff won't exceed
 //                              (default 90000)
-//
-// UNCERTAINTY FLAG: the quota-exceeded errors in your last run reported
-// two different numbers ("limit: 5" and later "limit: 20") for what looked
-// like the same model+metric — I can't explain that discrepancy from here
-// (no access to your Google AI Studio dashboard). If this still hits walls
-// after switching models, check https://ai.dev/rate-limit directly for
-// your key's actual current limits rather than trusting either number.
 
 const mongoose = require('mongoose');
 require('dotenv').config();
@@ -104,7 +85,7 @@ const RESUME_PATH = resumeArg ? resumeArg.split('=')[1] : null;
 const BATCH_SIZE = parseInt(process.env.GEMINI_RENAME_BATCH_SIZE || '15', 10);
 const START_DELAY_MS = parseInt(process.env.GEMINI_RENAME_DELAY_MS || '8000', 10);
 const MAX_DELAY_MS = parseInt(process.env.GEMINI_RENAME_MAX_DELAY_MS || '90000', 10);
-const RENAME_MODEL = process.env.GEMINI_RENAME_MODEL || undefined; // undefined -> generateText uses its own default
+const RENAME_MODEL = process.env.GEMINI_RENAME_MODEL || undefined;
 const MAX_DESCRIPTION_CHARS = 700;
 
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
@@ -140,17 +121,11 @@ function parseJsonArray(text) {
   return parsed;
 }
 
-// Pulls a "Please retry in 31.7s" style hint out of Gemini's error message,
-// if present, so the wait actually matches what Google asked for instead
-// of a fixed guess.
 function parseRetryHintMs(message) {
   const match = /retry in ([\d.]+)\s*s/i.exec(message || '');
   return match ? Math.ceil(parseFloat(match[1]) * 1000) : null;
 }
 
-// Shared mutable backoff state: grows (and only grows) for the rest of the
-// run every time a rate limit is hit, so later batches don't immediately
-// re-trigger the same wall the earlier ones just backed off from.
 function makeThrottle() {
   return { delay: START_DELAY_MS };
 }
@@ -203,6 +178,18 @@ async function resolveBatch(batch, throttle, attempt = 1) {
   }
 }
 
+// Writes an already-decided rename straight to MongoDB — no Gemini call.
+// Used both by the normal per-batch loop (fresh decisions) and by the
+// --resume + --apply path (replaying decisions from an earlier dry run).
+async function applyToDoc(doc, name, series) {
+  doc.name = name;
+  doc.series = series;
+  doc.renderedUrl = null;
+  doc.renderVersion = null;
+  doc.renderedAt = null;
+  await doc.save();
+}
+
 (async () => {
   if (!process.env.GEMINI_API_KEY) {
     console.error('❌ GEMINI_API_KEY is not set in .env — nothing to do.');
@@ -214,14 +201,17 @@ async function resolveBatch(batch, throttle, attempt = 1) {
   console.log(`Model: ${RENAME_MODEL || '(GEMINI_RENAME_MODEL not set — using the same model as the live bot, GEMINI_TEXT_MODEL)'}`);
   console.log(`Batch size: ${BATCH_SIZE} | Starting delay: ${START_DELAY_MS}ms | Max delay: ${MAX_DELAY_MS}ms\n`);
 
-  // ─── Resume support ───────────────────────────────────────────────────
-  // Anything already resolved last time (applied/unchanged/proposed) is
-  // carried forward as-is and NOT reprocessed — only entries that were
-  // 'skipped' get dropped from the carry-over and retried, since almost
-  // all skips are quota exhaustion, not a genuine "couldn't tell".
+  const allCards = await CardCatalogue.find();
+  const cardById = new Map(allCards.map(c => [c.cardId, c]));
+
   let audit = [];
   let logPath = `./rename-audit-${Date.now()}.json`;
-  let alreadyDone = new Set();
+  const alreadyDone = new Set();
+  let changed = 0, unchanged = 0, skipped = 0;
+
+  function flushAudit() {
+    fs.writeFileSync(logPath, JSON.stringify(audit, null, 2));
+  }
 
   if (RESUME_PATH) {
     if (!fs.existsSync(RESUME_PATH)) {
@@ -229,92 +219,100 @@ async function resolveBatch(batch, throttle, attempt = 1) {
       process.exit(1);
     }
     const previous = JSON.parse(fs.readFileSync(RESUME_PATH, 'utf8'));
-    audit = previous.filter(e => e.status !== 'skipped');
-    alreadyDone = new Set(audit.map(e => e.cardId));
     logPath = RESUME_PATH; // keep appending to the same file
-    console.log(`Resuming from ${RESUME_PATH}: ${alreadyDone.size} card(s) already resolved, will be skipped.\n`);
+
+    let materialized = 0;
+    for (const entry of previous) {
+      if (entry.status === 'applied') {
+        audit.push(entry);
+        alreadyDone.add(entry.cardId);
+        changed++;
+      } else if (entry.status === 'unchanged') {
+        audit.push(entry);
+        alreadyDone.add(entry.cardId);
+        unchanged++;
+      } else if (entry.status === 'proposed') {
+        alreadyDone.add(entry.cardId); // never re-ask Gemini for this one
+        if (APPLY) {
+          const doc = cardById.get(entry.cardId);
+          if (!doc) {
+            console.warn(`  ⚠️  ${entry.cardId} no longer exists in the catalogue — skipping`);
+            audit.push({ ...entry, status: 'skipped', reason: 'card no longer exists in CardCatalogue' });
+            skipped++;
+            continue;
+          }
+          await applyToDoc(doc, entry.newName, entry.newSeries);
+          audit.push({ ...entry, status: 'applied' });
+          changed++;
+          materialized++;
+          console.log(`  ✅ ${entry.oldName} [${entry.cardId}] — name: "${entry.oldName}" -> "${entry.newName}", series: "${entry.oldSeries}" -> "${entry.newSeries}"`);
+        } else {
+          audit.push(entry); // still just proposed, dry run — nothing to write
+        }
+      }
+      // 'skipped' entries are deliberately left OUT of audit/alreadyDone
+      // here — they fall through and get retried via the normal pipeline.
+    }
+
+    flushAudit();
+    console.log(`Resuming from ${RESUME_PATH}: ${alreadyDone.size} card(s) already decided.`);
+    if (APPLY && materialized > 0) console.log(`Wrote ${materialized} previously-proposed change(s) to MongoDB from the resume log.`);
+    console.log('');
   }
 
-  function flushAudit() {
-    fs.writeFileSync(logPath, JSON.stringify(audit, null, 2));
-  }
-
-  // Graceful Ctrl-C: audit is already flushed after every batch below, so
-  // this is just a clear confirmation of that rather than a rescue.
-  process.on('SIGINT', async () => {
-    console.log(`\n\n⏸️  Interrupted. Progress through the last completed batch is saved in:\n${logPath}`);
-    console.log(`Resume with: node renameCardsWithGemini.js${APPLY ? ' --apply' : ''} --resume=${logPath}`);
-    await mongoose.disconnect().catch(() => {});
-    process.exit(0);
-  });
-
-  let query = CardCatalogue.find();
-  const allCards = await query;
   let cards = allCards.filter(c => !alreadyDone.has(c.cardId));
   if (LIMIT) cards = cards.slice(0, LIMIT);
 
-  if (!cards.length) {
-    console.log('Nothing left to process.');
-    return mongoose.disconnect();
-  }
-  console.log(`Processing ${cards.length} card(s) in batches of ${BATCH_SIZE}...\n`);
+  if (cards.length) {
+    console.log(`Processing ${cards.length} card(s) needing a fresh Gemini decision, in batches of ${BATCH_SIZE}...\n`);
+    const throttle = makeThrottle();
 
-  const throttle = makeThrottle();
-  let changed = 0, unchanged = 0, skipped = 0;
+    for (let i = 0; i < cards.length; i += BATCH_SIZE) {
+      const batch = cards.slice(i, i + BATCH_SIZE);
+      console.log(`Batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(cards.length / BATCH_SIZE)}: ${batch.map(c => c.cardId).join(', ')}`);
 
-  for (let i = 0; i < cards.length; i += BATCH_SIZE) {
-    const batch = cards.slice(i, i + BATCH_SIZE);
-    console.log(`Batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(cards.length / BATCH_SIZE)}: ${batch.map(c => c.cardId).join(', ')}`);
+      const results = await resolveBatch(batch, throttle);
+      const byId = new Map(results.map(r => [r.cardId, r]));
 
-    const results = await resolveBatch(batch, throttle);
-    const byId = new Map(results.map(r => [r.cardId, r]));
+      for (const card of batch) {
+        const result = byId.get(card.cardId);
 
-    for (const card of batch) {
-      const result = byId.get(card.cardId);
+        if (!result || result.skipped) {
+          skipped++;
+          audit.push({ cardId: card.cardId, oldName: card.name, oldSeries: card.series, status: 'skipped', reason: result?.reason || 'no result returned' });
+          console.log(`  ⏭️  ${card.name} [${card.cardId}] — skipped (${result?.reason || 'no result'})`);
+          continue;
+        }
 
-      if (!result || result.skipped) {
-        skipped++;
-        audit.push({ cardId: card.cardId, oldName: card.name, oldSeries: card.series, status: 'skipped', reason: result?.reason || 'no result returned' });
-        console.log(`  ⏭️  ${card.name} [${card.cardId}] — skipped (${result?.reason || 'no result'})`);
-        continue;
+        const nameChanged = result.name && result.name !== card.name;
+        const seriesChanged = result.series && result.series !== card.series;
+
+        if (!nameChanged && !seriesChanged) {
+          unchanged++;
+          audit.push({ cardId: card.cardId, oldName: card.name, oldSeries: card.series, status: 'unchanged' });
+          continue;
+        }
+
+        changed++;
+        audit.push({
+          cardId: card.cardId,
+          oldName: card.name, oldSeries: card.series,
+          newName: result.name, newSeries: result.series,
+          status: APPLY ? 'applied' : 'proposed',
+        });
+        console.log(`  ${APPLY ? '✅' : '📝'} ${card.name} [${card.cardId}]${nameChanged ? ` — name: "${card.name}" -> "${result.name}"` : ''}${seriesChanged ? ` — series: "${card.series}" -> "${result.series}"` : ''}`);
+
+        if (APPLY) await applyToDoc(card, result.name, result.series);
       }
 
-      const nameChanged = result.name && result.name !== card.name;
-      const seriesChanged = result.series && result.series !== card.series;
-
-      if (!nameChanged && !seriesChanged) {
-        unchanged++;
-        audit.push({ cardId: card.cardId, oldName: card.name, oldSeries: card.series, status: 'unchanged' });
-        continue;
-      }
-
-      changed++;
-      audit.push({
-        cardId: card.cardId,
-        oldName: card.name, oldSeries: card.series,
-        newName: result.name, newSeries: result.series,
-        status: APPLY ? 'applied' : 'proposed',
-      });
-      console.log(`  ${APPLY ? '✅' : '📝'} ${card.name} [${card.cardId}]${nameChanged ? ` — name: "${card.name}" -> "${result.name}"` : ''}${seriesChanged ? ` — series: "${card.series}" -> "${result.series}"` : ''}`);
-
-      if (APPLY) {
-        card.name = result.name;
-        card.series = result.series;
-        card.renderedUrl = null;
-        card.renderVersion = null;
-        card.renderedAt = null;
-        await card.save();
-      }
+      flushAudit();
+      if (i + BATCH_SIZE < cards.length) await sleep(throttle.delay);
     }
-
-    // Written after EVERY batch now, not just at the end — see the Aug
-    // 2026 bugfix note at the top of this file for why that matters.
-    flushAudit();
-
-    if (i + BATCH_SIZE < cards.length) await sleep(throttle.delay);
+  } else {
+    console.log('No cards need a fresh Gemini decision (everything was already resolved via --resume, or nothing is left to process).\n');
   }
 
-  console.log(`\n─── Done ───`);
+  console.log(`─── Done ───`);
   console.log(`${APPLY ? 'Applied' : 'Would apply'}: ${changed}`);
   console.log(`Already correct: ${unchanged}`);
   console.log(`Skipped (left untouched): ${skipped}`);
@@ -322,7 +320,7 @@ async function resolveBatch(batch, throttle, attempt = 1) {
   if (skipped > 0) {
     console.log(`To retry just the skipped ones: node renameCardsWithGemini.js${APPLY ? ' --apply' : ''} --resume=${logPath}`);
   }
-  if (!APPLY) console.log(`\nThis was a DRY RUN — nothing was written. Review ${logPath}, then re-run with --apply to commit these changes.`);
+  if (!APPLY) console.log(`\nThis was a DRY RUN. Review ${logPath}, then re-run with --apply --resume=${logPath} to write these exact decisions (no new Gemini calls).`);
 
   await mongoose.disconnect();
 })().catch(async err => {

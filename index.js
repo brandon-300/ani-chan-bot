@@ -8,6 +8,7 @@ const { execSync } = require('child_process');
 const { safeGetQuotedMessage, safeGetChat, safeGetContact, resolveSenderName, withRetry, encodeIdKey } = require('./utils/helpers');
 const { BOT_NAME } = require('./utils/config');
 const { instrumentHttpClients, wrapWithUsageTracking } = require('./utils/usageTracking');
+const { tryHandleQuizAnswer } = require('./commands/games/quiz');
 
 // Installed as early as possible, before any command file's axios/fetch
 // calls could ever fire — see utils/usageTracking.js for what this
@@ -142,6 +143,28 @@ const aliases = {
 // (e.g. the pinned ani-chan-bot-commands.txt reference file going stale).
 const { COMMAND_REFERENCE } = require('./utils/commandReference');
 
+// Reduces one COMMAND_REFERENCE `cmd` field down to just its bare, invocable
+// ".command" form(s) for the in-chat menu — no descriptions, no argument
+// placeholders. " / " (with spaces) separates genuinely distinct commands or
+// aliases (".mute / .unmute", ".balance / .bal") and each becomes its own
+// line; a bare "/" with no surrounding spaces is an argument placeholder
+// (".loan request/repay/status", "[warn/kick]") and is dropped instead. A
+// second word is kept only when it reads as part of the command itself
+// (".guild info", ".pet adopt") — stripped as soon as a token looks like an
+// argument: bracketed, an "@mention", contains a slash, or is ALL-CAPS.
+function extractMenuCommands(cmdField) {
+  return cmdField.split(' / ').map(variant => {
+    const tokens = variant.trim().split(/\s+/);
+    const kept = [tokens[0]];
+    for (let i = 1; i < tokens.length; i++) {
+      const t = tokens[i];
+      if (t.startsWith('[') || t.startsWith('@') || t.startsWith('(') || t.startsWith('<') || t.includes('/') || /^[A-Z0-9_-]+$/.test(t)) break;
+      kept.push(t);
+    }
+    return kept.join(' ');
+  });
+}
+
 async function sendQuickMenu(msg) {
   const header =
 `╭━━★彡 *${BOT_NAME}* 彡★━━╮
@@ -150,9 +173,22 @@ async function sendQuickMenu(msg) {
 ╰━━━━━━━━━━━━━╯`;
 
   const body = COMMAND_REFERENCE.map(section => {
-    const lines = section.items.map(item => `┣ ✦ ${item.cmd} — ${item.desc}`).join('\n');
-    const note = section.note ? `${section.note}\n` : '';
-    return `*${section.emoji} ${section.title} ${section.emoji}*\n${note}${lines}\n┗━━━━━━━━━━━`;
+    // Several items document more than one usage of the same command
+    // (".chess @user" / ".chess [easy|medium|hard]" / ...) — once reduced
+    // to bare commands those collapse to the same line, so dedupe per
+    // section rather than showing ".chess" three times in a row.
+    const seen = new Set();
+    const cmds = [];
+    for (const item of section.items) {
+      for (const cmd of extractMenuCommands(item.cmd)) {
+        if (!seen.has(cmd)) {
+          seen.add(cmd);
+          cmds.push(cmd);
+        }
+      }
+    }
+    const lines = cmds.map(cmd => `┣ ✦ ${cmd}`).join('\n');
+    return `*${section.emoji} ${section.title} ${section.emoji}*\n${lines}\n┗━━━━━━━━━━━`;
   }).join('\n\n');
 
   const menu = `${header}\n\n${body}\n\nType *${PREFIX}<command>* to use one.`;
@@ -566,8 +602,7 @@ function enqueueCommand(chatId, task) {
 }
 
 client.on('message', (msg) => {
-  enqueueCommand(msg.from, async () => {
-  try {
+  (async () => {
     // Never process messages the bot's own account sent — whether typed
     // manually in "Message Yourself" or sent by the bot itself. In current
     // whatsapp-web.js this event generally doesn't fire for self-sent
@@ -577,7 +612,35 @@ client.on('message', (msg) => {
 
     patchQuotedReply(msg);
 
-    const body = msg.body || '';
+    // ── Anime Quiz answers ───────────────────────────────────────────────
+    // A bare "1"-"4" typed during an active .quiz is NOT a command (no
+    // prefix) and is very often also a quoted reply to the bot's own quiz
+    // question image — which, further down, is exactly the shape that
+    // triggers the auto-.copilot reply-to-bot handling. Checked here, first,
+    // AND deliberately OUTSIDE enqueueCommand below. This used to be the
+    // first thing *inside* the per-chat queue, which looked equivalent but
+    // wasn't: the quiz question's own timer is a plain, un-queued
+    // setTimeout that keeps running in real time no matter what else this
+    // chat's queue is busy with. If anything ahead of a reply in that queue
+    // took a while (a slow AI command, a hiccupping connection), the reply
+    // sat waiting long enough for the real timer to fire first — so by the
+    // time this check finally ran, `question.resolved` was already true
+    // and a genuinely on-time answer got silently rejected here and fell
+    // through to the AI-copilot reply-to-bot handler instead (the "could
+    // not download the attached/replied-to media" symptom). Running this
+    // directly off the raw message event, before anything is queued, means
+    // an answer is only ever too late if the real clock says so.
+    try {
+      if (await tryHandleQuizAnswer(client, msg)) return;
+    } catch (err) {
+      console.error('Quiz answer check failed:', err.message);
+    }
+
+    // Everything else still goes through the per-chat queue, so ordinary
+    // commands from the same chat are processed one at a time, in order.
+    enqueueCommand(msg.from, async () => {
+    try {
+      const body = msg.body || '';
 
     const stable = await waitForStableConnection();
     if (!stable) {
@@ -766,7 +829,8 @@ client.on('message', (msg) => {
   console.error('Command error:', err);
   await msg.reply('❌ An error occurred. Please try again.').catch(() => {});
 }
-  });
+    });
+  })().catch(err => console.error('Message handling error:', err.message));
 });
 
 client.on('group_join', async (notification) => {

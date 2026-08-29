@@ -24,6 +24,16 @@ const CardCatalogueSchema = new mongoose.Schema({
   name: { type: String, required: true },
   series: { type: String, required: true },
 
+  // Alternate names .ci's search should also match — populated when
+  // renameCardsWithGemini.js corrects `name` to a full/formal form that no
+  // longer contains the old value as a substring (e.g. "Kirito" ->
+  // "Kazuto Kirigaya" — the nickname isn't a substring of the real name,
+  // so a plain regex search on `name` alone stops finding it once
+  // renamed). See commands/cards.js's .ci for how this is used, and
+  // backfillAliasesFromRenameLog.js for retrofitting aliases onto cards
+  // that were renamed before this field existed.
+  aliases: { type: [String], default: [] },
+
   tier: {
     type: String,
     enum: ['C', 'B', 'A', 'S', 'SS', 'SSS'],
@@ -47,6 +57,17 @@ const CardCatalogueSchema = new mongoose.Schema({
   // makes "I'll check it after the fact" actually practical instead of
   // having to remember/diff which 300 cards changed.
   imageSource: { type: String, enum: ['anilist', 'danbooru', 'gelbooru'], default: 'anilist' },
+
+  // The exact post ID on whichever site imageSource points to (Danbooru's
+  // or Gelbooru's own numeric post ID, not our cardId). ADDED Aug 2026
+  // specifically for .upgradeimages retry: findCharacterArtwork() is
+  // deterministic — the same name always finds the same top-ranked post —
+  // so without remembering exactly which post was already tried, a retry
+  // on a technically-valid-but-disliked match (e.g. an oddly stylized
+  // Inuyasha) would just return the identical picture again. Passing this
+  // back in as excludePostId lets retry actually surface the next-best
+  // candidate instead.
+  sourcePostId: { type: String, default: null },
 
   // ─── Rendered card cache (utils/cardRenderer.js) ───────────────────────────
   // The custom trading-card PNG is expensive to (re)build — a Puppeteer

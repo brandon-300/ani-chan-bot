@@ -23,7 +23,7 @@
     "oldSeries": "Sword Art Online",
     "newName": "Asuna Yuuki",
     "newSeries": "Sword Art Online",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "Y5RU4A",
@@ -31,7 +31,7 @@
     "oldSeries": "Sword Art Online",
     "newName": "Kazuto Kirigaya",
     "newSeries": "Sword Art Online",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "9FR8JN",
@@ -39,7 +39,7 @@
     "oldSeries": "Attack on Titan",
     "newName": "Levi Ackerman",
     "newSeries": "Attack on Titan",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "18X66U",
@@ -47,7 +47,7 @@
     "oldSeries": "Attack on Titan",
     "newName": "Mikasa Ackerman",
     "newSeries": "Attack on Titan",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "3XKPYZ",
@@ -55,7 +55,7 @@
     "oldSeries": "Attack on Titan",
     "newName": "Eren Yeager",
     "newSeries": "Attack on Titan",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "LYK9XA",
@@ -63,7 +63,7 @@
     "oldSeries": "Naruto",
     "newName": "Naruto Uzumaki",
     "newSeries": "Naruto",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "H94DY6",
@@ -71,7 +71,7 @@
     "oldSeries": "Naruto",
     "newName": "Sasuke Uchiha",
     "newSeries": "Naruto",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "0YPRVW",
@@ -79,7 +79,7 @@
     "oldSeries": "Dragon Ball Z",
     "newName": "Son Goku",
     "newSeries": "Dragon Ball Z",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "ZOB5XN",
@@ -99,7 +99,7 @@
     "oldSeries": "One Piece",
     "newName": "Monkey D. Luffy",
     "newSeries": "One Piece",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "UFU7EF",
@@ -107,7 +107,7 @@
     "oldSeries": "One Piece",
     "newName": "Roronoa Zoro",
     "newSeries": "One Piece",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "EROTZJ",
@@ -175,7 +175,7 @@
     "oldSeries": "Demon Slayer",
     "newName": "Nezuko Kamado",
     "newSeries": "Demon Slayer",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "QRACDD",
@@ -183,7 +183,7 @@
     "oldSeries": "Demon Slayer",
     "newName": "Tanjiro Kamado",
     "newSeries": "Demon Slayer",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "FNMOES",
@@ -191,7 +191,7 @@
     "oldSeries": "Demon Slayer",
     "newName": "Kyojuro Rengoku",
     "newSeries": "Demon Slayer",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "PFOGB9",
@@ -199,7 +199,7 @@
     "oldSeries": "Demon Slayer",
     "newName": "Inosuke Hashibira",
     "newSeries": "Demon Slayer",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "PAZNXG",
@@ -207,7 +207,7 @@
     "oldSeries": "Jujutsu Kaisen",
     "newName": "Satoru Gojo",
     "newSeries": "Jujutsu Kaisen",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "WP4ITG",
@@ -215,7 +215,7 @@
     "oldSeries": "Jujutsu Kaisen",
     "newName": "Megumi Fushiguro",
     "newSeries": "Jujutsu Kaisen",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "GCD4GW",
@@ -223,7 +223,7 @@
     "oldSeries": "Jujutsu Kaisen",
     "newName": "Nobara Kugisaki",
     "newSeries": "Jujutsu Kaisen",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "YVFY09",
@@ -267,7 +267,7 @@
     "oldSeries": "Genshin Impact",
     "newName": "Aki Hayakawa",
     "newSeries": "Chainsaw Man",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "S2ISBA",
@@ -293,7 +293,7 @@
     "oldSeries": "Hololive EN",
     "newName": "Ninomae Ina'nis",
     "newSeries": "Hololive EN",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "0CPDTD",
@@ -301,7 +301,7 @@
     "oldSeries": "Common",
     "newName": "Rimuru Tempest",
     "newSeries": "That Time I Got Reincarnated as a Slime",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "ALV6A6",
@@ -309,7 +309,7 @@
     "oldSeries": "Common",
     "newName": "Goblin Slayer",
     "newSeries": "Goblin Slayer",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "YUP0FP",
@@ -317,7 +317,7 @@
     "oldSeries": "Common",
     "newName": "Yuri Plisetsky",
     "newSeries": "Yuri on Ice",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "QO9I57",
@@ -325,7 +325,7 @@
     "oldSeries": "Common",
     "newName": "Karma Akabane",
     "newSeries": "Assassination Classroom",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "FD69AS",
@@ -369,7 +369,7 @@
     "oldSeries": "JUJUTSU KAISEN",
     "newName": "Yuuji Itadori",
     "newSeries": "Jujutsu Kaisen",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "M2T6U6",
@@ -443,7 +443,7 @@
     "oldSeries": "ONE PIECE",
     "newName": "Vinsmoke Sanji",
     "newSeries": "ONE PIECE",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "ZRT9QU",
@@ -529,7 +529,7 @@
     "oldSeries": "Your Name.",
     "newName": "Yukari Yukino",
     "newSeries": "The Garden of Words",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "F2M2K4",
@@ -609,7 +609,7 @@
     "oldSeries": "Your lie in April",
     "newName": "Kaori Miyazono",
     "newSeries": "Your Lie in April",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "2QDKY7",
@@ -617,7 +617,7 @@
     "oldSeries": "Your lie in April",
     "newName": "Kousei Arima",
     "newSeries": "Your Lie in April",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "8JT87D",
@@ -625,7 +625,7 @@
     "oldSeries": "Your lie in April",
     "newName": "Ryouta Watari",
     "newSeries": "Your Lie in April",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "VCE4DV",
@@ -669,7 +669,7 @@
     "oldSeries": "HAIKYU!!",
     "newName": "Shouyou Hinata",
     "newSeries": "Haikyu!!",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "T7SGAN",
@@ -677,7 +677,7 @@
     "oldSeries": "HAIKYU!!",
     "newName": "Tobio Kageyama",
     "newSeries": "Haikyu!!",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "WV62KM",
@@ -685,7 +685,7 @@
     "oldSeries": "HAIKYU!!",
     "newName": "Yuu Nishinoya",
     "newSeries": "Haikyu!!",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "Z8AGKU",
@@ -891,7 +891,7 @@
     "oldSeries": "The Seven Deadly Sins",
     "newName": "Harlequin",
     "newSeries": "The Seven Deadly Sins",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "TJRYY4",
@@ -1001,7 +1001,7 @@
     "oldSeries": "Spirited Away",
     "newName": "Nigihayami Kohaku Nushi",
     "newSeries": "Spirited Away",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "HEKWNN",
@@ -1009,7 +1009,7 @@
     "oldSeries": "Spirited Away",
     "newName": "No Face",
     "newSeries": "Spirited Away",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "PPKK6L",
@@ -1023,7 +1023,7 @@
     "oldSeries": "JoJo's Bizarre Adventure (TV)",
     "newName": "Joseph Joestar",
     "newSeries": "JoJo's Bizarre Adventure",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "F92NS6",
@@ -1031,7 +1031,7 @@
     "oldSeries": "JoJo's Bizarre Adventure (TV)",
     "newName": "Jotaro Kujo",
     "newSeries": "JoJo's Bizarre Adventure",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "NNLRJK",
@@ -1039,7 +1039,7 @@
     "oldSeries": "JoJo's Bizarre Adventure (TV)",
     "newName": "Dio Brando",
     "newSeries": "JoJo's Bizarre Adventure",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "6PPX26",
@@ -1071,7 +1071,7 @@
     "oldSeries": "Death Parade",
     "newName": "Chiyuki",
     "newSeries": "Death Parade",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "8L48B3",
@@ -1229,7 +1229,7 @@
     "oldSeries": "Angel Beats!",
     "newName": "Yui",
     "newSeries": "Angel Beats!",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "YU6Q3F",
@@ -1237,7 +1237,7 @@
     "oldSeries": "Solo Leveling",
     "newName": "Jin-Woo Sung",
     "newSeries": "Solo Leveling",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "VUAN3Z",
@@ -1257,7 +1257,7 @@
     "oldSeries": "JUJUTSU KAISEN 0",
     "newName": "Kento Nanami",
     "newSeries": "Jujutsu Kaisen",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "E538FU",
@@ -1265,7 +1265,7 @@
     "oldSeries": "JUJUTSU KAISEN 0",
     "newName": "Maki Zenin",
     "newSeries": "Jujutsu Kaisen",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "F85UWE",
@@ -1285,7 +1285,7 @@
     "oldSeries": "The Future Diary",
     "newName": "Yuno Gasai",
     "newSeries": "Future Diary",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "M5KVLL",
@@ -1293,7 +1293,7 @@
     "oldSeries": "The Future Diary",
     "newName": "Minene Uryuu",
     "newSeries": "Future Diary",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "G2ZVAE",
@@ -1301,7 +1301,7 @@
     "oldSeries": "The Future Diary",
     "newName": "Aru Akise",
     "newSeries": "Future Diary",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "5Y8N3B",
@@ -1393,7 +1393,7 @@
     "oldSeries": "Overlord",
     "newName": "Ainz Ooal Gown",
     "newSeries": "Overlord",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "H4TVGX",
@@ -1425,7 +1425,7 @@
     "oldSeries": "The Devil is a Part-Timer!",
     "newName": "Sadao Maou",
     "newSeries": "The Devil is a Part-Timer!",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "WDJQ5C",
@@ -1439,7 +1439,7 @@
     "oldSeries": "The Devil is a Part-Timer!",
     "newName": "Hanzo Urushihara",
     "newSeries": "The Devil is a Part-Timer!",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "38KVPW",
@@ -1585,7 +1585,7 @@
     "oldSeries": "Gurren Lagann",
     "newName": "Yoko Littner",
     "newSeries": "Gurren Lagann",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "MHVBPG",
@@ -1623,7 +1623,7 @@
     "oldSeries": "Assassination Classroom Second Season",
     "newName": "Kusuo Saiki",
     "newSeries": "The Disastrous Life of Saiki K.",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "3B3AD7",
@@ -1631,7 +1631,7 @@
     "oldSeries": "Howl‘s Moving Castle",
     "newName": "Howl Pendragon",
     "newSeries": "Howl's Moving Castle",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "A4XNWS",
@@ -1657,7 +1657,7 @@
     "oldSeries": "Hell’s Paradise",
     "newName": "Yamada Asaemon Sagiri",
     "newSeries": "Hell’s Paradise",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "P2D2TT",
@@ -1713,7 +1713,7 @@
     "oldSeries": "Devilman Crybaby",
     "newName": "Akira Fudo",
     "newSeries": "Devilman Crybaby",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "MW7JL3",
@@ -1751,7 +1751,7 @@
     "oldSeries": "Fate/Zero",
     "newName": "Sakura Matou",
     "newSeries": "Fate/stay night",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "YZPRG4",
@@ -1759,7 +1759,7 @@
     "oldSeries": "Fate/Zero",
     "newName": "Rin Tohsaka",
     "newSeries": "Fate/stay night",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "TDBXV2",
@@ -1767,7 +1767,7 @@
     "oldSeries": "Fate/Zero",
     "newName": "Artoria Pendragon",
     "newSeries": "Fate/stay night",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "UR3R4X",
@@ -1811,7 +1811,7 @@
     "oldSeries": "Tower of God",
     "newName": "Khun Aguero Agnis",
     "newSeries": "Tower of God",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "6UYPJ2",
@@ -1867,7 +1867,7 @@
     "oldSeries": "OSHI NO KO",
     "newName": "Kana Arima",
     "newSeries": "Oshi no Ko",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "52N6JQ",
@@ -1875,7 +1875,7 @@
     "oldSeries": "OSHI NO KO",
     "newName": "Akane Kurokawa",
     "newSeries": "Oshi no Ko",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "WADWHJ",
@@ -1919,7 +1919,7 @@
     "oldSeries": "BLUE LOCK",
     "newName": "Meguru Bachira",
     "newSeries": "Blue Lock",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "WF5YGD",
@@ -1927,7 +1927,7 @@
     "oldSeries": "BLUE LOCK",
     "newName": "Seishiro Nagi",
     "newSeries": "BLUE LOCK",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "NP7V2U",
@@ -2049,7 +2049,7 @@
     "oldSeries": "Fruits Basket (2019)",
     "newName": "Kyo Sohma",
     "newSeries": "Fruits Basket (2019)",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "ZCU4HW",
@@ -2057,7 +2057,7 @@
     "oldSeries": "Fruits Basket (2019)",
     "newName": "Tohru Honda",
     "newSeries": "Fruits Basket (2019)",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "2QLV5N",
@@ -2065,7 +2065,7 @@
     "oldSeries": "Fruits Basket (2019)",
     "newName": "Yuki Sohma",
     "newSeries": "Fruits Basket (2019)",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "MEDT9F",
@@ -2097,7 +2097,7 @@
     "oldSeries": "Rent-a-Girlfriend",
     "newName": "Chizuru Mizuhara",
     "newSeries": "Rent-a-Girlfriend",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "HR8KVN",
@@ -2111,7 +2111,7 @@
     "oldSeries": "GOBLIN SLAYER",
     "newName": "Cow Girl",
     "newSeries": "GOBLIN SLAYER",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "AS5E3P",
@@ -2131,7 +2131,7 @@
     "oldSeries": "Princess Mononoke",
     "newName": "Moro",
     "newSeries": "Princess Mononoke",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "3TJM9M",
@@ -2157,7 +2157,7 @@
     "oldSeries": "The God of High School",
     "newName": "Jin Mori",
     "newSeries": "The God of High School",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "UJVL9J",
@@ -2165,7 +2165,7 @@
     "oldSeries": "The God of High School",
     "newName": "Han Dae-wi",
     "newSeries": "The God of High School",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "YFKP5S",
@@ -2173,7 +2173,7 @@
     "oldSeries": "The God of High School",
     "newName": "Yu Mi-ra",
     "newSeries": "The God of High School",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "G4SNB7",
@@ -2193,7 +2193,7 @@
     "oldSeries": "Gintama",
     "newName": "Kotaro Katsura",
     "newSeries": "Gintama",
-    "status": "proposed"
+    "status": "applied"
   },
   {
     "cardId": "QRP94E",
