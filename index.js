@@ -6,7 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
 const { safeGetQuotedMessage, safeGetChat, safeGetContact, resolveSenderName, withRetry, encodeIdKey } = require('./utils/helpers');
-const { BOT_NAME } = require('./utils/config');
+const { BOT_NAME, MENU_IMAGE_URL } = require('./utils/config');
 const { instrumentHttpClients, wrapWithUsageTracking } = require('./utils/usageTracking');
 const { tryHandleQuizAnswer } = require('./commands/games/quiz');
 
@@ -180,7 +180,28 @@ async function sendQuickMenu(msg) {
     const seen = new Set();
     const cmds = [];
     for (const item of section.items) {
-      for (const cmd of extractMenuCommands(item.cmd)) {
+      const variants = extractMenuCommands(item.cmd);
+
+      // Group variants that are TRUE aliases of each other (registered in
+      // the `aliases` map above — e.g. inv -> inventory) onto one line, so
+      // ".inventory" and ".inv" show as a single "┣ ✦ .inventory / .inv"
+      // instead of two separate bullets that look like different things to
+      // try when they're the exact same command under the hood. Variants
+      // that AREN'T aliases of one another (".mute"/".unmute",
+      // ".hug"/".kiss"/...) are genuinely different commands and still get
+      // their own line each — unchanged from before.
+      const bareNameOf = v => v.split(/\s+/)[0].slice(1).toLowerCase();
+      const areAliasPair = (a, b) => aliases[bareNameOf(a)] === bareNameOf(b) || aliases[bareNameOf(b)] === bareNameOf(a);
+
+      const groups = [];
+      for (const variant of variants) {
+        const existingGroup = groups.find(g => g.some(v => areAliasPair(v, variant)));
+        if (existingGroup) existingGroup.push(variant);
+        else groups.push([variant]);
+      }
+
+      for (const group of groups) {
+        const cmd = group.join(' / ');
         if (!seen.has(cmd)) {
           seen.add(cmd);
           cmds.push(cmd);
@@ -193,7 +214,36 @@ async function sendQuickMenu(msg) {
 
   const menu = `${header}\n\n${body}\n\nType *${PREFIX}<command>* to use one.`;
 
-  await msg.reply(menu);
+  // One message: image with the full menu as its caption, matching the
+  // reference bot. WhatsApp's ~1,024-char image-caption cap that's widely
+  // documented is specifically for the Business/Cloud API (templates,
+  // programmatic sends) — not confirmed to apply to the regular consumer
+  // protocol whatsapp-web.js automates here, and the reference bot sending
+  // a caption this long in one piece is real evidence it doesn't. If a
+  // future .menu run ever comes back visibly cut off mid-category, that's
+  // the signal this assumption was wrong and it needs splitting into a
+  // short-caption image + separate full-text message instead.
+  //
+  // Image source: the bot's own WhatsApp profile picture when it has one,
+  // falling back to MENU_IMAGE_URL (utils/config.js) otherwise. That
+  // fallback is a plain URL read from .env, not touched by any logic
+  // here, so swapping the image later is just editing MENU_IMAGE_URL —
+  // this function never needs to change for that.
+  let imageUrl;
+  try {
+    imageUrl = await client.getProfilePicUrl(client.info.wid._serialized);
+  } catch (err) {
+    console.error('Menu: failed to fetch bot profile picture, using fallback image:', err.message);
+  }
+  if (!imageUrl) imageUrl = MENU_IMAGE_URL;
+
+  try {
+    const media = await MessageMedia.fromUrl(imageUrl, { unsafeMime: true });
+    await msg.reply(media, undefined, { caption: menu });
+  } catch (err) {
+    console.error('Menu: failed to send menu image, falling back to text only:', err.message);
+    await msg.reply(menu);
+  }
 }
 
 let reconnectTimer = null;

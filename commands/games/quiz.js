@@ -1,6 +1,6 @@
 const { MessageMedia } = require('whatsapp-web.js');
 const { CardCatalogue } = require('../../models/Card');
-const { safeGetChat, resolveNameById } = require('../../utils/helpers');
+const { safeGetChat, safeGetQuotedMessage, safeGetContact, resolveNameById } = require('../../utils/helpers');
 const { isChatBusy, claim, release } = require('./activeGame');
 
 // ─── Active Quiz Sessions ───────────────────────────────────────────────────
@@ -37,6 +37,18 @@ const TOTAL_QUESTIONS = 10;
 const NUM_OPTIONS = 4;
 const MAX_WRONG_LIVES = 3;
 const NEXT_QUESTION_DELAY_MS = 2000; // short pause so the reveal is readable before the next image lands
+// A genuine answer to a BRAND NEW question can't physically arrive faster
+// than this — reading an image plus four titled options, deciding, and
+// typing/tapping a reply all take real time. Used as a floor in
+// tryHandleQuizAnswer: a reply that shows up sooner than this after the
+// current question started is almost certainly a delayed answer to the
+// PREVIOUS question, not a superhuman-fast one to this one.
+const MIN_HUMAN_REACTION_MS = 3000;
+// How long after a new question starts we keep logging diagnostics for
+// answers we can't positively confirm are fresh (no quote match, no usable
+// timestamp) — see the comment on that logging below. Purely observational;
+// does not change what gets accepted.
+const STALE_ANSWER_WATCH_WINDOW_MS = 8000;
 
 // easy: correct-answer pool is preferentially drawn from the catalogue's
 // higher tiers (assumed to skew toward more recognizable/major characters —
@@ -144,6 +156,9 @@ async function advanceQuestion(session) {
     answered: new Set(),
     resolved: false,
     timer: null,
+    // Set now, before this question is even sent — see the comment on the
+    // matching check in tryHandleQuizAnswer for why this exists.
+    startedAt: Date.now(),
   };
 
   // Each option shows its anime as a sub-line (matches the reference bot,
@@ -167,11 +182,12 @@ async function advanceQuestion(session) {
     console.error('Quiz: character image fetch failed, sending text-only question:', err.message);
   }
 
+  let sentMsg;
   try {
     if (session.questionIndex === 0) {
-      await (media ? session.origMsg.reply(media, undefined, { caption }) : session.origMsg.reply(caption));
+      sentMsg = await (media ? session.origMsg.reply(media, undefined, { caption }) : session.origMsg.reply(caption));
     } else {
-      await (media
+      sentMsg = await (media
         ? session.client.sendMessage(session.chatId, media, { caption })
         : session.client.sendMessage(session.chatId, caption));
     }
@@ -179,6 +195,10 @@ async function advanceQuestion(session) {
     console.error('Quiz: failed to send question, ending quiz early:', err.message);
     return teardown(session);
   }
+  // Used in tryHandleQuizAnswer to recognize a reply that's quoting an
+  // OLDER question message specifically (as opposed to one that just
+  // happens to be processed late) — see the comment there.
+  session.current.messageId = sentMsg?.id?._serialized || null;
 
   session.current.timer = setTimeout(() => handleTimeout(session), session.timeSeconds * 1000);
 }
@@ -356,13 +376,28 @@ async function quiz(client, msg, args) {
 // ─── Answer interception ─────────────────────────────────────────────────────
 // Called from index.js's main message listener for EVERY incoming message,
 // before any command/prefix routing. Returns true if the message was
-// consumed as a quiz answer (caller should stop processing it any further),
-// false otherwise. Deliberately accepts a bare "1"-"4" with no command
-// prefix and no requirement that it's a quoted reply to the question — on
-// an unstable connection a WhatsApp "reply" quote can fail to attach even
-// when the tap registered, and requiring it would silently drop valid
-// answers.
+// consumed as a quiz answer — including a "too late" one that doesn't score
+// (see the comment further down for why those still return true) — and the
+// caller should stop processing it any further; false otherwise, meaning
+// there was no active quiz here at all or this clearly wasn't meant as an
+// answer. Deliberately accepts a bare "1"-"4" with no command prefix and no
+// requirement that it's a quoted reply to the question — on an unstable
+// connection a WhatsApp "reply" quote can fail to attach even when the tap
+// registered, and requiring it would silently drop valid answers.
 async function tryHandleQuizAnswer(client, msg) {
+  // Captured immediately, before anything else in this function — including
+  // the retry-with-backoff calls below (safeGetChat/safeGetQuotedMessage/
+  // safeGetContact), which on a shaky connection can each take a couple of
+  // seconds of their own retry delay. The "arrived implausibly fast" check
+  // further down needs to know how long it's ACTUALLY been since this
+  // message came in, not how long it's been since we finally got around to
+  // checking it — using a fresh Date.now() there instead would let exactly
+  // that retry delay quietly age a genuinely-stale reply past the
+  // threshold, which is the leading suspect for how a reply meant for an
+  // expired question was still slipping through and getting graded against
+  // whatever question replaced it.
+  const receivedAt = Date.now();
+
   // WhatsApp Web's DOM can inject invisible formatting/direction marks —
   // U+200B-U+200F (zero-width space/joiner/LRM/RLM), U+202A-U+202E
   // (directional overrides), U+2060 (word joiner), U+FEFF (BOM), U+00A0
@@ -400,31 +435,126 @@ async function tryHandleQuizAnswer(client, msg) {
   const chatId = chat.id._serialized;
 
   const session = quizGames.get(chatId);
-  // Captured once, up front, and used consistently for the rest of this
-  // call — see the comment above the isCorrect check below for why this
-  // matters (session.current can otherwise be replaced mid-function by an
-  // unrelated setTimeout while this call is awaiting something slow).
-  const question = session && session.current;
-  if (!session || !question || question.resolved) return false;
+  // No quiz running at all in this chat — this bare number was never
+  // ours to begin with, let it fall through to normal message handling.
+  if (!session) return false;
 
+  const question = session.current;
   const choice = parseInt(body, 10);
-  if (choice < 1 || choice > question.options.length) return false;
+  if (!question || choice < 1 || choice > question.options.length) return false;
+
+  // Shared "too late" reply used by every staleness check below, so a
+  // player who replies to an expired question is told plainly what
+  // happened instead of just being silently ignored.
+  const sayTooLate = async () => {
+    try {
+      await msg.reply("⏰ *Time's up for that question!* It's already been answered or moved on — check the current question instead.");
+    } catch (err) {
+      console.error("Quiz: \"time's up\" notice failed to send:", err.message);
+    }
+    return true;
+  };
+
+  // If this reply explicitly quotes a SPECIFIC bot message and that
+  // message isn't the currently active question, that's ground truth —
+  // it's answering a question that has already moved on, no guessing
+  // needed. Checked ahead of the timing heuristics below because a
+  // confirmed quote mismatch is more reliable than inferring staleness
+  // from timing.
+  let quoteConfirmedFresh = false;
+  if (msg.hasQuotedMsg) {
+    try {
+      const quoted = await safeGetQuotedMessage(msg);
+      if (quoted?.id?._serialized && question.messageId) {
+        if (quoted.id._serialized !== question.messageId) {
+          return sayTooLate();
+        }
+        quoteConfirmedFresh = true;
+      }
+    } catch (err) {
+      console.error('Quiz: quoted-message lookup failed while checking answer:', err.message);
+      // Fall through to the timing checks below rather than failing the
+      // whole answer over a lookup glitch.
+    }
+  }
+
+  // Quoting a message can silently fail to attach even when the tap
+  // registered (the reason this function accepts a bare number at all —
+  // see the function comment above), so the check above only catches a
+  // stale reply when quoting DID work. These two catch it either way:
+  //
+  // 1) WhatsApp's own server-assigned send time (seconds since epoch) for
+  // this reply, compared against when the CURRENT question was posted —
+  // sent before that, it can't possibly be answering it. The 2s grace
+  // period absorbs WhatsApp's whole-second rounding against startedAt's
+  // millisecond precision; real staleness here means a whole previous
+  // question's worth of lag, not a same-second rounding artifact.
+  const sentBeforeCurrentStarted = msg.timestamp && msg.timestamp * 1000 < question.startedAt - 2000;
+  // 2) No genuine answer to a BRAND NEW question can physically arrive
+  // faster than MIN_HUMAN_REACTION_MS — reading an image plus four titled
+  // options, deciding, and typing/tapping a reply all take real time. A
+  // reply RECEIVED sooner than that after the current question started is
+  // almost certainly a delayed one meant for the PREVIOUS question —
+  // caught here using our own clock (captured as receivedAt, at the very
+  // top of this function, before any of the retry-wrapped lookups above
+  // could add their own delay) rather than trusting msg.timestamp's exact
+  // semantics on an unreliable connection.
+  const arrivedImplausiblyFast = receivedAt - question.startedAt < MIN_HUMAN_REACTION_MS;
+  // Both of these are fallback heuristics for when quoting isn't available
+  // or didn't resolve — a confirmed quote match above is ground truth and
+  // overrides them; without that fix, a genuinely fast (but confirmed
+  // fresh) answer to a quoted question could get wrongly told it's late.
+  if (!quoteConfirmedFresh && (sentBeforeCurrentStarted || arrivedImplausiblyFast)) {
+    return sayTooLate();
+  }
+
+  // Diagnostic only, changes nothing: we're about to accept this as an
+  // answer to the CURRENT question, but if the quote didn't positively
+  // confirm that and we're still early in this question's life, we don't
+  // have real proof either way — we just didn't hit one of the two
+  // rejection cases above. If a wrongly-accepted stale answer is ever
+  // reported again, this is what tells us why: whether msg.timestamp was
+  // even present, and by how much this missed the staleness checks.
+  if (!quoteConfirmedFresh && (receivedAt - question.startedAt) < STALE_ANSWER_WATCH_WINDOW_MS) {
+    console.log(
+      'Quiz: accepting answer without a confirmed-fresh quote —',
+      `elapsedSinceQuestionStart=${receivedAt - question.startedAt}ms,`,
+      `msg.timestamp=${msg.timestamp ?? 'undefined'},`,
+      `hasQuotedMsg=${!!msg.hasQuotedMsg}, questionMessageId=${question.messageId ?? 'null'}`
+    );
+  }
+
+  // From here on, a quiz IS active in this chat and the reply IS a
+  // plausible answer to the CURRENT question specifically — so every
+  // path below this point returns true and fully consumes the message,
+  // even when it turns out to be "too late" in some other way (this
+  // question already resolved — someone else answered first, or its
+  // timer already ran out — or this player already used their guess on
+  // it, or they're sitting out as eliminated). All of those used to
+  // return false here instead, which sent the reply on to the
+  // AI-copilot reply-to-bot handler — and since a late answer is still
+  // quoting/following the bot's own quiz image, that handler tried to
+  // re-analyze it and failed ("could not download the attached/replied-to
+  // media" + the generic ⏳ react), which is exactly the symptom this
+  // closes. A question that's already over simply doesn't accept answers
+  // anymore; it doesn't hand them off elsewhere either.
+  if (question.resolved) return sayTooLate();
 
   let contact;
   try {
-    contact = await msg.getContact();
+    contact = await safeGetContact(msg);
   } catch (err) {
     console.error('Quiz: contact lookup failed while checking answer:', err.message);
-    return false;
+    return true;
   }
   const playerId = contact.id._serialized;
 
   // Re-check after the await above — on a slow connection, enough time
   // could theoretically pass here for the question's own timer to expire
   // and move the quiz on before we're done.
-  if (question.resolved) return false;
-  if (session.eliminated.has(playerId)) return false;
-  if (question.answered.has(playerId)) return false;
+  if (question.resolved) return sayTooLate();
+  if (session.eliminated.has(playerId)) return true;
+  if (question.answered.has(playerId)) return true;
   question.answered.add(playerId);
 
   const isCorrect = choice - 1 === question.correctPos;
@@ -512,4 +642,5 @@ module.exports = {
   quiz,
   quitQuiz,
   tryHandleQuizAnswer,
+  MIN_HUMAN_REACTION_MS,
 };

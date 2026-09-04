@@ -302,6 +302,69 @@ module.exports = {
     }
   },
 
+  // .pin — pin a replied-to message. WhatsApp restricts pinning to group
+  // admins REGARDLESS of who sent the message being pinned (unlike .delete
+  // above, where deleting your own message never needs bot-admin status) —
+  // so requireBotAdmin runs unconditionally here, not just for other
+  // members' messages.
+  async pin(client, msg, args) {
+    const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
+    if (!chat) return;
+    if (!chat.isGroup) return msg.reply('❌ .pin only works in groups — not in DMs.');
+
+    if (!await requireAdmin(msg)) return;
+    if (!await requireBotAdmin(msg)) return;
+
+    const quoted = await safeGetQuotedMessage(msg).catch(err => { console.error("getQuotedMessage failed:", err.message); return 'ERROR'; });
+    if (quoted === 'ERROR') return msg.reply('⚠️ WhatsApp connection hiccup — please try again in a moment.');
+    if (!quoted) return msg.reply('❌ Reply to the message you want to pin.');
+
+    // whatsapp-web.js's pin() silently returns false (not a thrown error) if
+    // duration isn't a number — always pass one explicitly. Optional arg lets
+    // an admin pick WhatsApp's other supported windows; defaults to 30 days.
+    const PIN_DURATIONS = { '24h': 86400, '7d': 604800, '30d': 2592000 };
+    const durationArg = args[0]?.toLowerCase();
+    const usingCustomDuration = Boolean(durationArg && PIN_DURATIONS[durationArg]);
+    if (durationArg && !usingCustomDuration) {
+      return msg.reply('❌ Usage: .pin [24h/7d/30d] — defaults to 30d if omitted. Must be sent as a reply to the message you want to pin.');
+    }
+    const duration = usingCustomDuration ? PIN_DURATIONS[durationArg] : PIN_DURATIONS['30d'];
+
+    let ok = false;
+    try {
+      ok = await quoted.pin(duration);
+    } catch (err) {
+      console.error('.pin: quoted.pin() failed:', err.message);
+    }
+
+    if (!ok) return msg.reply('❌ Could not pin that message — make sure I\'m still an admin here and try again.');
+    msg.reply(`📌 Message pinned for *${usingCustomDuration ? durationArg : '30d (default)'}*.`);
+  },
+
+  // .unpin — unpin a replied-to message. Same admin requirements as .pin.
+  async unpin(client, msg, args) {
+    const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
+    if (!chat) return;
+    if (!chat.isGroup) return msg.reply('❌ .unpin only works in groups — not in DMs.');
+
+    if (!await requireAdmin(msg)) return;
+    if (!await requireBotAdmin(msg)) return;
+
+    const quoted = await safeGetQuotedMessage(msg).catch(err => { console.error("getQuotedMessage failed:", err.message); return 'ERROR'; });
+    if (quoted === 'ERROR') return msg.reply('⚠️ WhatsApp connection hiccup — please try again in a moment.');
+    if (!quoted) return msg.reply('❌ Reply to the pinned message you want to unpin.');
+
+    let ok = false;
+    try {
+      ok = await quoted.unpin();
+    } catch (err) {
+      console.error('.unpin: quoted.unpin() failed:', err.message);
+    }
+
+    if (!ok) return msg.reply('❌ Could not unpin that message — it may not be pinned, or I may no longer be an admin here.');
+    msg.reply('📌 Message unpinned.');
+  },
+
   // .antilink
   async antilink(client, msg, args) {
     if (!await requireAdmin(msg)) return;

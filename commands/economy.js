@@ -484,17 +484,32 @@ async lottery(client, msg, args) {
     msg.reply('✅ Age updated!');
   },
 
-  // .inventory
+  // .inventory — same card design as .profile: doubleStruck title inside
+  // the ╭━━★彡...彡★━━╮ border, ꕥ-bulleted boldSans fields below it.
   async inventory(client, msg, args) {
     const contact = await msg.getContact();
     const user = await User.findOrCreate(contact.id._serialized);
-    if (!user.inventory.length) return msg.reply('🎒 Your inventory is empty.');
+
+    // Title kept short and single-word on purpose: this doubleStruck font
+    // renders noticeably wider per glyph than normal text (see .profile/
+    // .stats above) — "INVENTORY" (9 glyphs, no space to wrap at) overflowed
+    // one line on-device, where "PROFILE" (7 glyphs) is the longest
+    // confirmed-safe title in this exact header style. "ITEMS" is shorter
+    // still, so it fits with room to spare.
+    const header = `╭━━━★彡 ${doubleStruck('ITEMS')} 彡★━━━╮`;
+    if (!user.inventory.length) return msg.reply(`${header}\n\nYour inventory is empty.`);
 
     const counts = {};
     user.inventory.forEach(item => { counts[item] = (counts[item] || 0) + 1; });
-    let text = `🎒 *Your Inventory*\n\n`;
-    Object.entries(counts).forEach(([item, count]) => { text += `• ${item} x${count}\n`; });
-    msg.reply(text);
+
+    const line = (label, value) => `ꕥ ${boldSans(label)}: ${value}`;
+    const card = [
+      header,
+      '',
+      ...Object.entries(counts).map(([item, count]) => line(item, `x${count}`)),
+    ].join('\n');
+
+    msg.reply(card);
   },
 
   // .use [item]
