@@ -8,6 +8,7 @@
 // otherwise).
 const mongoose = require('mongoose');
 const User = require('./User');
+const { getNextSequence } = require('./Counter');
 const { xpNeededForLevel, encodeIdKey } = require('../utils/helpers');
 
 const ROLES = ['leader', 'officer', 'veteran', 'member'];
@@ -24,10 +25,40 @@ const GuildMemberSchema = new mongoose.Schema({
 }, { _id: false });
 
 const GuildSchema = new mongoose.Schema({
+  // Human-facing sequential id (1, 2, 3, ...) — separate from Mongo's own
+  // _id, which is what leaderId/members/etc. actually reference internally.
+  // Assigned automatically for new guilds by the pre-save hook below, via
+  // the shared atomic counter in models/Counter.js. Existing guilds created
+  // BEFORE this field existed need a one-time backfill — see
+  // migrateGuildIds.js. `sparse: true` alongside `unique` matters here:
+  // a plain unique index would choke the first time it saw a SECOND guild
+  // whose guildId is still null (pre-migration) — sparse tells MongoDB to
+  // only enforce uniqueness among documents where the field actually has a
+  // value, so pre-migration guilds coexisting with post-migration ones is
+  // completely safe.
+  guildId: { type: Number, unique: true, sparse: true, default: null },
   name: { type: String, required: true, unique: true },
   leaderId: { type: String, required: true },
   members: { type: [GuildMemberSchema], default: [] },
   pendingInvites: { type: [String], default: [] },
+  // Users who've requested to join via .guild join — separate from
+  // pendingInvites (leader/officer invites a specific person) since this is
+  // the reverse direction: a person asks, leader/officer approves. Only
+  // reachable when recruitment is 'open' — see .guild join in
+  // commands/guilds.js.
+  pendingApplications: { type: [String], default: [] },
+  // 'open'    — anyone can browse (bare .guild) and apply (.guild join);
+  //             applications still need a leader/officer's approval, they
+  //             don't join instantly.
+  // 'invite'  — existing behavior, unchanged: leader/officer must invite
+  //             the specific person first.
+  // 'closed'  — not accepting anyone, invite or application.
+  recruitment: { type: String, enum: ['open', 'invite', 'closed'], default: 'invite' },
+  // Flat cap for now — not tied to guild level/upgrades (that's a separate,
+  // not-yet-built feature). Existing guilds silently pick this default up
+  // via Mongoose's normal missing-field-gets-the-default behavior; no
+  // migration needed for this one, unlike guildId above.
+  maxMembers: { type: Number, default: 25 },
   emblem: { type: String, default: '🏰' },
   description: { type: String, default: '' },
   level: { type: Number, default: 1 },
@@ -70,6 +101,32 @@ const GuildSchema = new mongoose.Schema({
   // achievement list and the checker that populates this. Same shape as
   // User.achievements in models/User.js.
   achievements: { type: [String], default: [] },
+  // A single current announcement — not a history, just whatever the
+  // leader/an officer posted most recently. See .guild announce in
+  // commands/guilds.js.
+  announcement: {
+    text: { type: String, default: '' },
+    postedBy: { type: String, default: null },
+    postedAt: { type: Date, default: null },
+  },
+  // Recent guild activity feed — see logActivity()/.guild activity below.
+  // Field named `eventType`, not `type`, for the same reason activeQuest's
+  // discriminator field is `questType` — avoids the classic Mongoose
+  // "a field literally named type" ambiguity entirely rather than relying
+  // on sibling fields saving it.
+  activityLog: {
+    type: [{
+      eventType: { type: String, enum: ['donate', 'quest_completed', 'member_joined', 'member_left', 'announcement'], required: true },
+      userId: { type: String, default: null },
+      amount: { type: Number, default: null },
+      questType: { type: String, default: null },
+      rewardCoins: { type: Number, default: null },
+      rewardXp: { type: Number, default: null },
+      text: { type: String, default: null },
+      at: { type: Date, default: Date.now },
+    }],
+    default: [],
+  },
 });
 
 // ─── Daily Guild Treasury Interest ─────────────────────────────────────────
@@ -184,6 +241,28 @@ function addGuildXP(guild, amount) {
   return { levelUp: guild.level > startingLevel, level: guild.level };
 }
 
+// ─── Guild activity feed ────────────────────────────────────────────────────
+// Bounded recent-activity log — see .guild activity in commands/guilds.js
+// for the display side. Deliberately scoped to events that already flow
+// through this model (donations, quest completions, member join/leave) —
+// individual card claims/game wins are NOT logged here, since most of them
+// never touch a guild doc at all (Guild.addQuestProgress is a no-op
+// whenever the active quest isn't currently focused on that activity type)
+// — logging every claim/win unconditionally would mean hooking
+// commands/cards.js and every commands/games/*.js file again for this one
+// feature, which isn't worth it just for a log.
+const MAX_ACTIVITY_LOG = 20;
+
+// Mutates `guild` in place — does NOT save; every caller (both inside this
+// file and commands/guilds.js via the Guild.logActivity static below) is
+// already about to save the guild for its own reasons.
+function logActivity(guild, entry) {
+  guild.activityLog.push({ at: Date.now(), ...entry });
+  if (guild.activityLog.length > MAX_ACTIVITY_LOG) {
+    guild.activityLog.splice(0, guild.activityLog.length - MAX_ACTIVITY_LOG);
+  }
+}
+
 // Pays out the active quest's reward and immediately rolls a new quest in
 // if (and only if) progress has reached goal. Returns the payout details,
 // or null if the quest isn't complete yet. Mutates `guild` in place; does
@@ -193,10 +272,11 @@ function completeQuestIfDone(guild) {
   const q = guild.activeQuest;
   if (!q || !q.questType || q.progress < q.goal) return null;
 
-  const { rewardCoins, rewardXp } = q;
+  const { questType, rewardCoins, rewardXp } = q;
   guild.bank += rewardCoins;
   guild.questsCompleted = (guild.questsCompleted || 0) + 1;
   const levelResult = addGuildXP(guild, rewardXp);
+  logActivity(guild, { eventType: 'quest_completed', questType, rewardCoins, rewardXp });
 
   // Force ensureActiveQuest to treat this quest as expired so a fresh one
   // rolls in immediately, instead of the guild sitting quest-less until its
@@ -206,6 +286,17 @@ function completeQuestIfDone(guild) {
 
   return { rewardCoins, rewardXp, levelUp: levelResult.levelUp, level: levelResult.level };
 }
+
+// Only fires for brand-new guilds (isNew) — existing guilds created before
+// this field existed are backfilled once by migrateGuildIds.js instead,
+// in proper creation-chronological order, which this hook (running at an
+// arbitrary later save, in arbitrary order) couldn't guarantee.
+GuildSchema.pre('save', async function (next) {
+  if (this.isNew && this.guildId == null) {
+    this.guildId = await getNextSequence('guildId');
+  }
+  next();
+});
 
 // Covers Guild.findById(...) too — findById is implemented internally as a
 // thin wrapper around findOne, so this single hook catches both. Does NOT
@@ -310,5 +401,6 @@ GuildSchema.statics.addQuestProgress = async function (userId, questType, amount
 GuildSchema.statics.ROLES = ROLES;
 GuildSchema.statics.ROLE_RANK = ROLE_RANK;
 GuildSchema.statics.QUEST_DEFS = QUEST_DEFS;
+GuildSchema.statics.logActivity = logActivity;
 
 module.exports = mongoose.model('Guild', GuildSchema);
