@@ -2,6 +2,8 @@ const { MessageMedia } = require('whatsapp-web.js');
 const { CardCatalogue } = require('../../models/Card');
 const { safeGetChat, safeGetQuotedMessage, safeGetContact, resolveNameById } = require('../../utils/helpers');
 const { isChatBusy, claim, release } = require('./activeGame');
+const Guild = require('../../models/Guild');
+const { _formatQuestCompletionNote } = require('../guilds');
 
 // ─── Active Quiz Sessions ───────────────────────────────────────────────────
 // chatId -> {
@@ -223,8 +225,22 @@ async function handleTimeout(session) {
 async function finishQuiz(session) {
   teardown(session);
   const board = formatScoreboard(session.scores);
+
+  // Award a guild "games" win to the outright top scorer, if there is one —
+  // a tie for first (including everyone sitting on 0 points) doesn't count
+  // as anyone "winning". `.quiz stop` (an early, incomplete round) is a
+  // separate function and deliberately isn't hooked into this — only a
+  // full completed round counts as a win, same policy as every other game
+  // in this bot not counting a quit/forfeit as a real win.
+  let questNote = '';
+  const ranked = [...session.scores.entries()].sort((a, b) => b[1].points - a[1].points);
+  if (ranked.length && ranked[0][1].points > 0 && (ranked.length === 1 || ranked[1][1].points < ranked[0][1].points)) {
+    const [winnerId] = ranked[0];
+    questNote = _formatQuestCompletionNote(await Guild.addQuestProgress(winnerId, 'games', 1));
+  }
+
   try {
-    await session.origMsg.reply(`🏁 Quiz finished.\n\n🏆 *Final Scoreboard*\n\n${board}`);
+    await session.origMsg.reply(`🏁 Quiz finished.\n\n🏆 *Final Scoreboard*\n\n${board}` + questNote);
   } catch (err) {
     console.error('Quiz: failed to send final scoreboard:', err.message);
   }

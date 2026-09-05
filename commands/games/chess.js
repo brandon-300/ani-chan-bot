@@ -5,6 +5,8 @@ const { getBestMove } = require('./chessEngine');
 const { renderBoardImage } = require('./chessBoardImage');
 const { BOT_NAME } = require('../../utils/config');
 const { isChatBusy, claim, release } = require('./activeGame');
+const Guild = require('../../models/Guild');
+const { _formatQuestCompletionNote } = require('../guilds');
 
 // ─── Active Game Sessions ─────────────────────────────────────────────────────
 // chatId -> { chess, mode: 'pvp' | 'bot', white, black, whiteName, blackName, search }
@@ -25,16 +27,22 @@ const DIFFICULTIES = {
   hard:   { maxDepth: 3, timeLimitMs: 4000 },
 };
 
+// Returns { text, winnerColor } instead of a plain string — winnerColor is
+// 'w'/'b' on checkmate, or null on any of the draw outcomes. Both .move
+// call sites below need to know WHO (if anyone) actually won, not just the
+// display text, to award guild quest progress to the right real user id
+// (and never to 'BOT').
 function describeGameOver(chess, whiteName, blackName) {
   if (chess.isCheckmate()) {
     // chess.turn() is the side with no moves left — they're the one mated.
-    const winner = chess.turn() === 'w' ? blackName : whiteName;
-    return `♟️ *Checkmate!*\n🏆 Winner: ${winner}`;
+    const winnerColor = chess.turn() === 'w' ? 'b' : 'w';
+    const winnerName = winnerColor === 'w' ? whiteName : blackName;
+    return { text: `♟️ *Checkmate!*\n🏆 Winner: ${winnerName}`, winnerColor };
   }
-  if (chess.isStalemate()) return "♟️ *Draw* — stalemate (no legal moves, but not in check).";
-  if (chess.isThreefoldRepetition()) return '♟️ *Draw* — the same position occurred three times.';
-  if (chess.isInsufficientMaterial()) return '♟️ *Draw* — neither side has enough material to checkmate.';
-  return '♟️ *Draw* — the 50-move rule.'; // last remaining isDraw() case
+  if (chess.isStalemate()) return { text: "♟️ *Draw* — stalemate (no legal moves, but not in check).", winnerColor: null };
+  if (chess.isThreefoldRepetition()) return { text: '♟️ *Draw* — the same position occurred three times.', winnerColor: null };
+  if (chess.isInsufficientMaterial()) return { text: '♟️ *Draw* — neither side has enough material to checkmate.', winnerColor: null };
+  return { text: '♟️ *Draw* — the 50-move rule.', winnerColor: null }; // last remaining isDraw() case
 }
 
 // Sends the current position as a board image with `caption`. The board is
@@ -175,9 +183,19 @@ module.exports = {
     if (game.chess.isGameOver()) {
       chessGames.delete(chatId);
       release(chatId, 'chess');
+      const gameOver = describeGameOver(game.chess, game.whiteName, game.blackName);
+      // A player's own move can only end in their own win or a draw, never
+      // the opponent's win — so winnerColor here always resolves to the
+      // human who just moved (or null on a draw). The winnerId !== 'BOT'
+      // check is purely defensive, not because 'BOT' can actually appear
+      // here.
+      const winnerId = gameOver.winnerColor === 'w' ? game.white : gameOver.winnerColor === 'b' ? game.black : null;
+      const questNote = winnerId && winnerId !== 'BOT'
+        ? _formatQuestCompletionNote(await Guild.addQuestProgress(winnerId, 'games', 1))
+        : '';
       return sendBoard(msg, chat, game.chess, {
         lastMove: { from: humanResult.from, to: humanResult.to },
-        caption: `${moverName} played *${humanResult.san}*\n\n${describeGameOver(game.chess, game.whiteName, game.blackName)}`,
+        caption: `${moverName} played *${humanResult.san}*\n\n${gameOver.text}` + questNote,
       });
     }
 
@@ -199,9 +217,17 @@ module.exports = {
       if (game.chess.isGameOver()) {
         chessGames.delete(chatId);
         release(chatId, 'chess');
+        const gameOver = describeGameOver(game.chess, game.whiteName, game.blackName);
+        // Unlike the human-move branch above, this one genuinely can
+        // resolve to 'BOT' (the bot's own move just delivered checkmate) —
+        // that must NOT be treated as a guild win.
+        const winnerId = gameOver.winnerColor === 'w' ? game.white : gameOver.winnerColor === 'b' ? game.black : null;
+        const questNote = winnerId && winnerId !== 'BOT'
+          ? _formatQuestCompletionNote(await Guild.addQuestProgress(winnerId, 'games', 1))
+          : '';
         return sendBoard(msg, chat, game.chess, {
           lastMove: aiLastMove,
-          caption: `${moverName} played *${humanResult.san}*\n🤖 ${BOT_NAME} played *${aiMove.san}*\n\n${describeGameOver(game.chess, game.whiteName, game.blackName)}`,
+          caption: `${moverName} played *${humanResult.san}*\n🤖 ${BOT_NAME} played *${aiMove.san}*\n\n${gameOver.text}` + questNote,
         });
       }
 

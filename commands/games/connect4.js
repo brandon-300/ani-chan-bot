@@ -4,6 +4,8 @@ const { getBestMove } = require('./connect4Engine');
 const { renderBoardImage } = require('./connect4BoardImage');
 const { BOT_NAME } = require('../../utils/config');
 const { isChatBusy, claim, release } = require('./activeGame');
+const Guild = require('../../models/Guild');
+const { _formatQuestCompletionNote } = require('../guilds');
 
 // ─── Active Game Sessions ─────────────────────────────────────────────────────
 // chatId -> { board, mode: 'pvp' | 'bot', turn, players, difficulty, lastMove }
@@ -177,7 +179,12 @@ module.exports = {
     if (checkC4Win(game.board, current.piece)) {
       c4Games.delete(chatId);
       release(chatId, 'c4');
-      return sendBoard(msg, game, `🏆 *${current.name} wins Connect 4!*`);
+      // current.id is always a real WhatsApp id here — never the literal
+      // 'BOT' string — since this check only ever fires right after a
+      // human's own move (the bot's own win is a separate block below,
+      // deliberately not hooked into guild quests).
+      const questNote = _formatQuestCompletionNote(await Guild.addQuestProgress(current.id, 'games', 1));
+      return sendBoard(msg, game, `🏆 *${current.name} wins Connect 4!*` + questNote);
     }
 
     if (isBoardFull(game.board)) {

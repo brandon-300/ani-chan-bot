@@ -4,6 +4,8 @@ const { getBestMove } = require('./tictactoeEngine');
 const { renderBoardImage } = require('./tictactoeBoardImage');
 const { BOT_NAME } = require('../../utils/config');
 const { isChatBusy, claim, release } = require('./activeGame');
+const Guild = require('../../models/Guild');
+const { _formatQuestCompletionNote } = require('../guilds');
 
 // ─── Active Game Sessions ─────────────────────────────────────────────────────
 // chatId -> { board, mode: 'pvp' | 'bot', turn, players, names, symbols,
@@ -116,7 +118,17 @@ module.exports = {
         tttGames.delete(chatId);
         release(chatId, 'ttt');
         const outcome = result === 'draw' ? "🤝 *It's a draw!*" : `🏆 *${moverName} wins!*`;
-        return sendBoard(msg, chat, game, `${moverName} played position ${movePos}\n\n${outcome}`);
+        // game.players[game.turn] is whoever just moved (the turn index isn't
+        // flipped until after this win-check, in both pvp and bot mode) — a
+        // real WhatsApp id here in both modes, never the literal 'BOT'
+        // string, since only the human's own move reaches this check.
+        // Draws don't count. Forfeits via .quitgame are intentionally NOT
+        // hooked here — only an actual completed win counts toward a guild's
+        // "win N games" quest.
+        const questNote = result !== 'draw'
+          ? _formatQuestCompletionNote(await Guild.addQuestProgress(game.players[game.turn], 'games', 1))
+          : '';
+        return sendBoard(msg, chat, game, `${moverName} played position ${movePos}\n\n${outcome}` + questNote);
       }
 
       // ── vs bot: it replies with its own move in this same message ────────

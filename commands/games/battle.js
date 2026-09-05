@@ -4,6 +4,8 @@ const { chooseAction } = require('./battleEngine');
 const { renderBoardImage } = require('./battleBoardImage');
 const { BOT_NAME } = require('../../utils/config');
 const { isChatBusy, claim, release } = require('./activeGame');
+const Guild = require('../../models/Guild');
+const { _formatQuestCompletionNote } = require('../guilds');
 
 // ─── Active Game Sessions ─────────────────────────────────────────────────────
 // chatId -> { p1: { id, name, hp }, p2: { id, name, hp }, turn, mode, difficulty }
@@ -117,10 +119,15 @@ module.exports = {
     if (target.hp <= 0) {
       battleGames.delete(chatId);
       release(chatId, 'battle');
+      // attacker is always the human who just called .attack (in both PvP —
+      // beating the other person — and bot mode — beating the bot itself),
+      // never 'BOT' — the bot's own killing blow is a separate branch below
+      // that isn't hooked into guild quests.
+      const questNote = _formatQuestCompletionNote(await Guild.addQuestProgress(attacker.id, 'games', 1));
       return sendBoard(msg, game, {
         turnSide: null,
         lastAction: { side: targetSide, delta: -dmg },
-        caption: `⚔️ *${attacker.name}* dealt ${dmg} damage!\n💀 *${target.name}* has been defeated!\n🏆 *Winner: ${attacker.name}*!`,
+        caption: `⚔️ *${attacker.name}* dealt ${dmg} damage!\n💀 *${target.name}* has been defeated!\n🏆 *Winner: ${attacker.name}*!` + questNote,
       });
     }
 

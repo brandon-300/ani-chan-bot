@@ -1,8 +1,11 @@
 const Guild = require('../models/Guild');
 const User = require('../models/User');
-const { formatNum, mentionName, mentionTag, resolveNameById, boldSans, doubleStruck, parseAmount } = require('../utils/helpers');
+const { formatNum, formatCooldown, mentionName, mentionTag, resolveNameById, boldSans, doubleStruck, parseAmount, decodeIdKey } = require('../utils/helpers');
+const { GUILD_ACHIEVEMENTS, checkGuildAchievements, formatGuildUnlockNotice } = require('../utils/guildAchievements');
 
 const ROLE_RANK = Guild.ROLE_RANK;
+const QUEST_DEFS = Guild.QUEST_DEFS;
+const QUEST_ICON = { donate: '💰', cards: '🎴', games: '⚔️' };
 const ROLE_ICON = { leader: '👑', officer: '🛡️', veteran: '⚔️', member: '👤' };
 const ROLE_LABEL = { leader: 'Leader', officer: 'Officer', veteran: 'Veteran', member: 'Member' };
 
@@ -10,6 +13,24 @@ function roleIcon(role) { return ROLE_ICON[role] || '👤'; }
 function roleLabel(role) { return ROLE_LABEL[role] || 'Member'; }
 function getMember(guild, userId) { return guild.members.find(m => m.userId === userId); }
 function getRole(guild, userId) { return getMember(guild, userId)?.role || null; }
+
+// ─── Shared: quest-completion note ─────────────────────────────────────────
+// Appended after .guild donate / .claim (cards) / a game win, whichever one
+// happens to finish off the guild's active quest. `questResult` is whatever
+// Guild.applyQuestProgress / Guild.addQuestProgress returned — null (not in
+// a guild, or this activity doesn't match the active quest) means no note.
+// Kept as a leading "\n\n..." block so callers can just string-concat it
+// onto the end of their existing reply text unconditionally.
+//
+// Prefixed with `_` so index.js's command loader does not register it as a
+// chat command, and cross-required from commands/cards.js and every
+// commands/games/*.js file — same pattern already used for
+// _removeMemberFromGuild (see commands/admin.js's require('./guilds')).
+function _formatQuestCompletionNote(questResult) {
+  if (!questResult || !questResult.questCompleted) return '';
+  const levelLine = questResult.guildLevelUp ? ` — 🏰 Guild leveled up to *${questResult.guildLevel}*!` : '';
+  return `\n\n🎉 *Guild quest complete!* +💰${formatNum(questResult.rewardCoins)} treasury, +${formatNum(questResult.rewardXp)} guild XP${levelLine}`;
+}
 
 // ─── Shared: find a guild member by typed name ────────────────────────────────
 // Same exact-then-unambiguous-partial matching .guild remove always used,
@@ -95,6 +116,7 @@ async function _removeMemberFromGuild(userId) {
 
 module.exports = {
   _removeMemberFromGuild,
+  _formatQuestCompletionNote,
 
   // .guild info
   async guild_info(client, msg, args) {
@@ -110,10 +132,26 @@ module.exports = {
       return msg.reply('❌ Guild not found.');
     }
 
+    // Lazy re-check on view — same convention as .profile re-checking the
+    // title on every view (see commands/economy.js). Catches anything that
+    // unlocked from an action elsewhere (a card claim, a game win) without
+    // needing every one of those call sites to also check achievements.
+    const unlockedNow = await checkGuildAchievements(guild._id);
+
     const leaderName = await resolveNameById(client, guild.leaderId);
     const officerCount = guild.members.filter(m => m.role === 'officer').length;
+    // guild._interestCredited is set automatically by the post-find hook in
+    // models/Guild.js every time this guild doc is loaded — same convention
+    // as user._interestCredited in commands/economy.js's .balance.
+    const interestNote = guild._interestCredited > 0
+      ? ` (📈 +${formatNum(guild._interestCredited)} interest since last check)`
+      : '';
 
     const line = (label, value) => `ꕥ ${boldSans(label)}: ${value}`;
+    const q = guild.activeQuest;
+    const questTeaser = q.questType
+      ? `\n\n${QUEST_ICON[q.questType]} Quest: ${formatNum(q.progress)}/${formatNum(q.goal)} — use *.guild quest* for details`
+      : '';
     const card = [
       `╭━━━★彡 ${doubleStruck('GUILD')} 彡★━━━╮`,
       '',
@@ -124,11 +162,11 @@ module.exports = {
       line('Members', `${guild.members.length}${officerCount ? ` (${officerCount} officer${officerCount === 1 ? '' : 's'})` : ''}`),
       line('Level', guild.level),
       line('XP', guild.xp),
-      line('Bank', formatNum(guild.bank)),
+      line('Bank', `${formatNum(guild.bank)}${interestNote}`),
       line('Created', guild.createdAt.toDateString()),
-    ].join('\n');
+    ].join('\n') + questTeaser;
 
-    msg.reply(card);
+    msg.reply(card + formatGuildUnlockNotice(unlockedNow));
   },
 
   // .guild members — open to any guild member (previously leader-only;
@@ -352,16 +390,128 @@ module.exports = {
     const member = getMember(guild, contact.id._serialized);
     if (!member) return msg.reply('❌ Guild membership record not found — try leaving and rejoining.');
 
+    // Same convention as guild_info above — reflects interest already
+    // credited by the post-find hook in models/Guild.js at fetch time,
+    // before this donation's own += is applied below.
+    const interestNote = guild._interestCredited > 0
+      ? ` (📈 +${formatNum(guild._interestCredited)} interest just credited)`
+      : '';
+
     user.coins -= amount;
     guild.bank += amount;
     member.contribution += amount;
 
+    // In-memory only — guild is already loaded and already being saved
+    // below, so this reuses that same write instead of a second fetch/save.
+    // No-ops (returns null) if the active quest isn't a "donate" quest.
+    const questResult = Guild.applyQuestProgress(guild, contact.id._serialized, 'donate', amount);
+    const questNote = _formatQuestCompletionNote(questResult);
+
     await Promise.all([user.save(), guild.save()]);
 
+    // Bank just changed (and possibly level/questsCompleted too, if that
+    // donation finished off the active quest) — check right after, rather
+    // than waiting for the guild to next be viewed.
+    const unlockedNow = await checkGuildAchievements(guild._id);
+
     msg.reply(
-      `💰 Donated *${formatNum(amount)}* coins to *${guild.emblem} ${guild.name}*!\n` +
-      `Guild bank: ${formatNum(guild.bank)} | Your contribution: ${formatNum(member.contribution)}`
+      `💰 Donated *${formatNum(amount)}* coins to *${guild.emblem} ${guild.name}*!${interestNote}\n` +
+      `Guild bank: ${formatNum(guild.bank)} | Your contribution: ${formatNum(member.contribution)}` +
+      questNote + formatGuildUnlockNotice(unlockedNow)
     );
+  },
+
+  // .guild quest — full status of the guild's current daily quest: progress
+  // bar, top contributors, reward, and time left before it rolls over.
+  async guild_quest(client, msg, args) {
+    const contact = await msg.getContact();
+    const user = await User.findOrCreate(contact.id._serialized);
+    if (!user.guildId) return msg.reply('❌ You are not in a guild.');
+
+    const guild = await Guild.findById(user.guildId);
+    if (!guild) {
+      user.guildId = null;
+      await user.save();
+      return msg.reply('❌ Guild not found.');
+    }
+
+    const q = guild.activeQuest;
+    // Defensive only — the post-find hook in models/Guild.js seeds a fresh
+    // quest on every read before this handler ever sees the doc, so
+    // questType should never actually be null here in practice.
+    if (!q.questType) return msg.reply('❌ No active quest right now — check back soon.');
+
+    // Same lazy recheck-on-view convention as .guild info.
+    const unlockedNow = await checkGuildAchievements(guild._id);
+
+    const def = QUEST_DEFS[q.questType];
+    const pct = Math.min(100, Math.floor((q.progress / q.goal) * 100));
+    const barLen = 10;
+    const filled = Math.min(barLen, Math.round((pct / 100) * barLen));
+    const bar = '█'.repeat(filled) + '░'.repeat(barLen - filled);
+
+    // contributors keys are encodeIdKey()'d WhatsApp ids (see models/Guild.js)
+    // — decode before resolving display names.
+    const ranked = [...q.contributors.entries()]
+      .map(([key, amount]) => [decodeIdKey(key), amount])
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10);
+    const names = await Promise.all(ranked.map(([id]) => resolveNameById(client, id)));
+
+    const remaining = Math.max(0, q.expiresAt - Date.now());
+
+    let text = `🎯 *GUILD QUEST*\n\n${def.label(q.goal)}\n\n`;
+    text += `Progress:\n${bar} ${formatNum(q.progress)}/${formatNum(q.goal)} (${pct}%)\n\n`;
+    text += ranked.length
+      ? `Contributors:\n${ranked.map(([, amount], i) => `${names[i]} — ${formatNum(amount)}`).join('\n')}\n\n`
+      : 'No contributions yet — be the first!\n\n';
+    text += `Reward:\n+${formatNum(q.rewardCoins)} guild coins\n+${formatNum(q.rewardXp)} guild XP\n\n`;
+    text += `⏳ Resets in ${formatCooldown(remaining)}`;
+
+    msg.reply(text + formatGuildUnlockNotice(unlockedNow));
+  },
+
+  // .guildquest — shorthand for .guild quest. Same delegate pattern as
+  // .guildlb below.
+  async guildquest(client, msg, args) {
+    return module.exports.guild_quest(client, msg, args);
+  },
+
+  // .guild achievements — list unlocked and locked guild achievements.
+  // Mirrors .achievements/.ach in commands/economy.js exactly.
+  async guild_achievements(client, msg, args) {
+    const contact = await msg.getContact();
+    const user = await User.findOrCreate(contact.id._serialized);
+    if (!user.guildId) return msg.reply('❌ You are not in a guild.');
+
+    const guild = await Guild.findById(user.guildId);
+    if (!guild) {
+      user.guildId = null;
+      await user.save();
+      return msg.reply('❌ Guild not found.');
+    }
+
+    // Recheck first, same as .achievements re-checking on view, in case
+    // something changed since the last time a triggering action ran.
+    // checkGuildAchievements does its own separate fetch+save internally
+    // (see utils/guildAchievements.js), so `guild.achievements` on THIS
+    // object is still the pre-check snapshot — merge in whatever it just
+    // unlocked rather than re-reading `guild` (which would show a
+    // just-unlocked achievement as still locked until the next view).
+    const newlyUnlocked = await checkGuildAchievements(guild._id);
+    const unlockedIds = new Set([...(guild.achievements || []), ...newlyUnlocked.map(a => a.id)]);
+
+    let text = `🏅 *${guild.emblem} ${guild.name} — Guild Achievements* (${unlockedIds.size}/${GUILD_ACHIEVEMENTS.length})\n\n`;
+    for (const a of GUILD_ACHIEVEMENTS) {
+      const done = unlockedIds.has(a.id);
+      text += `${done ? '✅' : '🔒'} ${a.emoji} *${a.name}* — ${a.desc}\n`;
+    }
+    msg.reply(text);
+  },
+
+  // .guildach — shorthand for .guild achievements.
+  async guildach(client, msg, args) {
+    return module.exports.guild_achievements(client, msg, args);
   },
 
   // .guild create [name]

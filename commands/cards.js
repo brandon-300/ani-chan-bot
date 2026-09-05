@@ -5,6 +5,8 @@ const { renderCard, fetchImageAsDataUri } = require('../utils/cardRenderer');
 const { MessageMedia } = require('whatsapp-web.js');
 const User = require('../models/User');
 const Group = require('../models/Group');
+const Guild = require('../models/Guild');
+const { _formatQuestCompletionNote } = require('./guilds');
 const { tierEmoji, rollTier, formatNum, pick, mentionName, mentionTag, generateUniqueCode, safeGetChat, cardValue, tierAbove, TIER_DROP_RATES, addXP, XP_REWARDS, parseAmount, boldSans, doubleStruck, cleanDescription } = require('../utils/helpers');
 const crypto = require('crypto');
 
@@ -1040,8 +1042,11 @@ const cards = await OwnedCard.find({
       const xpResult = await addXP(contact.id._serialized, XP_REWARDS.shopBuy);
       const unlocked = await checkAchievements(contact.id._serialized);
       const newTitle = await checkTitle(contact.id._serialized);
+      // Best-effort — never throws, returns null if the buyer isn't in a
+      // guild or this doesn't advance the guild's currently active quest.
+      const questResult = await Guild.addQuestProgress(contact.id._serialized, 'cards', 1);
       const xpLine = `\n⭐ +${XP_REWARDS.shopBuy} XP${xpResult.levelUp ? ` — 🎉 Level up! You're now level ${xpResult.level}!` : ''}`;
-      return msg.reply(`✅ You bought *${shopCard.name}* [${shopCard.tier}] for 💰 ${formatNum(price)}!` + xpLine + formatUnlockNotice(unlocked) + formatTitleUnlockNotice(newTitle));
+      return msg.reply(`✅ You bought *${shopCard.name}* [${shopCard.tier}] for 💰 ${formatNum(price)}!` + xpLine + formatUnlockNotice(unlocked) + formatTitleUnlockNotice(newTitle) + _formatQuestCompletionNote(questResult));
     }
 
 // Drop claim
@@ -1097,8 +1102,11 @@ if (existing)
     const unlocked = await checkAchievements(contact.id._serialized);
     const xpResult = await addXP(contact.id._serialized, XP_REWARDS.claim);
     const newTitle = await checkTitle(contact.id._serialized);
+    // Best-effort — never throws, returns null if the claimer isn't in a
+    // guild or this doesn't advance the guild's currently active quest.
+    const questResult = await Guild.addQuestProgress(contact.id._serialized, 'cards', 1);
     const xpLine = `\n⭐ +${XP_REWARDS.claim} XP${xpResult.levelUp ? ` — 🎉 Level up! You're now level ${xpResult.level}!` : ''}`;
-    msg.reply(`✅ *${contact.pushname}* claimed ${tierEmoji(catalogue.tier)} *${catalogue.name}* [${catalogue.tier}]!` + xpLine + formatUnlockNotice(unlocked) + formatTitleUnlockNotice(newTitle));
+    msg.reply(`✅ *${contact.pushname}* claimed ${tierEmoji(catalogue.tier)} *${catalogue.name}* [${catalogue.tier}]!` + xpLine + formatUnlockNotice(unlocked) + formatTitleUnlockNotice(newTitle) + _formatQuestCompletionNote(questResult));
   },
 
   // .sc [@user] [index] [price] — propose selling a card to a user.
