@@ -203,20 +203,27 @@ All four games play with real pixel-drawn board images and support both PvP (`@m
 | `.akinator / .aki` | Guess-the-character game |
 | `.greekgod / .gg` | Find out which Greek god you embody |
 | `.wcg` | Group "Would You Rather" game |
+| `.quiz start [easy\|normal\|hard]` | Start an Anime Character Quiz round — guess the character from an image, first correct reply wins the point |
+| `.quiz stop` | End the current quiz early and show the scoreboard |
 
 ### 🏰 GUILDS
 | Command | Description |
 |---|---|
 | `.guild info` | View your guild |
 | `.guild create [name]` | Create a guild (costs 1000 coins) |
-| `.guild invite @user` | Invite a user to your guild |
+| `.guild description [text]` | View (no text), or set (leader only) your guild's description |
+| `.guild invite @user` | Invite a user to your guild (leader/officer) |
 | `.guild accept` | Accept a pending guild invite |
 | `.guild decline` | Decline a pending guild invite |
-| `.guild emblem [emoji]` | Set your guild's emblem |
+| `.guild emblem [emoji]` | Set your guild's emblem (leader only) |
+| `.guild members` | List guild members with roles and contribution |
+| `.guild promote [name]` | Promote a member one rank: member → veteran → officer (leader only) |
+| `.guild demote [name]` | Demote a member one rank: officer → veteran → member (leader only) |
+| `.guild remove [name]` | Remove a member from the guild (leader/officer) |
+| `.guild donate [amount]` | Donate coins to the guild bank — also raises your contribution |
+| `.guild leaderboard [level\|xp\|wealth] / .guildlb` | Top 10 guilds by level, XP, or bank (defaults to level) |
 | `.guild leave` | Leave your current guild |
 | `.guild disband` | Disband your guild (leader only) |
-| `.guild members` | List guild members (leader only) |
-| `.guild remove [name]` | Remove a member from the guild (leader only) |
 
 ### 🎰 GAMBLE
 | Command | Description |
@@ -315,6 +322,8 @@ All four games play with real pixel-drawn board images and support both PvP (`@m
 |---|---|
 | `.kick @user` | Remove a user from the group |
 | `.delete` | Delete a replied message |
+| `.pin [24h/7d/30d]` | Pin a replied message (defaults to 30d) — admin only, groups only |
+| `.unpin` | Unpin a replied message — admin only, groups only |
 | `.antilink [on/off]` | Auto-remove messages containing links |
 | `.antilink action [warn/kick]` | Set what happens when antilink triggers |
 | `.antism on/off` | Auto-remove status/channel forward spam |
