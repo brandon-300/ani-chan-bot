@@ -82,6 +82,12 @@ async function checkGuildAchievements(guildId) {
 
   if (newlyUnlocked.length) {
     guild.achievements = [...alreadyUnlocked, ...newlyUnlocked.map(a => a.id)];
+    // Achievements are the biggest single reputation source — a one-time
+    // milestone is worth more than a quest that repeats daily. See the
+    // `reputation` field comment in models/Guild.js for why this is
+    // tracked separately from level/xp at all. Guild.awardReputation also
+    // credits the season-scoped counter, not just lifetime reputation.
+    Guild.awardReputation(guild, newlyUnlocked.length * 50);
     await guild.save();
   }
 
