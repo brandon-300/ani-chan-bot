@@ -142,6 +142,11 @@ const GuildSchema = new mongoose.Schema({
   // Lifetime count of seasons this guild has WON — a permanent trophy,
   // unaffected by the seasonReputation reset above.
   seasonWins: { type: Number, default: 0 },
+  // Which anniversary year has already been paid out (0 = none yet) — see
+  // _maybeSendGuildEvents in commands/guilds.js. Prevents an anniversary
+  // reward from firing every single day for the rest of the guild's life
+  // once it's crossed that mark; only the day it's crossed pays out.
+  lastAnniversaryYearRewarded: { type: Number, default: 0 },
   // ─── Weekly Guild Missions ────────────────────────────────────────────
   // A second, fully independent progress track alongside activeQuest
   // above — same shape, same three activities, but a week-long window
@@ -561,6 +566,14 @@ GuildSchema.pre('save', async function (next) {
 // re-saved with fresh interest/quests on the way out.
 GuildSchema.post('findOne', async function (doc) {
   if (!doc) return;
+  // Defensive: a query that projects out fields this normalization needs
+  // (.select(...)) or returns a plain object instead of a document
+  // (.lean()) can't be safely normalized or saved — skip rather than
+  // crash reading .questType (etc.) off a field that was never fetched.
+  // Every current Guild.find/findOne/findById call in this codebase
+  // fetches full documents, so this only guards against a FUTURE
+  // .select()/.lean() being added without remembering this hook exists.
+  if (typeof doc.save !== 'function' || doc.activeQuest === undefined) return;
   const needsInterestSave = applyDailyGuildInterest(doc);
   const needsQuestSave = ensureActiveQuest(doc);
   const needsMissionSave = ensureActiveMission(doc);
@@ -575,6 +588,8 @@ GuildSchema.post('find', async function (docs) {
   if (!Array.isArray(docs) || docs.length === 0) return;
   const saves = [];
   for (const doc of docs) {
+    // Same defensive skip as the findOne hook above.
+    if (typeof doc.save !== 'function' || doc.activeQuest === undefined) continue;
     const needsInterestSave = applyDailyGuildInterest(doc);
     const needsQuestSave = ensureActiveQuest(doc);
     const needsMissionSave = ensureActiveMission(doc);

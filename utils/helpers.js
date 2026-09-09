@@ -97,6 +97,94 @@ function formatCooldown(ms) {
   return parts.join(' ') || '0s';
 }
 
+// ─── Date of Birth Parsing & Age Calculation (.setdob) ────────────────────────
+// Single source of truth for both — used by commands/economy.js's .setdob.
+// Strict DD/MM/YYYY only (matches the format shown in the .setdob usage text
+// and the registration instructions below), parsed/validated in UTC to avoid
+// any local-timezone off-by-one on day boundaries.
+function parseDobInput(input) {
+  if (!input) return null;
+  const match = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(String(input).trim());
+  if (!match) return null;
+
+  const day = parseInt(match[1], 10);
+  const month = parseInt(match[2], 10);
+  const year = parseInt(match[3], 10);
+  if (month < 1 || month > 12) return null;
+  if (year < 1900) return null;
+
+  const date = new Date(Date.UTC(year, month - 1, day));
+  // Date.UTC silently rolls invalid days over into the next month (e.g. Feb
+  // 30 -> Mar 2) instead of throwing — re-reading the parts back off the
+  // constructed date and comparing catches that instead of silently
+  // accepting a bogus date.
+  if (
+    date.getUTCFullYear() !== year ||
+    date.getUTCMonth() !== month - 1 ||
+    date.getUTCDate() !== day
+  ) {
+    return null;
+  }
+  if (date.getTime() > Date.now()) return null; // no future dates
+
+  return date;
+}
+
+// Calendar-accurate age — accounts for whether this year's birthday has
+// actually happened yet, not just a plain year subtraction (someone born
+// Sept 20 is still one year younger than that on Sept 5 of what would
+// otherwise look like their birthday year).
+function calculateAge(dob, now = new Date()) {
+  let age = now.getUTCFullYear() - dob.getUTCFullYear();
+  const hadBirthdayThisYear =
+    now.getUTCMonth() > dob.getUTCMonth() ||
+    (now.getUTCMonth() === dob.getUTCMonth() && now.getUTCDate() >= dob.getUTCDate());
+  if (!hadBirthdayThisYear) age -= 1;
+  return age;
+}
+
+// ─── Registration Steps (.setname/.setdob/.bio/.setpic, commands/economy.js) ──
+// Single source of truth for what counts as a "complete" profile and how to
+// describe outstanding steps — read by BOTH the registration gate in
+// index.js (deciding whether to block a command for an incomplete account)
+// and the registration commands themselves in commands/economy.js (the
+// "here's what's left" nudge after each step). Keeping this in one place
+// means the step list, its commands, and its wording can never silently
+// drift between the two call sites.
+function registrationSteps(user) {
+  const reg = (user && user.registration) || {};
+  return [
+    { done: !!reg.nameSet, label: 'Name', cmd: '.setname [name]' },
+    { done: !!reg.dobSet, label: 'Date of birth', cmd: '.setdob [DD/MM/YYYY]' },
+    { done: !!reg.bioSet, label: 'Bio', cmd: '.setbio [bio]  (alias: .bio)' },
+    { done: !!reg.picSet, label: 'Profile picture', cmd: '.setpic (reply to a photo)' },
+  ];
+}
+
+function isRegistrationComplete(user) {
+  return registrationSteps(user).every(s => s.done);
+}
+
+function buildRegistrationProgressText(user) {
+  const lines = registrationSteps(user).map(
+    s => `${s.done ? '✅' : '❌'} ${s.label}${s.done ? '' : ` — ${s.cmd}`}`
+  );
+  return `📋 *Profile Progress*\n\n${lines.join('\n')}\n\n⚠️ Your profile isn't finished yet — complete the step(s) above to activate your account.`;
+}
+
+function buildRegistrationIntroText(botName) {
+  return `👋 Hey there! I'm *${botName}*, your anime companion.\n\n` +
+    `Before you can use my features, you'll need to create your profile first.\n\n` +
+    `📝 *Registration*\n` +
+    `1️⃣ .setname [name]\n` +
+    `2️⃣ .setdob [DD/MM/YYYY]\n` +
+    `3️⃣ .setbio [bio]  (alias: .bio)\n` +
+    `4️⃣ .setpic — reply to a photo (or send one with .setpic as the caption)\n\n` +
+    `🔞 You must be 18 or older to register.\n` +
+    `You can complete these steps in any order — I'll tell you what's left after each one.\n\n` +
+    `Once everything is complete, I'll activate your account and show you the command menu.`;
+}
+
 // ─── Random Range ─────────────────────────────────────────────────────────────
 function rand(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
@@ -464,6 +552,12 @@ module.exports = {
   formatNum,
   parseAmount,
   formatCooldown,
+  parseDobInput,
+  calculateAge,
+  registrationSteps,
+  isRegistrationComplete,
+  buildRegistrationProgressText,
+  buildRegistrationIntroText,
   rand,
   pick,
   isAdmin,

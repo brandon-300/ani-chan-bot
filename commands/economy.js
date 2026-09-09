@@ -1,8 +1,9 @@
 const User = require('../models/User');
 const Guild = require('../models/Guild');
+const AgeVerification = require('../models/AgeVerification');
 const { CardCatalogue, OwnedCard } = require('../models/Card');
-const { formatNum, formatCooldown, rand, pick, tierEmoji, mentionName, mentionTag, safeGetChat, safeGetQuotedMessage, isOwner, isMod, addXP, XP_REWARDS, xpNeededForLevel, boldSans, doubleStruck, encodeIdKey, parseAmount } = require('../utils/helpers');
-const { BOT_NAME } = require('../utils/config');
+const { formatNum, formatCooldown, rand, pick, tierEmoji, mentionName, mentionTag, safeGetChat, safeGetQuotedMessage, isOwner, isMod, addXP, XP_REWARDS, xpNeededForLevel, boldSans, doubleStruck, encodeIdKey, parseAmount, parseDobInput, calculateAge, isRegistrationComplete, buildRegistrationProgressText, registrationSteps } = require('../utils/helpers');
+const { BOT_NAME, MIN_REGISTRATION_AGE, AGE_VERIFICATION_LOCKOUT_DAYS } = require('../utils/config');
 const { battleGames } = require('./games');
 const { checkAchievements, formatUnlockNotice, ACHIEVEMENTS } = require('../utils/achievements');
 const { checkTitle, formatTitleUnlockNotice, titleLabel, TITLES } = require('../utils/titles');
@@ -70,6 +71,42 @@ function mimeToExt(mime = '') {
     'image/heif': 'heif',
   };
   return map[m] || 'jpg';
+}
+
+// ─── Registration progress nudge (.setname/.setdob/.bio/.setpic) ──────────────
+// Called after each of the four registration commands successfully updates
+// its own field + flag. Two outcomes:
+//   - Already 'active' (this is an already-registered person just updating
+//     their name/bio/pic later on) -> silently do nothing extra. This check
+//     matters: without it, every profile edit after registration would
+//     re-print the "profile progress" checklist, which makes no sense once
+//     someone's already fully registered.
+//   - Still pending, and every step is now done -> flip status to 'active',
+//     save, and send the completion message. index.js's dispatcher (not
+//     this function) is what actually sends the follow-up .menu — it
+//     independently re-checks the user's registration status right after
+//     this command finishes, so this file never needs to reach back into
+//     index.js's menu-building code (which depends on the dynamically
+//     loaded `commands` map and would be a circular require from here).
+//   - Still pending, and something's still missing -> send the checklist of
+//     what's left (registrationSteps/buildRegistrationProgressText, in
+//     utils/helpers.js, is the single source of truth for that wording —
+//     also used by index.js's registration gate for the same checklist).
+async function announceRegistrationProgress(user, msg) {
+  if (user.registration?.status === 'active') return;
+
+  if (isRegistrationComplete(user)) {
+    user.registration.status = 'active';
+    await user.save();
+    await msg.reply(
+      `🎉 *Registration complete!*\n\nWelcome, *${user.name}*! 🌸\n` +
+      `Your ${BOT_NAME} account has been created successfully.\n\n` +
+      `Here's what you can do:`
+    );
+    return;
+  }
+
+  await msg.reply(buildRegistrationProgressText(user));
 }
 
 // Owner-gate for the testing command below — same pattern as
@@ -444,9 +481,58 @@ async lottery(client, msg, args) {
     msg.reply(card);
   },
 
-// .edit — show editable fields
+// .edit — profile dashboard. Read-only: it describes what's set and what
+// commands change each field, it doesn't change anything itself (the
+// individual .setname/.setdob/.bio/.setpic commands below are what
+// actually perform an edit).
+//
+// Reuses registrationSteps() (utils/helpers.js) for both the ✅/❌ status
+// and the "how do I set this" command text — the same single source of
+// truth the registration gate (index.js) and announceRegistrationProgress
+// (this file) already use, so this can never silently drift out of sync
+// with what "complete" means elsewhere.
+//
+// DOB privacy: date of birth is only ever shown in a DM. In a group chat
+// only the calculated age is shown. If the chat type can't be determined
+// for some reason, this defaults to treating it as a group (hide DOB) —
+// safer to under-show than to accidentally leak someone's DOB into a group.
   async edit(client, msg, args) {
-    msg.reply(`✏️ *Editable Profile Fields*\n\n.setname [name]\n.bio [your bio]\n.setage [age]\n\nMore options coming soon!`);
+    const contact = await msg.getContact();
+    const user = await User.findOrCreate(contact.id._serialized, contact.pushname);
+    const chat = await safeGetChat(msg).catch(() => null);
+    const inGroup = chat ? !!chat.isGroup : true;
+
+    const [nameStep, dobStep, bioStep, picStep] = registrationSteps(user);
+
+    const nameLine = nameStep.done
+      ? `👤 Name: ${user.name}`
+      : `👤 Name: ❌ Not set — ${nameStep.cmd}`;
+
+    let dobLine;
+    if (!dobStep.done) {
+      dobLine = `🎂 Date of birth: ❌ Not set — ${dobStep.cmd}`;
+    } else if (inGroup) {
+      dobLine = `🎂 Age: ${user.age}  _(DOB hidden in groups — DM me to see it)_`;
+    } else {
+      const d = user.dob;
+      const dobText = `${String(d.getUTCDate()).padStart(2, '0')}/${String(d.getUTCMonth() + 1).padStart(2, '0')}/${d.getUTCFullYear()}`;
+      dobLine = `🎂 Date of birth: ${dobText}  (Age: ${user.age})`;
+    }
+
+    const bioLine = bioStep.done
+      ? `📝 Bio: ${user.bio}`
+      : `📝 Bio: ❌ Not set — ${bioStep.cmd}`;
+
+    const picLine = picStep.done
+      ? `🖼️ Profile picture: ✅ Set`
+      : `🖼️ Profile picture: ❌ Not set — ${picStep.cmd}`;
+
+    await msg.reply(
+      `✏️ *EDIT PROFILE*\n\n` +
+      `${nameLine}\n${dobLine}\n${bioLine}\n${picLine}\n\n` +
+      `*To update a field:*\n` +
+      `${nameStep.cmd}\n${dobStep.cmd}\n${bioStep.cmd}\n${picStep.cmd}\n.removepic`
+    );
   },
 
   // .setname [name]
@@ -457,11 +543,17 @@ async lottery(client, msg, args) {
     if (name.length > 30) return msg.reply('❌ Name must be 30 characters or less.');
     const user = await User.findOrCreate(contact.id._serialized);
     user.name = name;
+    user.registration.nameSet = true;
     await user.save();
-    msg.reply(`✅ Name set to *${name}*!`);
+    await msg.reply(`✅ Name set to *${name}*!`);
+    await announceRegistrationProgress(user, msg);
   },
 
-  // .bio [bio]
+  // .bio [bio] — user-facing text elsewhere (registration steps, .edit)
+  // presents this as ".setbio" per Brandon's naming-consistency preference
+  // with .setname/.setdob/.setpic, but the actual canonical command name
+  // stays "bio" here — .setbio is the alias (see index.js's `aliases` map).
+  // Purely cosmetic: both spellings already work identically either way.
   async bio(client, msg, args) {
     const contact = await msg.getContact();
     const bio = args.join(' ');
@@ -469,11 +561,110 @@ async lottery(client, msg, args) {
     if (bio.length > 150) return msg.reply('❌ Bio must be 150 characters or less.');
     const user = await User.findOrCreate(contact.id._serialized);
     user.bio = bio;
+    user.registration.bioSet = true;
     await user.save();
-    msg.reply('✅ Bio updated!');
+    await msg.reply('✅ Bio updated!');
+    await announceRegistrationProgress(user, msg);
   },
 
-  // .setage [age]
+  // .setdob [DD/MM/YYYY] — source of truth for age going forward (see
+  // MIN_REGISTRATION_AGE in utils/config.js). Age is calculated
+  // calendar-accurately from the date of birth (utils/helpers.js's
+  // calculateAge), not just a year subtraction, so someone whose birthday
+  // hasn't happened yet this year is correctly still counted a year
+  // younger.
+  //
+  // UNCERTAINTY FLAGGED (per your rule #7, not guessed around): I checked
+  // whatsapp-web.js's source directly (node_modules/whatsapp-web.js) and it
+  // does not expose a birthday/date-of-birth field anywhere on Contact —
+  // WhatsApp itself doesn't surface that via the web client this library
+  // automates. There is no reliable way to auto-fill this from someone's
+  // WhatsApp profile, so .setdob has to be the only input path.
+  async setdob(client, msg, args) {
+    const contact = await msg.getContact();
+    const userId = contact.id._serialized;
+    const input = args.join(' ').trim();
+
+    if (!input) return msg.reply('❌ Usage: .setdob [DD/MM/YYYY]\n\nExample: .setdob 12/04/2005');
+
+    // Lockout check FIRST, before even trying to parse the new input — an
+    // active lockout blocks retrying with a different (possibly fake) date
+    // entirely, regardless of what they just typed.
+    const existingLock = await AgeVerification.findOne({ id: userId });
+    if (existingLock) {
+      const remainingMs = existingLock.expiresAt.getTime() - Date.now();
+      if (remainingMs > 0) {
+        const remainingDays = Math.max(1, Math.ceil(remainingMs / (24 * 60 * 60 * 1000)));
+        return msg.reply(
+          `⛔ You already tried to register with a date of birth that showed you're under ${MIN_REGISTRATION_AGE}.\n\n` +
+          `You can try again in *${remainingDays} day${remainingDays === 1 ? '' : 's'}*.`
+        );
+      }
+      // Expired but not yet swept by MongoDB's TTL background job (which
+      // runs roughly once a minute, not instantly) — safe to clear it
+      // ourselves right now and continue.
+      await AgeVerification.deleteOne({ _id: existingLock._id }).catch(() => {});
+    }
+
+    const dob = parseDobInput(input);
+    if (!dob) {
+      return msg.reply('❌ Invalid date. Use DD/MM/YYYY, e.g. .setdob 12/04/2005');
+    }
+
+    const age = calculateAge(dob);
+
+    // Looked up once, read-only, BEFORE deciding anything — used only to
+    // phrase the messages below correctly (a brand-new registrant vs.
+    // someone already registered trying to change an already-valid DOB).
+    // It is never itself the thing that decides whether the DOB gets
+    // written — that still only happens in the age>=MIN_REGISTRATION_AGE
+    // branch further down, so an already-registered person's valid,
+    // existing DOB is never overwritten by a rejected under-18 attempt.
+    const existingUser = await User.findOne({ id: userId }, 'registration').lean();
+    const alreadyActive = existingUser?.registration?.status === 'active';
+
+    if (age < MIN_REGISTRATION_AGE) {
+      const lockoutMs = AGE_VERIFICATION_LOCKOUT_DAYS * 24 * 60 * 60 * 1000;
+      try {
+        await AgeVerification.create({
+          id: userId,
+          dobEntered: dob,
+          calculatedAge: age,
+          expiresAt: new Date(Date.now() + lockoutMs),
+        });
+      } catch (err) {
+        // Duplicate-key race — two near-simultaneous .setdob attempts from
+        // the same id. The other write already recorded the flag, which is
+        // all that actually matters here.
+        if (err.code !== 11000) console.error('AgeVerification create failed:', err.message);
+      }
+      if (alreadyActive) {
+        return msg.reply(
+          `❌ That date of birth indicates you're under ${MIN_REGISTRATION_AGE}.\n\n` +
+          `Your existing date of birth has *not* been changed.`
+        );
+      }
+      return msg.reply(
+        `❌ You can't complete registration because the date of birth you entered indicates that you're under ${MIN_REGISTRATION_AGE}.\n\n` +
+        `Your account has not been created. You won't be able to register until you're eligible.`
+      );
+    }
+
+    const user = await User.findOrCreate(userId, contact.pushname);
+    user.dob = dob;
+    user.age = age;
+    user.registration.dobSet = true;
+    await user.save();
+    await msg.reply(`✅ Date of birth ${alreadyActive ? 'updated' : 'set'} — you're *${age}* years old.`);
+    await announceRegistrationProgress(user, msg);
+  },
+
+  // .setage [age] — LEGACY. Registration now uses .setdob (calculates age
+  // automatically and enforces the minimum-age check); this command is kept
+  // only for backward compatibility with accounts that already had an `age`
+  // set before .setdob existed, or for manual admin correction. Left
+  // functionally unchanged and does not touch `registration.dobSet` — it's
+  // not part of the registration flow.
   async setage(client, msg, args) {
     const contact = await msg.getContact();
     const age = parseInt(args[0]);
@@ -908,8 +1099,13 @@ async lottery(client, msg, args) {
         resourceType: 'image',
       });
 
-      await User.updateOne({ id: userId }, { $set: { 'profile.picUrl': url, 'profile.picPublicId': publicId } });
-      msg.reply('✅ Profile picture updated! Check it with .profile.');
+      const updatedUser = await User.findOneAndUpdate(
+        { id: userId },
+        { $set: { 'profile.picUrl': url, 'profile.picPublicId': publicId, 'registration.picSet': true } },
+        { new: true }
+      );
+      await msg.reply('✅ Profile picture updated! Check it with .profile.');
+      await announceRegistrationProgress(updatedUser, msg);
     } catch (err) {
       console.error('setpic error:', err.message);
       msg.reply('❌ Could not set that as your profile picture — try again in a moment.');

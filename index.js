@@ -5,7 +5,7 @@ const mongoose = require('mongoose');
 const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
-const { safeGetQuotedMessage, safeGetChat, safeGetContact, resolveSenderName, withRetry, encodeIdKey } = require('./utils/helpers');
+const { safeGetQuotedMessage, safeGetChat, safeGetContact, resolveSenderName, withRetry, encodeIdKey, isOwner, isMod, buildRegistrationIntroText, buildRegistrationProgressText } = require('./utils/helpers');
 const { BOT_NAME, MENU_IMAGE_URL } = require('./utils/config');
 const { instrumentHttpClients, wrapWithUsageTracking } = require('./utils/usageTracking');
 const { tryHandleQuizAnswer } = require('./commands/games/quiz');
@@ -133,6 +133,7 @@ const aliases = {
   quit: 'quitgame',
   fusion: 'fuse',
   bid: 'submit',
+  setbio: 'bio',
 };
 
 // ─── Menu content ───────────────────────────────────────────────────────────
@@ -565,7 +566,88 @@ const HEAVY_COMMANDS = new Set([
   'backfillimages', 'bulkadd', 'autoexpand', 'repairlinks', 'purgeorphans',
   // general.js — multi-collection aggregation + live per-group WhatsApp lookups
   'stats',
+  // news.js — RSS fetch + multi-message send loop
+  'news',
 ]);
+
+// ─── Registration gate ─────────────────────────────────────────────────────
+// See commands/economy.js's .setname/.setdob/.bio/.setpic and
+// models/User.js's `registration` field. These four commands are the only
+// ones allowed to run for an account that isn't fully registered yet —
+// they're exactly the commands that BUILD a registration, so they can't be
+// blocked by the same gate that guards everything else. `command` here has
+// already gone through the aliases map by the time this runs (setbio ->
+// bio), so only the canonical names need listing.
+const REGISTRATION_BYPASS_COMMANDS = new Set(['setname', 'setdob', 'bio', 'setpic']);
+
+// Checks whether `command` should be allowed to run for whoever sent `msg`.
+// Returns { blocked, senderId, wasActive }:
+//   - blocked: true if a registration message was sent and the caller
+//     should NOT run the resolved command handler.
+//   - senderId / wasActive: used after a REGISTRATION_BYPASS_COMMANDS
+//     command finishes running, to decide whether to auto-send the .menu
+//     (see the "Normal commands" execution block further down) — wasActive
+//     records whether the account was already fully registered BEFORE this
+//     command ran, so a person who's long since registered updating their
+//     name again doesn't get the menu blasted at them every time.
+//
+// Deliberately fails OPEN on any unexpected error (Mongo hiccup, contact
+// lookup failure, etc.) rather than silently blocking every command bot-wide
+// if this new gate itself has a bug — a bug here should degrade back to the
+// bot's old (pre-registration) behavior, not take the whole bot down.
+async function checkRegistrationGate(msg, command) {
+  let senderId = null;
+  try {
+    const contact = await safeGetContact(msg);
+    senderId = contact?.id?._serialized || null;
+  } catch (err) {
+    console.error('Registration gate: contact lookup failed:', err.message);
+  }
+  if (!senderId) senderId = msg.author || msg.from;
+
+  // Owner/mods run the bot day-to-day (testing, moderating) and shouldn't
+  // be forced through registration to do that.
+  if (isOwner(senderId) || isMod(senderId)) {
+    return { blocked: false, senderId, wasActive: true };
+  }
+
+  let existingUser = null;
+  try {
+    const User = require('./models/User');
+    existingUser = await User.findOne({ id: senderId }, 'registration').lean();
+  } catch (err) {
+    console.error('Registration gate: user lookup failed, allowing command through:', err.message);
+    return { blocked: false, senderId, wasActive: true };
+  }
+
+  // .lean() skips Mongoose document hydration, which is what would normally
+  // apply the schema's `registration.status` default ('active') for a
+  // pre-existing document that has no `registration` path stored at all —
+  // so that fallback has to be done by hand here to get the same
+  // grandfathering behavior (see models/User.js's comment on that default).
+  const status = existingUser ? (existingUser.registration?.status || 'active') : null;
+  const wasActive = status === 'active';
+
+  if (REGISTRATION_BYPASS_COMMANDS.has(command)) {
+    return { blocked: false, senderId, wasActive };
+  }
+
+  if (!existingUser) {
+    await msg.reply(buildRegistrationIntroText(BOT_NAME)).catch(err => {
+      console.error('Registration gate: failed to send intro message:', err.message);
+    });
+    return { blocked: true, senderId, wasActive: false };
+  }
+
+  if (status === 'active') {
+    return { blocked: false, senderId, wasActive: true };
+  }
+
+  await msg.reply(buildRegistrationProgressText(existingUser)).catch(err => {
+    console.error('Registration gate: failed to send progress message:', err.message);
+  });
+  return { blocked: true, senderId, wasActive: false };
+}
 
 // ─── Global serial queue for heavy commands ────────────────────────────────────
 // Separate from the per-chat queue below. The per-chat queue keeps messages
@@ -746,6 +828,18 @@ client.on('message', (msg) => {
       if (aliases[command]) command = aliases[command];
     }
 
+    // ── Registration gate ──────────────────────────────────────────────────
+    // Must run before ANY handler resolution/execution below — this is what
+    // stops commands like .balance/.cards/.daily from implicitly creating a
+    // full account via User.findOrCreate() before someone has registered.
+    // See checkRegistrationGate()'s own comment above for the bypass list
+    // and fail-open behavior.
+    const registrationCheck = await checkRegistrationGate(msg, command).catch(err => {
+      console.error('Registration gate threw unexpectedly, allowing command through:', err.message);
+      return { blocked: false, senderId: null, wasActive: true };
+    });
+    if (registrationCheck.blocked) return;
+
     // ── Task ID + logging context ──────────────────────────────────────────
     // Assigned as soon as we know a command was *attempted*, whether or not
     // it turns out to resolve to a real handler below.
@@ -869,6 +963,28 @@ client.on('message', (msg) => {
     try {
       await trackedHandlerFn();
       console.log(`Command executed and replied to ${senderName} successfully at ${new Date().toLocaleString()}`);
+
+      // ── Post-registration menu send ────────────────────────────────────
+      // Only relevant right after one of the four registration commands
+      // (none of which are HEAVY_COMMANDS, so this normal-command block is
+      // the only place that needs it) finishes for someone who was NOT
+      // already fully registered before it ran. Re-checking Mongo here
+      // (rather than trusting some in-memory flag) is deliberate: the
+      // command handler in commands/economy.js is what actually flips
+      // registration.status to 'active' and saves it, so by the time this
+      // await resolves that write has already committed — this is just
+      // reading back the result of it.
+      if (REGISTRATION_BYPASS_COMMANDS.has(command) && registrationCheck.senderId && !registrationCheck.wasActive) {
+        try {
+          const User = require('./models/User');
+          const freshUser = await User.findOne({ id: registrationCheck.senderId }, 'registration').lean();
+          if (freshUser?.registration?.status === 'active') {
+            await sendQuickMenu(msg);
+          }
+        } catch (err) {
+          console.error('Post-registration menu send failed:', err.message);
+        }
+      }
     } catch (err) {
       console.error(`Failed to execute command: ${err.message}`);
       await msg.reply('❌ An error occurred. Please try again.');
@@ -1112,6 +1228,30 @@ setInterval(() => {
   const { _sweepInactiveUsers } = require('./commands/admin');
   if (_sweepInactiveUsers) {
     _sweepInactiveUsers(client).catch(err => console.error('Inactive user sweep error:', err.message));
+  }
+}, 60000);
+
+// ── Guild anniversary/holiday events (9:00 AM WAT daily) ────────────────
+// Same shape again — checked every minute, actual once-a-day gating +
+// duplicate-run protection lives inside _maybeSendGuildEvents itself
+// (commands/guilds.js), via BotState.
+setInterval(() => {
+  const { _maybeSendGuildEvents } = require('./commands/guilds');
+  if (_maybeSendGuildEvents) {
+    _maybeSendGuildEvents(client).catch(err => console.error('Guild events check error:', err.message));
+  }
+}, 60000);
+
+// ── Daily anime news broadcast (8:00 AM WAT daily) ──────────────────────
+// Same shape again — checked every minute, actual once-a-day gating +
+// duplicate-run protection lives inside _maybeSendDailyNews itself
+// (commands/news.js), via BotState. Unlike the digests above (which go to
+// one recipient), this one fans out to every group the bot is CURRENTLY
+// in — see _maybeSendDailyNews's own comment for how that list is built.
+setInterval(() => {
+  const { _maybeSendDailyNews } = require('./commands/news');
+  if (_maybeSendDailyNews) {
+    _maybeSendDailyNews(client).catch(err => console.error('Daily anime news broadcast error:', err.message));
   }
 }, 60000);
 

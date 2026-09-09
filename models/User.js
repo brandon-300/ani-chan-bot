@@ -5,6 +5,30 @@ const UserSchema = new mongoose.Schema({
   name: { type: String, default: 'Unknown' },
   bio: { type: String, default: '✨ No bio set.' },
   age: { type: Number, default: 0 },
+  // Source of truth for age going forward — see .setdob in
+  // commands/economy.js. `age` above is still kept (and still what
+  // .profile/.setage read/write) for backward compatibility with existing
+  // accounts and the legacy .setage command; .setdob keeps both fields in
+  // sync by writing `age` as a calculated value alongside `dob`.
+  dob: { type: Date, default: null },
+  // ─── Registration gate (see index.js's registration gate + .setname/
+  // .setdob/.bio/.setpic in commands/economy.js) ────────────────────────
+  // `status` defaults to 'active' at the SCHEMA level deliberately — this
+  // is what grandfathers in every account that existed before this feature
+  // shipped. Mongoose applies a path's schema default whenever a document
+  // (including one already in MongoDB) is missing that path — a document
+  // this field before this change has no `registration` object at all, so
+  // it reads back as 'active' automatically, with no migration script
+  // needed. A genuinely brand-new user only ever gets 'pending' because
+  // findOrCreate() below explicitly $setOnInsert's it — that explicit value
+  // wins over this schema default for newly-inserted documents.
+  registration: {
+    status: { type: String, enum: ['pending', 'active'], default: 'active' },
+    nameSet: { type: Boolean, default: false },
+    dobSet: { type: Boolean, default: false },
+    bioSet: { type: Boolean, default: false },
+    picSet: { type: Boolean, default: false },
+  },
   coins: { type: Number, default: 1000 },
   bank: { type: Number, default: 0 },
   orbs: { type: Number, default: 5 },
@@ -176,7 +200,17 @@ UserSchema.statics.findOrCreate = async function (id, name) {
   // initial upsert, so an existing user's name is never touched here. To
   // explicitly change an existing user's name, set `user.name` directly
   // and .save() — see .setname in commands/economy.js.
-  const setOnInsert = { id };
+  //
+  // registration.status: 'pending' is likewise only ever applied ON
+  // INSERT, via $setOnInsert — it deliberately overrides this schema's
+  // 'active' default (see the registration field's comment above) so every
+  // genuinely brand-new account starts out pending instead of active,
+  // while every account that already existed before this feature (and so
+  // has no `registration` path stored at all) keeps reading as 'active'.
+  const setOnInsert = {
+    id,
+    registration: { status: 'pending', nameSet: false, dobSet: false, bioSet: false, picSet: false },
+  };
   if (name) setOnInsert.name = name;
   const user = await this.findOneAndUpdate(
     { id },

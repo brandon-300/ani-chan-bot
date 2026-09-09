@@ -2,6 +2,7 @@ const Guild = require('../models/Guild');
 const GuildChallenge = require('../models/GuildChallenge');
 const Season = require('../models/Season');
 const GuildEvent = require('../models/GuildEvent');
+const BotState = require('../models/BotState');
 const User = require('../models/User');
 const { formatNum, formatCooldown, mentionName, mentionTag, resolveNameById, boldSans, doubleStruck, parseAmount, decodeIdKey, isOwner, safeGetChat } = require('../utils/helpers');
 const { GUILD_ACHIEVEMENTS, checkGuildAchievements, formatGuildUnlockNotice } = require('../utils/guildAchievements');
@@ -204,6 +205,29 @@ async function _resolveChallengeIfDue(challenge) {
   return { guildA, guildB, gainA, gainB, winner, noContest: false };
 }
 
+// ─── Shared: notifying every member of a guild ─────────────────────────────
+// Guild membership is NOT tied to any single WhatsApp group — members can
+// be scattered across many different groups the bot is in (or none at
+// all beyond their own DM), since a guild is a cross-group social
+// structure in this bot, not a per-group one. A DM to each member is
+// therefore the only way to reliably reach everyone: there's no single
+// "home group" to post an announcement in, a WhatsApp group's membership
+// can span several different guilds at once (a group-wide @mention would
+// look like unrelated spam to everyone else in that chat who isn't in
+// this guild), and WhatsApp can only @mention someone who is actually a
+// member of that specific chat in the first place. Best-effort per
+// member — one member having blocked the bot, or a flaky send, shouldn't
+// stop the rest of the guild from being notified.
+async function _notifyGuildMembers(client, guild, message) {
+  await Promise.all(guild.members.map(async (m) => {
+    try {
+      await client.sendMessage(m.userId, message);
+    } catch (err) {
+      console.error(`Failed to notify guild member ${m.userId} (guild ${guild.name}):`, err.message);
+    }
+  }));
+}
+
 // Formats the outcome from _resolveChallengeIfDue into a message — shared
 // by whichever command happened to trigger the resolution.
 function _formatChallengeResult(result) {
@@ -392,19 +416,35 @@ module.exports = {
       return msg.reply('❌ Usage: .guildevent [amount] [message]\n\nExample: .guildevent 50000 Anniversary Event! 🎉');
     }
 
-    const guildsAffected = await Guild.countDocuments();
-    if (guildsAffected === 0) return msg.reply('❌ No guilds exist yet.');
+    const guilds = await Guild.find();
+    if (!guilds.length) return msg.reply('❌ No guilds exist yet.');
 
-    // Bulk update rather than fetching every guild individually — this is
-    // meant to scale to however many guilds exist without needing one
-    // round-trip per guild. It does mean this bypasses per-guild
-    // activity-log entries (Guild.logActivity needs an in-memory doc to
-    // push onto) — the GuildEvent history this creates is the audit trail
-    // for this particular action instead.
+    // Bulk update rather than fetching every guild individually just for
+    // the increment — this is meant to scale to however many guilds exist
+    // without needing one round-trip per guild. It does mean this
+    // bypasses per-guild activity-log entries (Guild.logActivity needs an
+    // in-memory doc to push onto) — the GuildEvent history this creates
+    // is the audit trail for this particular action instead.
     await Guild.updateMany({}, { $inc: { bank: amount } });
-    await GuildEvent.create({ message, coinsPerGuild: amount, guildsAffected, triggeredBy: senderId });
+    await GuildEvent.create({ message, coinsPerGuild: amount, guildsAffected: guilds.length, triggeredBy: senderId });
 
-    msg.reply(`🎉 Event triggered! Every guild (${guildsAffected}) just received 💰${formatNum(amount)} in their treasury.\n\nMessage: "${message}"`);
+    msg.reply(`🎉 Event triggered! Every guild (${guilds.length}) just received 💰${formatNum(amount)} in their treasury.\n\nMessage: "${message}"`);
+
+    // Notify every member of every affected guild in the background — the
+    // owner's confirmation above doesn't wait on this, so triggering an
+    // event across many guilds/members can't stall or time out the
+    // command itself. Sequential per guild (not every guild at once) so
+    // this doesn't try to blast every member of every guild
+    // simultaneously on an unstable connection; members WITHIN one guild
+    // are still notified in parallel. "Your guild", not "every guild" —
+    // from an individual recipient's own perspective it's specifically
+    // THEIR guild that benefited, which is what they actually care about.
+    (async () => {
+      const notifyText = `🎉 *Your guild just received a bonus!*\n\n💰 +${formatNum(amount)} added to the treasury.\n\n"${message}"`;
+      for (const guild of guilds) {
+        await _notifyGuildMembers(client, guild, notifyText);
+      }
+    })().catch(err => console.error('guildevent member notification batch failed:', err.message));
   },
 
   // .guild events — anyone can view recent owner-triggered celebrations.
@@ -418,6 +458,91 @@ module.exports = {
       return `🎉 "${e.message}" — +💰${formatNum(e.coinsPerGuild)} to ${e.guildsAffected} guild${e.guildsAffected === 1 ? '' : 's'} (${when})`;
     });
     msg.reply(`🎊 *RECENT GUILD EVENTS*\n\n${lines.join('\n\n')}`);
+  },
+
+  // Public holidays that trigger a global 1M-coin celebration for every
+  // guild — checked by month/day only, so each fires every year on the
+  // same date. Deliberately a short, explicit list rather than guessing
+  // at "any other public event" — add more the same way if wanted.
+  // (Exported as data, not a function, purely so it's easy to find/edit —
+  // it isn't a command and index.js never touches it directly.)
+  _GUILD_HOLIDAYS: [
+    { key: 'christmas', month: 12, day: 25, label: 'Christmas' },
+    { key: 'newyear', month: 1, day: 1, label: 'New Year' },
+  ],
+
+  // Internal — called every minute by index.js's scheduler, not a real
+  // dot-command (leading underscore excludes it from the command
+  // dispatcher — same convention as _maybeSendDailyStats in
+  // commands/general.js and _sweepInactiveUsers in commands/admin.js).
+  // Gated to run once a day; checks two independent things:
+  //   1. Every guild's own anniversary (1 year, 2 years, ...), computed
+  //      from its own createdAt — a per-guild event, only that guild's
+  //      members get notified.
+  //   2. The calendar holidays above — a global event, every guild gets
+  //      the bonus and every member of every guild is notified, same as a
+  //      manual .guildevent.
+  // Both pay a flat 1,000,000 coins. Safe to re-run if it ever fails
+  // partway through: each guild's anniversary flag and each holiday's
+  // per-year marker are only written AFTER that specific payout succeeds,
+  // so a retry only ever picks up whatever didn't finish, never re-pays
+  // something that already went through.
+  async _maybeSendGuildEvents(client) {
+    const now = new Date();
+    if (now.getUTCHours() !== 8 || now.getUTCMinutes() !== 0) return; // 9AM WAT — a different minute than the other daily tasks, so the daily DB work doesn't all land at once
+
+    const todayKey = now.toISOString().slice(0, 10);
+    const state = await BotState.findOne({ key: 'guildEventsLastRun' }).catch(() => null);
+    if (state?.value === todayKey) return;
+
+    const AUTO_EVENT_AMOUNT = 1000000;
+
+    try {
+      // ── Per-guild anniversaries ────────────────────────────────────
+      const guilds = await Guild.find();
+      for (const guild of guilds) {
+        const ageYears = Math.floor((Date.now() - guild.createdAt.getTime()) / (365 * 24 * 60 * 60 * 1000));
+        if (ageYears < 1 || ageYears <= (guild.lastAnniversaryYearRewarded || 0)) continue;
+
+        guild.bank += AUTO_EVENT_AMOUNT;
+        guild.lastAnniversaryYearRewarded = ageYears;
+        const ordinal = ageYears === 1 ? '1st' : ageYears === 2 ? '2nd' : ageYears === 3 ? '3rd' : `${ageYears}th`;
+        const label = `${ordinal} Anniversary`;
+        Guild.logActivity(guild, { eventType: 'event_bonus', text: label, amount: AUTO_EVENT_AMOUNT });
+        await guild.save();
+        await GuildEvent.create({ message: `${guild.name}'s ${label}`, coinsPerGuild: AUTO_EVENT_AMOUNT, guildsAffected: 1, triggeredBy: 'system' });
+
+        const notifyText = `🎉 *Happy ${label}, ${guild.name}!*\n\n💰 +${formatNum(AUTO_EVENT_AMOUNT)} added to your guild's treasury to celebrate!`;
+        _notifyGuildMembers(client, guild, notifyText).catch(err => console.error('Anniversary notification failed:', err.message));
+      }
+
+      // ── Global calendar holidays ───────────────────────────────────
+      const holiday = module.exports._GUILD_HOLIDAYS.find(h => h.month === now.getUTCMonth() + 1 && h.day === now.getUTCDate());
+      if (holiday) {
+        const holidayStateKey = `guildHoliday_${holiday.key}_year`;
+        const thisYear = String(now.getUTCFullYear());
+        const holidayState = await BotState.findOne({ key: holidayStateKey }).catch(() => null);
+
+        if (holidayState?.value !== thisYear) {
+          const allGuilds = await Guild.find();
+          if (allGuilds.length) {
+            await Guild.updateMany({}, { $inc: { bank: AUTO_EVENT_AMOUNT } });
+            await GuildEvent.create({ message: holiday.label, coinsPerGuild: AUTO_EVENT_AMOUNT, guildsAffected: allGuilds.length, triggeredBy: 'system' });
+
+            const notifyText = `🎉 *Happy ${holiday.label}!*\n\n💰 +${formatNum(AUTO_EVENT_AMOUNT)} added to your guild's treasury to celebrate!`;
+            (async () => {
+              for (const g of allGuilds) await _notifyGuildMembers(client, g, notifyText);
+            })().catch(err => console.error('Holiday notification batch failed:', err.message));
+          }
+          await BotState.findOneAndUpdate({ key: holidayStateKey }, { value: thisYear }, { upsert: true });
+        }
+      }
+
+      await BotState.findOneAndUpdate({ key: 'guildEventsLastRun' }, { value: todayKey }, { upsert: true });
+      console.log(`✅ Daily guild events check completed at ${now.toLocaleString()}`);
+    } catch (err) {
+      console.error('❌ Guild events daily check failed:', err.message);
+    }
   },
 
   // .guild info
