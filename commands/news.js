@@ -15,12 +15,57 @@ const GOOGLE_NEWS_RSS_URL =
 const NEWS_USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
-// How many NOT-yet-seen articles the daily auto-broadcast sends per group.
-// .news itself always sends exactly 1 — see the .news command below.
-const DAILY_BROADCAST_LIMIT = 5;
-const SEND_DELAY_MS = 2000; // gap between individual message sends — see sendArticlesTo()
+const SEND_DELAY_MS = 2000; // gap between groups in the daily broadcast — see _maybeSendDailyNews
 
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+// ─── Content relevance ranking ──────────────────────────────────────────────
+// Brandon flagged a real example that slipped through the plain keyword
+// search: a "Anime Dice codes (September 2026) for Lucky Spins" article from
+// GamesRadar+ — a gacha-game code roundup that only matched because the
+// word "Anime" is in its title, not actual anime/manga news. Google News'
+// own ordering is recency-based, not relevance-to-what-Brandon-means-by
+// "anime news" based, so a second pass here re-ranks by content signal
+// before picking an article — HIGH_PRIORITY_TERMS score up (episodes,
+// seasons, movies, studio/voice-actor news, anime-based games/events —
+// exactly the categories Brandon named), LOW_PRIORITY_TERMS score down hard
+// (game-code/guide-site patterns). This is a heuristic, not a classifier —
+// no per-article AI call, to keep this fast, free, and not dependent on
+// another API being up on Brandon's unstable connection for every single
+// .news call.
+//
+// Recency is still respected: Array.prototype.sort is stable in Node (ES2019+),
+// so articles with an equal score keep the feed's own freshest-first order —
+// this only reorders when content signal actually disagrees with plain
+// recency, it doesn't discard recency otherwise.
+const HIGH_PRIORITY_TERMS = [
+  'episode', 'season', 'anime film', 'movie', 'studio', 'voice actor', 'seiyuu',
+  'cast', 'trailer', 'premiere', 'release date', 'adaptation', 'light novel',
+  'opening theme', 'ending theme', 'dub', 'simulcast', 'ova', 'director',
+  'crunchyroll', 'myanimelist', 'manga', 'manhwa', 'donghua', 'chapter',
+  'volume', 'story arc', 'protagonist', 'anime expo', 'anime convention',
+  'video game', 'game adaptation', 'collab',
+];
+
+const LOW_PRIORITY_TERMS = [
+  'codes', 'redeem code', 'promo code', 'coupon code', 'tier list',
+  'walkthrough', 'cheat', 'how to get', 'beginner guide', 'gift code',
+  'lucky spin', 'lucky spins',
+];
+
+function scoreArticle(article) {
+  const text = article.title.toLowerCase();
+  let score = 0;
+  for (const term of HIGH_PRIORITY_TERMS) if (text.includes(term)) score += 2;
+  for (const term of LOW_PRIORITY_TERMS) if (text.includes(term)) score -= 5;
+  return score;
+}
+
+// Re-ranks by content relevance (see above) — a plain copy+sort, so the
+// input array (whatever filterUnseen returned) is left untouched.
+function rankByRelevance(articles) {
+  return [...articles].sort((a, b) => scoreArticle(b) - scoreArticle(a));
+}
 
 // ─── Google News RSS parsing ────────────────────────────────────────────────
 // Hand-rolled with regex instead of pulling in an XML/RSS parser package —
@@ -96,11 +141,9 @@ function parseGoogleNewsRss(xml) {
 }
 
 // Fetches and parses the full feed, freshest-first (whatever order Google
-// News itself returns) — no slicing here. Callers decide how many they
-// actually want AFTER filtering out what a given chat has already seen
-// (see filterUnseen below) — slicing before that filter would mean a chat
-// that's already seen the top few articles gets fewer results than it
-// should.
+// News itself returns) — no slicing here. Callers filter out what a chat's
+// already seen (filterUnseen) and re-rank by content relevance
+// (rankByRelevance) before picking anything.
 async function fetchAllArticles() {
   const { data } = await axios.get(GOOGLE_NEWS_RSS_URL, {
     headers: { 'User-Agent': NEWS_USER_AGENT },
@@ -122,6 +165,14 @@ async function filterUnseen(chatId, articles) {
   return articles.filter(a => !seenIds.has(a.link));
 }
 
+// Combines both steps above into "the one article this chat should get
+// right now", or null if there's genuinely nothing unseen left.
+async function pickNextArticle(chatId, articles) {
+  const unseen = await filterUnseen(chatId, articles);
+  if (!unseen.length) return null;
+  return rankByRelevance(unseen)[0];
+}
+
 function formatArticle(article) {
   return (
     `📰 *ANIME NEWS UPDATE* 📰\n\n` +
@@ -131,25 +182,8 @@ function formatArticle(article) {
   );
 }
 
-// Sends each article as its OWN message (rather than one combined digest)
-// so WhatsApp generates a native link-preview card per article — matching
-// how the reference bot posts these in Brandon's screenshots. Each article
-// is marked as sent to this chat right before it's actually sent (same
-// ordering .pinterest already uses for SentPin) so a repeated .news call
-// right after never hands back something already shown here. A failed
-// send (e.g. the bot got removed from a group between the getChats()
-// snapshot and now) is logged and skipped rather than aborting the batch.
-async function sendArticlesTo(chat, articles) {
-  const chatId = chat.id._serialized;
-  for (const article of articles) {
-    try {
-      await SentNews.create({ chatId, articleId: article.link }).catch(() => {});
-      await chat.sendMessage(formatArticle(article));
-    } catch (err) {
-      console.error(`.news: failed to send an article to ${chatId}:`, err.message);
-    }
-    await sleep(SEND_DELAY_MS);
-  }
+async function markSent(chatId, article) {
+  await SentNews.create({ chatId, articleId: article.link }).catch(() => {});
 }
 
 // Same admin-or-owner gate as commands/admin.js's requireAdmin — duplicated
@@ -167,9 +201,12 @@ async function requireAdmin(msg) {
 module.exports = {
   // .news — admin-only (WhatsApp group admin, or the bot owner). Takes no
   // arguments — always sends exactly the next anime/manga/manhwa/donghua
-  // article this chat hasn't already been sent (freshest first). No
-  // acknowledgement text: just a 📰 reaction on the command itself, then
-  // the article — nothing else on the happy path.
+  // article this chat hasn't already been sent, ranked by content
+  // relevance (see rankByRelevance above) so genuine anime news outranks
+  // things that just happen to mention "anime". No acknowledgement text:
+  // a 📰 reaction on the command itself, then the article AS A REPLY to
+  // that command (msg.reply, not chat.sendMessage — this is what makes it
+  // show up as a reply bubble in WhatsApp) — nothing else on the happy path.
   async news(client, msg, args) {
     if (!await requireAdmin(msg)) return;
 
@@ -178,34 +215,41 @@ module.exports = {
 
     await msg.react('📰').catch(() => {});
 
-    let fresh;
+    let article;
     try {
       const all = await fetchAllArticles();
-      fresh = await filterUnseen(chat.id._serialized, all);
+      article = await pickNextArticle(chat.id._serialized, all);
     } catch (err) {
       console.error('.news: fetch failed:', err.message);
       return msg.reply('❌ Could not fetch news right now — try again in a bit.');
     }
 
-    if (!fresh.length) {
+    if (!article) {
       return msg.reply(`📭 You're all caught up — no new anime/manga news right now. Check back later!`);
     }
 
-    await sendArticlesTo(chat, [fresh[0]]);
+    await markSent(chat.id._serialized, article);
+    // msg.reply() (not chat.sendMessage()) — quotes the .news command
+    // itself, which is what renders as a reply bubble in WhatsApp.
+    await msg.reply(formatArticle(article));
   },
 
   // Internal — called every minute by index.js's scheduler (same shape as
-  // _maybeSendDailyStats in commands/general.js). Sends up to
-  // DAILY_BROADCAST_LIMIT NOT-yet-seen articles, unprompted, to every group
-  // the bot is CURRENTLY in — live via client.getChats(), not a stored
-  // list, so a group the bot was removed from simply isn't in it anymore.
-  // The feed itself is only fetched ONCE per run (not once per group) —
-  // each group's own seen/unseen set is then checked locally against that
-  // same fetch, which is what filterUnseen is for. Once a day, right after
-  // 8:00 AM WAT (= 07:00 UTC — Nigeria has used WAT year-round with no DST
-  // since 1919, so this fixed offset never needs adjusting). BotState
-  // remembers the last date this actually ran, so a PM2 restart landing in
-  // that exact minute can't cause a duplicate broadcast.
+  // _maybeSendDailyStats in commands/general.js). Sends exactly 1
+  // NOT-yet-seen article, unprompted, to every group the bot is CURRENTLY
+  // in — live via client.getChats(), not a stored list, so a group the bot
+  // was removed from simply isn't in it anymore. The feed itself is only
+  // fetched ONCE per run (not once per group) — each group's own
+  // seen/unseen set and relevance ranking is then computed locally against
+  // that same fetch. Once a day, right after 8:00 AM WAT (= 07:00 UTC —
+  // Nigeria has used WAT year-round with no DST since 1919, so this fixed
+  // offset never needs adjusting). BotState remembers the last date this
+  // actually ran, so a PM2 restart landing in that exact minute can't
+  // cause a duplicate broadcast.
+  //
+  // This has no triggering message to reply to (it's unprompted, not a
+  // response to a command) — chat.sendMessage() is correct here, unlike
+  // .news above.
   async _maybeSendDailyNews(client) {
     const now = new Date();
     if (now.getUTCHours() !== 7 || now.getUTCMinutes() !== 0) return;
@@ -233,12 +277,16 @@ module.exports = {
 
     for (const chat of groupChats) {
       try {
-        const fresh = await filterUnseen(chat.id._serialized, articles);
-        if (fresh.length) await sendArticlesTo(chat, fresh.slice(0, DAILY_BROADCAST_LIMIT));
+        const chatId = chat.id._serialized;
+        const article = await pickNextArticle(chatId, articles);
+        if (article) {
+          await markSent(chatId, article);
+          await chat.sendMessage(formatArticle(article));
+        }
       } catch (err) {
         console.error(`❌ Daily anime news: failed for ${chat.id._serialized}:`, err.message);
       }
-      await sleep(SEND_DELAY_MS); // extra gap between groups, on top of the per-article gap above
+      await sleep(SEND_DELAY_MS); // gap between groups
     }
 
     await BotState.findOneAndUpdate(

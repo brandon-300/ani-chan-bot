@@ -948,9 +948,16 @@ client.on('message', (msg) => {
 
       // In-chat acknowledgment is now a reaction instead of text: ▶️
       // specifically for .play (matches the "now queued to play" moment),
-      // ⏳ for every other heavy/queued command.
+      // nothing here for .news (it reacts with its own 📰 once it actually
+      // runs — see commands/news.js — so it shouldn't also get the generic
+      // ⏳ below, which would otherwise show/flicker first), ⏳ for every
+      // other heavy/queued command.
       try {
-        await msg.react(command === 'play' ? '▶️' : '⏳');
+        if (command === 'play') {
+          await msg.react('▶️');
+        } else if (command !== 'news') {
+          await msg.react('⏳');
+        }
       } catch (err) {
         console.error('Failed to react to queued command:', err.message);
       }

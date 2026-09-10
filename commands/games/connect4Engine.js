@@ -18,7 +18,15 @@
 
 const ROWS = 6, COLS = 7;
 const CENTER_COL = 3;
-const EMPTY = '⬛';
+// BUGFIX: this used to be '⬛', left over from before connect4.js switched
+// its board's empty-cell symbol to '⚪' (retiring the PNG board image —
+// see connect4.js's own EMPTY constant and its comment). Since this file
+// keeps its own separate copy of EMPTY rather than importing connect4.js's,
+// the two silently went out of sync: validColumns() below compared every
+// real board cell (now '⚪') against the stale '⬛' and never found a match,
+// so it always returned zero valid columns — which is why getBestMove()
+// was returning null on literally the first bot move, every time.
+const EMPTY = '⚪';
 
 // Center-out column search order — most games are decided by center control,
 // so trying center columns first lets alpha-beta prune far more of the tree
