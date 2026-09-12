@@ -270,11 +270,11 @@ Chess, Tic Tac Toe, and Connect 4 share the same flow: `.<game> start` opens a l
 ### ⬇️ DOWNLOADERS
 | Command | Description |
 |---|---|
-| `.ig [url]` | Download an Instagram post/reel |
-| `.ttk [url]` | Download a TikTok video (no watermark) |
-| `.yt [url or search]` | Download YouTube audio |
-| `.x [url]` | Download a Twitter/X video |
-| `.fb [url]` | Download a Facebook video |
+| `.ig [url]` | Download an Instagram post/reel — shows a thumbnail preview first for video posts |
+| `.ttk [url]` | Download a TikTok video (no watermark) — shows a thumbnail preview first |
+| `.yt [url or search]` | Download YouTube audio — shows a thumbnail preview while it converts |
+| `.x [url]` | Download a Twitter/X video — shows a thumbnail preview first for videos |
+| `.fb [url]` | Download a Facebook video — shows a thumbnail preview first for videos |
 | `.play [song name]` | Search YouTube and send back the audio — shows a thumbnail preview while it processes |
 
 ### 🔍 SEARCH

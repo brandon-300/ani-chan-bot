@@ -29,6 +29,30 @@ async function downloadAndSend(msg, url, caption) {
   }
 }
 
+// Sends a "downloading, please wait" preview card (thumbnail + caption)
+// before the actual media fetch/conversion happens — same UX .play already
+// established. Falls back to a plain-text version of the same caption if
+// there's no thumbnail URL at all, or if fetching it fails for any reason,
+// so a flaky thumbnail can never block the actual download. No separate
+// immediate text reply exists alongside this anymore for any downloader —
+// .ig/.ttk/.yt/.x/.fb are all HEAVY_COMMANDS in index.js, which already
+// reacts with ⏳ the instant the command is queued, so this preview card
+// (sent once the API call resolves enough to know what's being fetched)
+// is the richer replacement for what used to be a separate "⏳
+// Downloading..." text message, not an addition on top of it.
+async function sendDownloadPreview(msg, thumbnailUrl, caption) {
+  if (thumbnailUrl) {
+    try {
+      const thumbMedia = await MessageMedia.fromUrl(thumbnailUrl, { unsafeMime: true });
+      await msg.reply(thumbMedia, undefined, { caption });
+      return;
+    } catch (err) {
+      console.error('Download preview: thumbnail fetch failed, falling back to text:', err.message);
+    }
+  }
+  await msg.reply(caption);
+}
+
 // Shared status-code -> user message mapping so all downloaders report
 // auth/quota/timeout problems consistently instead of one generic string.
 function replyForError(msg, label, err) {
@@ -79,13 +103,42 @@ function smvdErrorReason(data) {
   return typeof msg === 'string' && msg.trim() ? msg.trim() : null;
 }
 
+// Same shared-shape reasoning as extractSmvdMediaUrl — Instagram, TikTok,
+// and Facebook all come through this same API family and share this same
+// content object shape.
+//
+// UNCERTAINTY FLAGGED: unlike extractSmvdMediaUrl (already verified working
+// against real Instagram/Facebook responses), this specific field was NOT
+// confirmed against a real captured response — there's no sample on hand
+// showing which key this API actually uses for a thumbnail/cover image,
+// and no network access available here to test it directly. This tries
+// several plausible field names in order; if none of them hit, the preview
+// step is silently skipped (sendDownloadPreview already falls back to
+// plain text when there's no thumbnail URL) — worst case, you just don't
+// get a preview image yet, nothing breaks. If it comes back empty, check
+// `pm2 logs ani-chan-bot` for the raw response JSON (already logged
+// on-failure a few lines below) and share it — I'll wire up the exact key
+// instead of guessing further.
+function extractSmvdThumbnail(content) {
+  return (
+    content.thumbnail ||
+    content.cover ||
+    content.thumb ||
+    content.display_url ||
+    content.videos?.[0]?.thumbnail ||
+    content.videos?.[0]?.cover ||
+    null
+  );
+}
+
 module.exports = {
+
+
   // .ig [url]
   async ig(client, msg, args) {
     const url = args[0];
     if (!url || !url.includes('instagram.com')) return msg.reply('❌ Usage: .ig [instagram url]');
 
-    msg.reply('⏳ Downloading from Instagram...');
     try {
       const shortcode = url.match(/instagram\.com\/(?:p|reel|tv)\/([A-Za-z0-9_-]+)/)?.[1];
       if (!shortcode) return msg.reply('❌ Could not parse Instagram post/reel URL.');
@@ -111,6 +164,13 @@ module.exports = {
           : '❌ Could not extract media.');
       }
 
+      // Preview only for video posts — a photo post's "thumbnail" would
+      // just be a redundant preview of the exact same image about to be
+      // sent as the actual download a moment later.
+      if (content.videos?.length) {
+        await sendDownloadPreview(msg, extractSmvdThumbnail(content), '📸 Downloading from Instagram...\nPlease wait...');
+      }
+
       const mediaUrl = extractSmvdMediaUrl(content);
       if (!mediaUrl) {
         console.error('[ig] Content present but no usable media URL. Content object:', JSON.stringify(content)?.slice(0, 1000));
@@ -128,7 +188,6 @@ module.exports = {
     const url = args[0];
     if (!url || !url.includes('tiktok.com')) return msg.reply('❌ Usage: .ttk [tiktok url]');
 
-    msg.reply('⏳ Downloading from TikTok...');
     try {
       const res = await axios.get(
         'https://social-media-video-downloader.p.rapidapi.com/tiktok/v3/post/details',
@@ -151,6 +210,11 @@ module.exports = {
           : '❌ Could not extract media.');
       }
 
+      // Preview only for video posts — see .ig's identical comment above.
+      if (content.videos?.length) {
+        await sendDownloadPreview(msg, extractSmvdThumbnail(content), '🎵 Downloading from TikTok...\nPlease wait...');
+      }
+
       const mediaUrl = extractSmvdMediaUrl(content);
       if (!mediaUrl) {
         console.error('[ttk] Content present but no usable media URL. Content object:', JSON.stringify(content)?.slice(0, 1000));
@@ -168,11 +232,15 @@ module.exports = {
     const query = args.join(' ');
     if (!query) return msg.reply('❌ Usage: .yt [youtube url or search]');
 
-    msg.reply('⏳ Converting YouTube to MP3...');
     try {
       // Try direct URL first
       const videoId = query.match(/(?:v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/)?.[1];
       if (!videoId) return msg.reply('❌ Please provide a valid YouTube URL.');
+
+      // hqdefault.jpg exists for every YouTube video ID at this fixed CDN
+      // path — no search/lookup call needed to get it, unlike the
+      // SMVD-family platforms below.
+      await sendDownloadPreview(msg, `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`, '🎵 Converting YouTube video to MP3...\nPlease wait...');
 
       const res = await axios.get('https://youtube-mp36.p.rapidapi.com/dl', {
         params: { id: videoId },
@@ -200,7 +268,6 @@ module.exports = {
       return msg.reply('❌ Usage: .x [twitter/x url]');
     }
 
-    msg.reply('⏳ Downloading from X...');
     try {
       const tweetId = url.match(/status\/(\d+)/)?.[1];
       if (!tweetId) return msg.reply('❌ Invalid Twitter/X URL.');
@@ -246,7 +313,11 @@ module.exports = {
       if (media.type === 'photo') {
         mediaUrl = media.media_url_https;
       } else {
-        // video or animated_gif — pick the highest-bitrate mp4 variant
+        // video or animated_gif — media_url_https here is the poster/
+        // thumbnail image (Twitter's own API reuses this same field for
+        // that purpose on video entries), distinct from the actual video
+        // file URLs in video_info.variants below.
+        await sendDownloadPreview(msg, media.media_url_https, '🐦 Downloading from X...\nPlease wait...');
         const mp4Variants = (media.video_info?.variants || []).filter(v => v.content_type === 'video/mp4');
         mediaUrl = mp4Variants.sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0))[0]?.url;
       }
@@ -267,7 +338,6 @@ module.exports = {
     const url = args[0];
     if (!url || !url.includes('facebook.com')) return msg.reply('❌ Usage: .fb [facebook url]');
 
-    msg.reply('⏳ Downloading from Facebook...');
     try {
       const res = await axios.get(
         'https://social-media-video-downloader.p.rapidapi.com/facebook/v3/post/details',
@@ -288,6 +358,11 @@ module.exports = {
         return msg.reply(reason
           ? `❌ Facebook couldn't be reached for this post: ${reason}`
           : '❌ Could not extract media.');
+      }
+
+      // Preview only for video posts — see .ig's identical comment above.
+      if (content.videos?.length) {
+        await sendDownloadPreview(msg, extractSmvdThumbnail(content), '📘 Downloading from Facebook...\nPlease wait...');
       }
 
       const mediaUrl = extractSmvdMediaUrl(content);
