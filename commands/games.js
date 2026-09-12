@@ -75,12 +75,24 @@ module.exports = {
       return msg.reply(`🚩 *${battleResult.quitterName}* fled the battle.\n🏆 *${battleResult.winnerName} wins by forfeit!*`);
     }
 
-    // Anime Quiz — no single "opponent" to declare a winner against, so
-    // this just ends the round early and reports whatever scoreboard had
-    // built up so far. Anyone in the chat can end it this way, same as
-    // '.quiz stop'.
-    const quizResult = quiz.quitQuiz(chatId);
+    // Anime Quiz — now a starter/joiner match (up to 5 players, see
+    // .quiz start/.quiz join in quiz.js). Only the starter can end a
+    // pending lobby or an active match this way; a joiner gets an explicit
+    // explanation instead (leave the lobby, or that only the starter can
+    // end a running match) rather than the generic "not in any game"
+    // below, since they genuinely are in one — they just can't end it.
+    // quitQuiz returns null only when the caller isn't in a quiz lobby or
+    // match here AT ALL, which does fall through to that generic message.
+    const quizResult = quiz.quitQuiz(chatId, playerId);
     if (quizResult) {
+      if (!quizResult.ended) {
+        return msg.reply(
+          quizResult.reason === 'joiner-in-lobby'
+            ? '❌ Only the person who started this lobby can cancel it — use *.quiz leave* to leave it yourself.'
+            : '❌ Only the quiz starter can end this match.'
+        );
+      }
+      if (quizResult.lobby) return msg.reply('🛑 Quiz lobby cancelled.');
       return msg.reply(
         `🚩 *${mentionName(contact)}* stopped the Anime Quiz (${quizResult.askedSoFar}/${quizResult.total} questions asked).\n\n🏆 *Scoreboard*\n\n${quizResult.board}`
       );
@@ -89,9 +101,11 @@ module.exports = {
     return msg.reply("❌ You're not currently in any game.");
   },
 
-  // .quiz — anime character guessing quiz, sourced from the card catalogue
-  // .quiz [easy|normal|hard] / .quiz start [easy|normal|hard] — start
-  // .quiz stop / .quiz end — end early
+  // .quiz — anime character guessing quiz, sourced from the card catalogue.
+  // Starter/joiner match (up to 5 players): .quiz start opens a lobby (the
+  // starter auto-joins as Player 1), .quiz join takes a slot, .quiz leave
+  // backs out (joiners only), .quiz end cancels/ends (starter only) — see
+  // quiz.js for the full flow.
   quiz: quiz.quiz,
 
   // .startbattle

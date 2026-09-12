@@ -307,12 +307,36 @@ module.exports = {
     const query = args.join(' ');
     if (!query) return msg.reply('❌ Usage: .play [song name]');
 
-    msg.reply(`🔍 Searching for "${query}"...`);
     try {
       // Real YouTube search (youtube-mp36 has no /search endpoint — it only converts a known ID)
       const searchResults = await yts(query);
       const firstResult = searchResults.videos?.[0];
       if (!firstResult) return msg.reply('❌ No results found.');
+
+      const title = firstResult.title;
+
+      // "Now processing" card — thumbnail + caption, sent while the actual
+      // audio conversion (below) is still in flight. Matches the reference
+      // bot: the ▶️ reaction (index.js's heavy-command handling) already
+      // acknowledges the command itself, so there's no separate plain-text
+      // "Searching..." message anymore — this thumbnail IS that
+      // acknowledgment now. Per Brandon, only sent "if there is any [thumbnail]
+      // for that particular request" — falls back to a plain-text version
+      // of the same message if there's no thumbnail URL at all, or if
+      // fetching it fails for any reason, so a flaky thumbnail fetch can
+      // never block the actual song from playing.
+      const nowPlayingCaption = `Playing: ${title.toUpperCase()}\nPlease wait...`;
+      if (firstResult.thumbnail) {
+        try {
+          const thumbMedia = await MessageMedia.fromUrl(firstResult.thumbnail, { unsafeMime: true });
+          await msg.reply(thumbMedia, undefined, { caption: nowPlayingCaption });
+        } catch (err) {
+          console.error('Play: thumbnail fetch failed, falling back to text:', err.message);
+          await msg.reply(nowPlayingCaption);
+        }
+      } else {
+        await msg.reply(nowPlayingCaption);
+      }
 
       // Convert to MP3 via the working /dl endpoint
       const dlRes = await axios.get('https://youtube-mp36.p.rapidapi.com/dl', {

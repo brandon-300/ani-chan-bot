@@ -42,6 +42,8 @@ Edit `.env` and fill in the values — every variable the bot actually reads is 
 | `RAPIDAPI_KEY` | Downloaders (`.ig`, `.ttk`, `.yt`, `.x`, `.fb`, `.play`) and `.pinterest` |
 | `SAUCENAO_KEY` | `.sauce` / `.reverseimg` |
 | `PUPPETEER_EXECUTABLE_PATH` | Termux only — path to Chromium (a sensible default is already set) |
+| `MIN_REGISTRATION_AGE` / `AGE_VERIFICATION_LOCKOUT_DAYS` | Optional — registration's minimum age (default 18) and the `.setdob` retry lockout in days after an under-age denial (default 30) |
+| `NEWS_RSS_QUERY` | Optional — the Google News search topic for `.news` (default `anime OR manga OR manhwa OR donghua`) |
 
 ### 4. Seed the Card Database (run once)
 ```bash
@@ -65,7 +67,7 @@ Open WhatsApp on your phone → Linked Devices → Link a Device → scan the QR
 
 ## 📱 Termux / Android Notes
 This bot is actively developed and run entirely on an Android phone (Infinix Hot 50i) inside Termux — no server or VPS needed. A few things that matter if you're doing the same:
-- **No native npm binary dependencies.** Packages like `canvas`, `sharp`, and `jimp` don't reliably build in Termux. Every image the bot generates (chess/Tic Tac Toe/Connect 4 boards, the Battle HUD, card grids) is drawn with a pure-JS pixel renderer instead — see `utils/pngEncoder.js` and the `*BoardImage.js` files under `commands/games/`.
+- **No native npm binary dependencies.** Packages like `canvas`, `sharp`, and `jimp` don't reliably build in Termux. Every image the bot generates (chess/Tic Tac Toe boards, the Battle HUD, card grids) is drawn with a pure-JS pixel renderer instead — see `utils/pngEncoder.js` and the `*BoardImage.js` files under `commands/games/`. Connect 4's board is plain emoji/text instead of a rendered image.
 - **ffmpeg is required and used directly** (via `fluent-ffmpeg`) for stickers, video/audio conversion, and voice notes — install it with `pkg install ffmpeg`.
 - **Mobile data is often unstable.** `npm install` and any first-time API call can be slow or need a retry — this is expected, not a bug.
 - **MongoDB free tier caps out at 512MB** — keep an eye on collection sizes if you're running this long-term on the free Atlas tier.
@@ -146,6 +148,8 @@ The bot's owner-only admin tools (card catalogue management, testing commands, e
 | `.resell [index]` | Instantly sell a card to the bot for 50% of tier value |
 
 ### 💰 ECONOMY
+New accounts must complete registration before using any other command — set your name, date of birth, bio, and profile picture via `.setname` / `.setdob` / `.bio` / `.setpic`, in any order (`.edit` shows what's left). You must be 18+ to register — an under-18 `.setdob` is denied and locks that number out of retrying `.setdob` for 30 days.
+
 | Command | Description |
 |---|---|
 | `.balance / .bal` | Check your wallet, bank, and orbs |
@@ -159,10 +163,11 @@ The bot's owner-only admin tools (card catalogue management, testing commands, e
 | `.rich` | Top 10 richest users bot-wide |
 | `.richg` | Richest users in this group |
 | `.profile / .p` | View your profile card |
-| `.edit` | List which profile fields you can edit |
+| `.edit` | Profile dashboard — your current name/bio/DOB/age/picture status (DOB shown in DM only), and the commands to update each |
 | `.setname [name]` | Set your display name on your profile |
-| `.bio [text]` | Set your profile bio |
-| `.setage [age]` | Set your age on your profile |
+| `.setdob [DD/MM/YYYY]` | Set your date of birth — age is calculated automatically; 18+ required |
+| `.bio [text] / .setbio` | Set your profile bio |
+| `.setage [age]` | Legacy — manually set age; new registrations should use .setdob instead |
 | `.setpic` | Set your profile picture (reply to an image) |
 | `.removepic` | Clear your profile picture |
 | `.inventory / .inv` | View your items |
@@ -181,30 +186,35 @@ The bot's owner-only admin tools (card catalogue management, testing commands, e
 | `.beg` | Beg for coins (cooldown: 5 min) |
 
 ### 🎮 GAMES
-All four games play with real pixel-drawn board images and support both PvP (`@mention` someone) and a bot opponent (`easy` / `medium` / `hard`). Only one game can be active per chat at a time — `.quitgame` forfeits whichever one is running.
+Chess, Tic Tac Toe, and Connect 4 share the same flow: `.<game> start` opens a lobby — anyone (including whoever opened it) can `.<game> join`, and the match starts the moment a 2nd player joins, or the lobby auto-closes if nobody does within the time window. `.<game> startbot [easy|medium|hard]` skips the lobby and plays the bot directly. Real PvP turns have a 30-second window — miss it and your turn is skipped (never forfeited), passing to the other player. Chess and Tic Tac Toe show a rendered board image; Connect 4 shows an emoji grid. Battle keeps its own `@mention`-based challenge flow. Only one game can be active per chat at a time — `.quitgame` forfeits whichever one is running.
 
 | Command | Description |
 |---|---|
-| `.chess @user` | Challenge another player to chess (image board) |
-| `.chess [easy\|medium\|hard]` | Play chess against the bot (defaults to medium) |
+| `.chess start` | Open a Chess lobby (60s window) |
+| `.chess join` | Join an open Chess lobby |
+| `.chess startbot [easy\|medium\|hard]` | Play Chess against the bot (defaults to medium) |
 | `.move [e2e4]` | Make a chess move — shared by PvP and vs-bot games |
-| `.ttt @user` | Challenge another player to Tic Tac Toe (image board) |
-| `.ttt [easy\|medium\|hard]` | Play Tic Tac Toe against the bot |
+| `.ttt start` | Open a Tic Tac Toe lobby (60s window) |
+| `.ttt join` | Join an open Tic Tac Toe lobby |
+| `.ttt startbot [easy\|medium\|hard]` | Play Tic Tac Toe against the bot |
 | `.ttt [1-9]` | Make a move in whichever Tic Tac Toe game is active |
-| `.c4 @user` | Challenge another player to Connect 4 (image board) |
-| `.c4 [easy\|medium\|hard]` | Play Connect 4 against the bot |
+| `.c4 start` | Open a Connect 4 lobby (60s window) |
+| `.c4 join` | Join an open Connect 4 lobby |
+| `.c4 startbot [easy\|medium\|hard]` | Play Connect 4 against the bot |
 | `.drop [1-7]` | Drop a piece into a Connect 4 column |
 | `.startbattle @user` | Challenge another player to an HP battle (image HUD) |
 | `.startbattle [easy\|medium\|hard]` | Battle the bot |
 | `.attack` | Deal random damage to your battle opponent |
 | `.defend` | Skip your attack to heal instead |
 | `.flee` | Forfeit the current battle |
-| `.quitgame / .quit` | Forfeit whichever game (Chess/TTT/Connect 4/Battle) is active in this chat |
+| `.quitgame / .quit` | Forfeit whichever game (Chess/TTT/Connect 4/Battle) is active, or end a Quiz match you started (joiners: use .quiz leave instead) |
 | `.akinator / .aki` | Guess-the-character game |
 | `.greekgod / .gg` | Find out which Greek god you embody |
 | `.wcg` | Group "Would You Rather" game |
-| `.quiz start [easy\|normal\|hard]` | Start an Anime Character Quiz round — guess the character from an image, first correct reply wins the point |
-| `.quiz stop` | End the current quiz early and show the scoreboard |
+| `.quiz start [easy\|normal\|hard]` | Open an Anime/Manga Character Quiz lobby — you join automatically as Player 1 (up to 5 total); starts 30s later with whoever joined |
+| `.quiz join` | Take a slot in an open Quiz lobby (up to 5 players) |
+| `.quiz leave` | Back out of a Quiz lobby you joined (not the starter — they use .quiz end) |
+| `.quiz end` | Cancel a pending Quiz lobby, or end an active match early — starter only |
 
 ### 🏰 GUILDS
 | Command | Description |
@@ -265,7 +275,7 @@ All four games play with real pixel-drawn board images and support both PvP (`@m
 | `.yt [url or search]` | Download YouTube audio |
 | `.x [url]` | Download a Twitter/X video |
 | `.fb [url]` | Download a Facebook video |
-| `.play [song name]` | Search YouTube and send back the audio |
+| `.play [song name]` | Search YouTube and send back the audio — shows a thumbnail preview while it processes |
 
 ### 🔍 SEARCH
 | Command | Description |
@@ -344,6 +354,7 @@ All four games play with real pixel-drawn board images and support both PvP (`@m
 | `.activity` | Show member activity stats |
 | `.active / .inactive` | List the most/least active members |
 | `.open / .close` | Open/close the group to everyone's messages |
+| `.news` | Fetch the latest anime/manga/manhwa/donghua news from Google News (admin only) — also auto-posts once daily at 8AM WAT to every group the bot is in |
 
 ### 🐾 PETS
 | Command | Description |
@@ -354,6 +365,12 @@ All four games play with real pixel-drawn board images and support both PvP (`@m
 | `.pet feed` | Feed your pet using Pet Food from your inventory |
 | `.pet play` | Play with your pet (cooldown: 2 hrs) |
 | `.pet name [name]` | Rename your pet |
+
+### 🎨 TEXT STYLES
+| Command | Description |
+|---|---|
+| `.fancy` | Show a gallery of all 35 Unicode fancy-text styles |
+| `.fancy [styleNumber] [text]` | Convert text into one of the 35 styles |
 
 ### 📬 FEEDBACK
 | Command | Description |
@@ -374,6 +391,7 @@ All four games play with real pixel-drawn board images and support both PvP (`@m
 - **Game AI**: Alpha-beta minimax (Chess, Connect 4), full minimax (Tic Tac Toe), heuristic decision-making (Battle)
 - **Profile pictures**: Cloudinary
 - **Anime images**: nekos.best (primary) with an otakugifs.xyz fallback, since nekos.best is Cloudflare-blocked on some connections
+- **Anime/manga news**: Google News RSS, parsed with a small hand-rolled regex parser rather than an XML library — see `commands/news.js`
 - **Media processing**: `fluent-ffmpeg` + system `ffmpeg` (stickers, video/audio/voice-note conversion)
 - **Downloaders**: RapidAPI
 - **Process management**: PM2

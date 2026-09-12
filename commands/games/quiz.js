@@ -7,9 +7,21 @@ const { _formatQuestCompletionNote } = require('../guilds');
 
 // ─── Active Quiz Sessions ───────────────────────────────────────────────────
 // chatId -> {
-//   chatId, client, origMsg,        // origMsg is the '.quiz start' message —
-//                                    // kept so the final scoreboard can reply
-//                                    // to it (matches the reference bot).
+//   chatId, client,
+//   starterId,                      // whoever ran .quiz start — the only
+//                                    // one who can end this match early
+//                                    // (see quitQuiz) — carried over as-is
+//                                    // from the lobby that became this match
+//   players,                        // [{id, name}, ...] — 1 to 5 (see
+//                                    // MAX_QUIZ_PLAYERS), fixed once the
+//                                    // lobby's countdown ends (see
+//                                    // quizLobbies below). players[0] is
+//                                    // always the starter — they're added
+//                                    // automatically at .quiz start, no
+//                                    // separate .quiz join needed for them.
+//                                    // Only these registered ids can
+//                                    // answer/score this match — see
+//                                    // tryHandleQuizAnswer.
 //   difficulty, timeSeconds,
 //   fullPool,                       // deduped CardCatalogue entries available
 //                                    // this round (used for decoys too)
@@ -28,11 +40,39 @@ const { _formatQuestCompletionNote } = require('../guilds');
 //     timer,                        // setTimeout handle for this question
 //   } | null,
 //   scores,                         // Map playerId -> { name, points, wrong }
+//                                    // — pre-populated for every registered
+//                                    // player at match start, so the final
+//                                    // scoreboard always shows everyone
+//                                    // even if some never land a correct
+//                                    // answer
 //   eliminated,                     // Set of playerIds who hit
 //                                    // MAX_WRONG_LIVES total wrong guesses
 //                                    // this quiz and are sitting out the rest
 // }
 const quizGames = new Map();
+
+// ─── Pending Lobbies (.quiz start / .quiz join / .quiz leave) ──────────────
+// chatId -> { starterId, players: [{ id, name }], timer, difficulty }
+// Holds the chat's activeGame.js claim (so nothing else can start while the
+// countdown is running) but no questions yet. .quiz start immediately adds
+// its own sender as players[0] (the starter) and begins a fixed
+// LOBBY_WINDOW_MS countdown; .quiz join adds more people (up to
+// MAX_QUIZ_PLAYERS) any time before that countdown ends, and .quiz leave
+// removes a non-starter who changes their mind. There's no "starts early
+// once full" and no minimum to reach — the match always starts the moment
+// the countdown ends, with whoever's in players at that point (worst case,
+// just the starter alone) — see openQuizLobby's timer. Once that happens,
+// this lobby entry is gone and .quiz join/.quiz leave both correctly stop
+// working (there's nothing left to join or leave).
+//
+// Quiz used to be open to the whole chat at once, with no fixed roster at
+// all (anyone could jump in and answer, any time); per Brandon, it's now a
+// capped-roster match (1 to 5 people) with a starter/joiner permission
+// split (see quitQuiz's comment) — specifically so multiple concurrent
+// matches in one group chat are possible later.
+const quizLobbies = new Map();
+const LOBBY_WINDOW_MS = 30000;
+const MAX_QUIZ_PLAYERS = 5;
 
 const DIFFICULTY_KEYS = ['easy', 'normal', 'hard'];
 const TOTAL_QUESTIONS = 10;
@@ -66,6 +106,33 @@ const DIFFICULTY_SETTINGS = {
 };
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
+// The digits WhatsApp needs for an @mention, straight from a stored player
+// id — same helper as connect4.js's idDigits.
+function idDigits(id) {
+  return id.split('@')[0];
+}
+
+// Matches the reference bot's exact lobby card format — see Brandon's
+// screenshot. Rebuilt and resent in full every time the roster changes
+// (.quiz join / .quiz leave), rather than trying to edit a previous
+// message, same as every other bot message in this codebase.
+function buildLobbyCard(lobby) {
+  const starter = lobby.players.find(p => p.id === lobby.starterId) || lobby.players[0];
+  const lines = lobby.players
+    .map((p, i) => `${i + 1}. *${p.name}*\n   └ 0 pts | ❌ 0/${MAX_WRONG_LIVES}`)
+    .join('\n');
+
+  return (
+    `🎭 *Anime Character Quiz Lobby*\n\n` +
+    `Started by: ${starter.name}\n\n` +
+    `Players:\n${lines}\n\n` +
+    `Use \`.quiz join\` to join.\n` +
+    `Starter can use \`.quiz end\` to cancel/end.\n\n` +
+    `┃ Starts in *${LOBBY_WINDOW_MS / 1000}s*\n` +
+    `┃ Questions: *${TOTAL_QUESTIONS}*`
+  );
+}
+
 function shuffle(arr) {
   const a = arr.slice();
   for (let i = a.length - 1; i > 0; i--) {
@@ -186,13 +253,9 @@ async function advanceQuestion(session) {
 
   let sentMsg;
   try {
-    if (session.questionIndex === 0) {
-      sentMsg = await (media ? session.origMsg.reply(media, undefined, { caption }) : session.origMsg.reply(caption));
-    } else {
-      sentMsg = await (media
-        ? session.client.sendMessage(session.chatId, media, { caption })
-        : session.client.sendMessage(session.chatId, caption));
-    }
+    sentMsg = await (media
+      ? session.client.sendMessage(session.chatId, media, { caption })
+      : session.client.sendMessage(session.chatId, caption));
   } catch (err) {
     console.error('Quiz: failed to send question, ending quiz early:', err.message);
     return teardown(session);
@@ -240,28 +303,134 @@ async function finishQuiz(session) {
   }
 
   try {
-    await session.origMsg.reply(`🏁 Quiz finished.\n\n🏆 *Final Scoreboard*\n\n${board}` + questNote);
+    await session.client.sendMessage(session.chatId, `🏁 Quiz finished.\n\n🏆 *Final Scoreboard*\n\n${board}` + questNote);
   } catch (err) {
     console.error('Quiz: failed to send final scoreboard:', err.message);
   }
 }
 
-// ─── Start ───────────────────────────────────────────────────────────────────
-async function startQuiz(client, msg, difficultyArg) {
+// ─── Start (lobby) ─────────────────────────────────────────────────────────
+// .quiz start [difficulty] — opens a lobby. Whoever runs it is
+// automatically players[0] (the starter) — no separate .quiz join needed
+// for them. Reacts ✅ on success (lobby opened) or ❌ on failure (already a
+// game/lobby active, or the chat's busy with a different game), per
+// Brandon's reference screenshot. Anyone (including the starter) can then
+// .quiz join up to MAX_QUIZ_PLAYERS before the fixed LOBBY_WINDOW_MS
+// countdown ends — the match starts at that point no matter how many
+// joined (never earlier, even if it fills up), and no one can join once it
+// has (there's nothing left to join — the lobby entry is gone).
+async function openQuizLobby(client, msg, difficultyArg) {
   const chat = await safeGetChat(msg);
   if (!chat) return;
   const chatId = chat.id._serialized;
 
-  if (quizGames.has(chatId)) {
-    return msg.reply('❌ A quiz is already in progress in this chat! Use *.quiz stop* to end it early.');
+  if (quizGames.has(chatId) || quizLobbies.has(chatId)) {
+    await msg.react('❌').catch(() => {});
+    return msg.reply('❌ A quiz or lobby is already active in this chat!');
   }
-
   const busy = isChatBusy(chatId);
   if (busy) {
+    await msg.react('❌').catch(() => {});
     return msg.reply(`❌ A ${busy.label} game is already active in this chat! Finish it or use *.quitgame* first.`);
   }
 
+  const contact = await msg.getContact();
+  const starterId = contact.id._serialized;
+  const starterName = await resolveNameById(client, starterId);
   const difficulty = DIFFICULTY_KEYS.includes(difficultyArg) ? difficultyArg : 'normal';
+
+  claim(chatId, 'quiz');
+  const lobby = {
+    starterId,
+    players: [{ id: starterId, name: starterName }],
+    timer: null,
+    difficulty,
+  };
+  quizLobbies.set(chatId, lobby);
+  lobby.timer = setTimeout(() => {
+    // Still here means .quiz end never cancelled it first — see
+    // connect4.js's identical comment on its own lobby timeout for why
+    // this presence check is enough. Unlike Connect4 (and unlike this
+    // quiz's own earlier design), there's no minimum roster size to reach
+    // here — the starter alone is always a valid roster of 1, so this
+    // unconditionally starts the match rather than ever cancelling for
+    // "not enough players."
+    if (!quizLobbies.has(chatId)) return;
+    quizLobbies.delete(chatId);
+    startQuizMatch(client, chat, chatId, lobby.players, lobby.difficulty, lobby.starterId).catch(err => {
+      console.error('Quiz: failed to start match after lobby countdown:', err.message);
+    });
+  }, LOBBY_WINDOW_MS);
+
+  await msg.react('✅').catch(() => {});
+  return msg.reply(buildLobbyCard(lobby));
+}
+
+// .quiz join — take a slot in an open lobby (up to MAX_QUIZ_PLAYERS).
+async function joinQuizLobby(client, msg) {
+  const chat = await safeGetChat(msg);
+  if (!chat) return;
+  const chatId = chat.id._serialized;
+
+  const lobby = quizLobbies.get(chatId);
+  if (!lobby) return msg.reply('❌ No open quiz lobby. Use *.quiz start* to open one.');
+
+  const contact = await msg.getContact();
+  const playerId = contact.id._serialized;
+  // Also correctly rejects the starter trying to "join" their own lobby —
+  // they're already players[0] from the moment .quiz start ran.
+  if (lobby.players.some(p => p.id === playerId)) return msg.reply('❌ You already joined this lobby!');
+  if (lobby.players.length >= MAX_QUIZ_PLAYERS) {
+    return msg.reply('❌ Maximum number of players has been reached.');
+  }
+
+  // Reserve the slot SYNCHRONOUSLY — no `await` between this length check
+  // and the push below — so two .quiz join messages landing back to back
+  // can't both read the same pre-push length and collide on the same slot.
+  // Same race fixed the same way in connect4.js's .c4 join.
+  const slotIndex = lobby.players.length;
+  lobby.players.push({ id: playerId, name: null });
+  lobby.players[slotIndex].name = await resolveNameById(client, playerId);
+
+  // Reposts the full lobby card (updated roster) rather than a short
+  // "Joined!" confirmation — matches the reference bot showing the whole
+  // Players list at a glance after every join.
+  return msg.reply(buildLobbyCard(lobby));
+}
+
+// .quiz leave — a joiner backs out before the match starts. The starter
+// can't use this on themselves (per Brandon: they can only cancel the
+// whole lobby, via .quiz end) — leaving is specifically a non-starter
+// action. Once the match has actually started there's no lobby left to
+// leave at all (see quizLobbies' own comment), so this naturally stops
+// applying then too.
+async function leaveQuizLobby(client, msg) {
+  const chat = await safeGetChat(msg);
+  if (!chat) return;
+  const chatId = chat.id._serialized;
+
+  const lobby = quizLobbies.get(chatId);
+  if (!lobby) return msg.reply('❌ No open quiz lobby to leave.');
+
+  const contact = await msg.getContact();
+  const playerId = contact.id._serialized;
+
+  if (playerId === lobby.starterId) {
+    return msg.reply('❌ You started this lobby — use *.quiz end* to cancel it instead.');
+  }
+
+  const idx = lobby.players.findIndex(p => p.id === playerId);
+  if (idx === -1) return msg.reply("❌ You're not in this lobby.");
+
+  lobby.players.splice(idx, 1);
+  return msg.reply(`👋 Left the lobby.\n\n${buildLobbyCard(lobby)}`);
+}
+
+// Builds the question pool and kicks off the actual match once a lobby's
+// countdown ends. Not triggered by any command message (the countdown
+// firing on its own led here), so — same as connect4.js's startC4Game —
+// everything from here on is a plain chat.sendMessage, never msg.reply.
+async function startQuizMatch(client, chat, chatId, players, difficulty, starterId) {
   const settings = DIFFICULTY_SETTINGS[difficulty];
 
   let rawPool;
@@ -275,7 +444,8 @@ async function startQuiz(client, msg, difficultyArg) {
       .lean();
   } catch (err) {
     console.error('Quiz: catalogue fetch failed:', err.message);
-    return msg.reply('❌ Could not load the card catalogue right now — try again in a moment.');
+    release(chatId, 'quiz');
+    return chat.sendMessage('❌ Could not load the card catalogue right now — the match has been cancelled.');
   }
 
   // Dedupe by name (case-insensitive) so the same character under two
@@ -290,98 +460,167 @@ async function startQuiz(client, msg, difficultyArg) {
   }
 
   if (fullPool.length < NUM_OPTIONS + 1) {
-    return msg.reply(
-      `❌ Not enough cards in the catalogue yet to run a quiz (need at least ${NUM_OPTIONS + 1} distinct characters with art).`
+    release(chatId, 'quiz');
+    return chat.sendMessage(
+      `❌ Not enough cards in the catalogue yet to run a quiz (need at least ${NUM_OPTIONS + 1} distinct characters with art) — the match has been cancelled.`
     );
   }
 
   const questionCount = Math.min(TOTAL_QUESTIONS, fullPool.length);
   const questions = pickQuestionEntries(fullPool, settings, questionCount);
 
+  // Pre-populated for every registered player (rather than lazily created
+  // the first time each one answers, like before) so the final scoreboard
+  // always shows everyone — even someone who never lands a single correct
+  // answer — now that the roster (1 to MAX_QUIZ_PLAYERS) is fixed and known
+  // from the start.
+  const scores = new Map();
+  for (const p of players) scores.set(p.id, { name: p.name, points: 0, wrong: 0 });
+
   const session = {
     chatId,
     client,
-    origMsg: msg,
+    starterId,
+    players,
     difficulty,
     timeSeconds: settings.timeSeconds,
     fullPool,
     questions,
     questionIndex: -1,
     current: null,
-    scores: new Map(),
+    scores,
     eliminated: new Set(),
   };
 
   quizGames.set(chatId, session);
-  claim(chatId, 'quiz');
+  // Lobby already held the activeGame.js claim from .quiz start — the
+  // match reuses it, no re-claim needed here.
+
+  const lines = players.map((p, i) => `${i + 1}) @${idDigits(p.id)}`);
+  await chat.sendMessage(`Players:\n${lines.join('\n')}\n\nGame start!`, { mentions: players.map(p => p.id) });
 
   await advanceQuestion(session);
 }
 
-async function stopQuiz(client, msg) {
+// .quiz end — the starter cancels a pending lobby OR ends an active match
+// early. Per Brandon: this is starter-only in BOTH cases — a joiner who
+// wants out of a pending lobby uses .quiz leave instead (see
+// leaveQuizLobby above), and a joiner has no way to end an active match at
+// all (only to have started it). Just translates quitQuiz's result into a
+// reply — see quitQuiz below for the actual logic, shared with
+// '.quitgame' in commands/games.js so the two can never drift apart on
+// who's allowed to do what.
+async function endQuiz(client, msg) {
   const chat = await safeGetChat(msg);
   if (!chat) return;
   const chatId = chat.id._serialized;
+  const contact = await msg.getContact();
 
-  const session = quizGames.get(chatId);
-  if (!session) return msg.reply('❌ No quiz is currently active in this chat.');
+  const result = quitQuiz(chatId, contact.id._serialized);
+  if (!result) return msg.reply('❌ No quiz is currently active in this chat.');
 
-  const askedSoFar = Math.max(session.questionIndex + 1, 0);
-  const total = session.questions.length;
-  teardown(session);
+  if (!result.ended) {
+    return msg.reply(
+      result.reason === 'joiner-in-lobby'
+        ? '❌ Only the person who started this lobby can cancel it — use *.quiz leave* to leave it yourself.'
+        : '❌ Only the quiz starter can end this match.'
+    );
+  }
+
+  if (result.lobby) return msg.reply('🛑 Quiz lobby cancelled.');
 
   return msg.reply(
-    `🛑 Quiz stopped early (${askedSoFar}/${total} questions asked).\n\n🏆 *Scoreboard*\n\n${formatScoreboard(session.scores)}`
+    `🛑 Quiz stopped early (${result.askedSoFar}/${result.total} questions asked).\n\n🏆 *Scoreboard*\n\n${result.board}`
   );
 }
 
-// Called from '.quitgame' in commands/games.js, same contract as
-// quitTTT/quitC4/quitChess/quitBattle — returns null if there's no quiz
-// here (so quitgame can fall through to check other game types), or a
-// result object to report if there was.
-function quitQuiz(chatId) {
+// Called from both .quiz end (above) and '.quitgame' in commands/games.js
+// (same contract as quitTTT/quitC4/quitChess/quitBattle) — single source
+// of truth for who's allowed to end what:
+//   - Not part of any lobby OR match here at all -> null (quitgame can
+//     fall through to check other game types; .quiz end reports "no quiz
+//     active").
+//   - Part of a pending LOBBY, and IS the starter -> cancels it,
+//     { ended: true, lobby: true }.
+//   - Part of a pending LOBBY, but ISN'T the starter -> refused,
+//     { ended: false, reason: 'joiner-in-lobby' } — they can only
+//     .quiz leave, not cancel the whole thing.
+//   - Part of an active MATCH, and IS the starter -> ends it early,
+//     { ended: true, askedSoFar, total, board }.
+//   - Part of an active MATCH, but ISN'T the starter -> refused,
+//     { ended: false, reason: 'not-starter' } — only the starter can end
+//     an in-progress match; a joiner has no individual "quit just for me"
+//     option here (unlike Connect4, quiz has no single 1-for-1 opponent to
+//     hand a win to when one player drops).
+function quitQuiz(chatId, playerId) {
+  const lobby = quizLobbies.get(chatId);
+  if (lobby && lobby.players.some(p => p.id === playerId)) {
+    if (playerId !== lobby.starterId) return { ended: false, reason: 'joiner-in-lobby' };
+
+    clearTimeout(lobby.timer);
+    quizLobbies.delete(chatId);
+    release(chatId, 'quiz');
+    return { ended: true, lobby: true };
+  }
+
   const session = quizGames.get(chatId);
-  if (!session) return null;
+  if (!session || !session.players.some(p => p.id === playerId)) return null;
+  if (playerId !== session.starterId) return { ended: false, reason: 'not-starter' };
 
   const askedSoFar = Math.max(session.questionIndex + 1, 0);
   const total = session.questions.length;
   teardown(session);
 
-  return { askedSoFar, total, board: formatScoreboard(session.scores) };
+  return { ended: true, askedSoFar, total, board: formatScoreboard(session.scores) };
 }
 
 // ─── Command entry point ────────────────────────────────────────────────────
-// .quiz / .quiz [easy|normal|hard] / .quiz start [easy|normal|hard] — starts
-// .quiz stop / .quiz end — ends the current quiz early
+// .quiz start [easy|normal|hard] — opens a lobby, starter auto-joins as
+//   Player 1, reacts ✅/❌
+// .quiz join — take a slot (up to MAX_QUIZ_PLAYERS) before the countdown ends
+// .quiz leave — a joiner (not the starter) backs out of a pending lobby
+// .quiz end — starter-only: cancel a pending lobby, or end an active match early
 // ─── Help text ───────────────────────────────────────────────────────────────
 // Shown for a bare ".quiz" (and any unrecognized subcommand) instead of
 // silently starting a game — starting now requires the explicit "start".
 async function sendQuizHelp(msg) {
   const text =
     `🎭 *Anime Character Quiz*\n\n` +
-    `I show a character's picture — first person to reply with the right number wins the point. ${TOTAL_QUESTIONS} questions per round.\n\n` +
-    `*Start a round:*\n` +
-    `.quiz start — normal difficulty (${DIFFICULTY_SETTINGS.normal.timeSeconds}s per question)\n` +
+    `Up to ${MAX_QUIZ_PLAYERS} players — I show a character's picture, first matched player to reply with the right number wins the point. ${TOTAL_QUESTIONS} questions per match.\n\n` +
+    `*Start a match:*\n` +
+    `.quiz start — opens a lobby, normal difficulty (${DIFFICULTY_SETTINGS.normal.timeSeconds}s per question)\n` +
     `.quiz start easy — easier, more recognizable characters (${DIFFICULTY_SETTINGS.easy.timeSeconds}s per question)\n` +
-    `.quiz start hard — decoys from the same anime (${DIFFICULTY_SETTINGS.hard.timeSeconds}s per question)\n\n` +
+    `.quiz start hard — decoys from the same anime (${DIFFICULTY_SETTINGS.hard.timeSeconds}s per question)\n` +
+    `You're automatically Player 1 — the match begins ${LOBBY_WINDOW_MS / 1000}s later with whoever's joined by then.\n\n` +
+    `*Joining/leaving before it starts:*\n` +
+    `.quiz join — take a slot (up to ${MAX_QUIZ_PLAYERS} players)\n` +
+    `.quiz leave — back out (joiners only, not the starter)\n\n` +
     `*Answering:*\n` +
-    `Just reply with 1, 2, 3, or 4 — no prefix needed.\n` +
-    `${MAX_WRONG_LIVES} wrong answers and you're out for the rest of that round.\n\n` +
-    `*Stop early:*\n` +
-    `.quiz stop (or .quitgame)`;
+    `Just reply with 1, 2, 3, or 4 — no prefix needed. Only matched players' answers count.\n` +
+    `${MAX_WRONG_LIVES} wrong answers and you're out for the rest of that match.\n\n` +
+    `*Ending early:*\n` +
+    `.quiz end (or .quitgame) — starter only, cancels a pending lobby or ends an active match`;
   return msg.reply(text);
 }
 
 async function quiz(client, msg, args) {
   const sub = (args[0] || '').toLowerCase();
 
-  if (sub === 'stop' || sub === 'end') {
-    return stopQuiz(client, msg);
+  if (sub === 'end') {
+    return endQuiz(client, msg);
   }
 
   if (sub === 'start') {
     const difficultyArg = (args[1] || '').toLowerCase();
-    return startQuiz(client, msg, difficultyArg);
+    return openQuizLobby(client, msg, difficultyArg);
+  }
+
+  if (sub === 'join') {
+    return joinQuizLobby(client, msg);
+  }
+
+  if (sub === 'leave') {
+    return leaveQuizLobby(client, msg);
   }
 
   // Bare ".quiz", or anything else unrecognized (typo'd difficulty,
@@ -454,6 +693,19 @@ async function tryHandleQuizAnswer(client, msg) {
   // No quiz running at all in this chat — this bare number was never
   // ours to begin with, let it fall through to normal message handling.
   if (!session) return false;
+
+  // Only registered players (see .quiz join) can answer — since a match is
+  // now a capped roster of up to MAX_QUIZ_PLAYERS people (not the whole
+  // chat), anyone else's bare digit here is just normal chat, not an
+  // attempted answer, so it's let through rather than intercepted-and-
+  // rejected. Checked via msg.author/msg.from directly (same fallback
+  // index.js itself uses) rather than the full safeGetContact retry-with-
+  // backoff machinery further down — this is meant to be a cheap early
+  // exit for the common case of other people in the group just talking,
+  // not the authoritative identity check (that still happens properly,
+  // below, for whoever IS accepted here).
+  const earlySenderId = msg.author || msg.from;
+  if (!session.players.some(p => p.id === earlySenderId)) return false;
 
   const question = session.current;
   const choice = parseInt(body, 10);
@@ -655,6 +907,7 @@ async function tryHandleQuizAnswer(client, msg) {
 
 module.exports = {
   quizGames,
+  quizLobbies,
   quiz,
   quitQuiz,
   tryHandleQuizAnswer,
