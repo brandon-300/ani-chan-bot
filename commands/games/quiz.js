@@ -4,6 +4,47 @@ const { safeGetChat, safeGetQuotedMessage, safeGetContact, resolveNameById } = r
 const { isChatBusy, claim, release } = require('./activeGame');
 const Guild = require('../../models/Guild');
 const { _formatQuestCompletionNote } = require('../guilds');
+const GameSession = require('../../models/GameSession');
+
+// Persists this quiz's current state to Mongo — fire-and-forget, since the
+// in-memory quizGames Map (below) stays authoritative while the bot is
+// running; this is purely so _initQuiz can restore it after a restart.
+// Three things need converting before this can go into Mongo's Mixed
+// field, none of which are plain-JSON-safe as-is:
+//   - `client` is the live WhatsApp client itself — excluded entirely;
+//     restored from the client _initQuiz(client) is given at boot, the
+//     same way every other migrated game gets its client reference back.
+//   - `scores` is a Map and `eliminated`/`current.answered` are Sets —
+//     none of BSON's types round-trip those, so each becomes a plain
+//     array ([...map.entries()], [...set]) here and gets rebuilt with
+//     `new Map(...)`/`new Set(...)` in _initQuiz.
+//   - `current.timer` is a live setTimeout handle, excluded for the same
+//     reason as every other migrated game's turnTimer.
+// fullPool/questions/options are already plain lean() objects (see
+// startQuizMatch's CardCatalogue query), so those need no conversion.
+function saveQuizSession(session) {
+  const { client, current, scores, eliminated, ...rest } = session;
+  let savedCurrent = null;
+  if (current) {
+    const { timer, answered, ...currentRest } = current;
+    savedCurrent = { ...currentRest, answered: [...answered] };
+  }
+  const state = {
+    ...rest,
+    current: savedCurrent,
+    scores: [...scores.entries()],
+    eliminated: [...eliminated],
+  };
+  GameSession.findOneAndUpdate(
+    { chatId: session.chatId },
+    { chatId: session.chatId, type: 'quiz', players: session.players.map(p => p.id), state },
+    { upsert: true }
+  ).catch(err => console.error('saveQuizSession: persist failed:', err.message));
+}
+
+function deleteQuizSession(chatId) {
+  GameSession.deleteOne({ chatId, type: 'quiz' }).catch(err => console.error('deleteQuizSession: delete failed:', err.message));
+}
 
 // ─── Active Quiz Sessions ───────────────────────────────────────────────────
 // chatId -> {
@@ -198,6 +239,7 @@ function formatScoreboard(scores) {
 function teardown(session) {
   if (session.current?.timer) clearTimeout(session.current.timer);
   quizGames.delete(session.chatId);
+  deleteQuizSession(session.chatId);
   release(session.chatId, 'quiz');
 }
 
@@ -266,11 +308,13 @@ async function advanceQuestion(session) {
   session.current.messageId = sentMsg?.id?._serialized || null;
 
   session.current.timer = setTimeout(() => handleTimeout(session), session.timeSeconds * 1000);
+  saveQuizSession(session);
 }
 
 async function handleTimeout(session) {
   if (!session.current || session.current.resolved) return;
   session.current.resolved = true;
+  saveQuizSession(session);
 
   const { name, series } = session.current.correct;
   try {
@@ -852,6 +896,7 @@ async function tryHandleQuizAnswer(client, msg) {
 
   if (isCorrect) {
     scoreEntry.points += 1;
+    saveQuizSession(session);
 
     try {
       await msg.react('✅');
@@ -882,6 +927,7 @@ async function tryHandleQuizAnswer(client, msg) {
   scoreEntry.wrong += 1;
   const justEliminated = scoreEntry.wrong >= MAX_WRONG_LIVES;
   if (justEliminated) session.eliminated.add(playerId);
+  saveQuizSession(session);
 
   try {
     await msg.react('❌');
@@ -905,6 +951,73 @@ async function tryHandleQuizAnswer(client, msg) {
   return true;
 }
 
+// Called once from index.js on bot startup — same pattern as
+// tictactoe.js's _initTTT/connect4.js's _initC4/chess.js's _initChess.
+// Restores in-progress quiz matches from Mongo: rebuilds the Map (scores)
+// and Sets (eliminated, current.answered) from their saved array forms,
+// reattaches the live `client` this function was given, and re-claims
+// each restored chat's activeGame.js lock. Deliberately does NOT restore
+// pending lobbies (.quiz start with the countdown still running) — same
+// reasoning as every other migrated game's lobby phase.
+//
+// The saved question's timer is re-armed with a FRESH full time window
+// rather than the exact remaining time (same simplification every other
+// migrated game's turn timer uses), and `startedAt` is reset to now so the
+// anti-stale-answer heuristics in tryHandleQuizAnswer — which measure
+// elapsed time FROM startedAt — stay internally consistent with that fresh
+// window instead of comparing against a pre-restart instant.
+//
+// If the saved question was already resolved (a correct answer landed, or
+// it timed out, right as the restart happened — either path saves with
+// resolved: true, see handleTimeout/the correct-answer branch above) there
+// is nothing left to resume for it — advanceQuestion() is called directly
+// instead of re-arming a timer, exactly matching what would have happened
+// naturally after the normal 2s reveal pause.
+async function _initQuiz(client) {
+  const sessions = await GameSession.find({ type: 'quiz' }).catch(err => {
+    console.error('_initQuiz: lookup failed:', err.message);
+    return [];
+  });
+
+  let restored = 0;
+  for (const doc of sessions) {
+    const chatId = doc.chatId;
+    const { current: savedCurrent, scores: savedScores, eliminated: savedEliminated, ...rest } = doc.state;
+
+    const session = {
+      ...rest,
+      chatId,
+      client,
+      scores: new Map(savedScores),
+      eliminated: new Set(savedEliminated),
+      current: null,
+    };
+    quizGames.set(chatId, session);
+    claim(chatId, 'quiz');
+
+    try {
+      if (savedCurrent && !savedCurrent.resolved) {
+        session.current = {
+          ...savedCurrent,
+          answered: new Set(savedCurrent.answered),
+          startedAt: Date.now(),
+          timer: null,
+        };
+        session.current.timer = setTimeout(() => handleTimeout(session), session.timeSeconds * 1000);
+        saveQuizSession(session);
+      } else {
+        await advanceQuestion(session);
+      }
+    } catch (err) {
+      console.error('_initQuiz: failed to resume match for', chatId, err.message);
+    }
+    restored++;
+  }
+  if (restored) {
+    console.log(`🎮 Restored ${restored} quiz match(es)`);
+  }
+}
+
 module.exports = {
   quizGames,
   quizLobbies,
@@ -912,4 +1025,5 @@ module.exports = {
   quitQuiz,
   tryHandleQuizAnswer,
   MIN_HUMAN_REACTION_MS,
+  _initQuiz,
 };

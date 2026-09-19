@@ -42,20 +42,43 @@ function cleanup(...files) {
 }
 
 // ─── Conversation memory (per chat, clears after 30 min idle) ─────────────────
-const chatHistory = new Map();
+// Persisted in Mongo (models/AiConversation.js) with a native TTL index
+// doing the 30-minute idle cleanup — see that file's comment for why this
+// replaced the old in-memory Map (it didn't survive PM2 restarts, and its
+// per-call setTimeout cleanup had a real bug: an earlier timer could wipe
+// out a chat's newer history mid-conversation).
+const AiConversation = require('../models/AiConversation');
 
-function getHistory(chatId) {
-  return chatHistory.get(chatId) || [];
+const HISTORY_LIMIT = 20; // messages kept per chat
+const HISTORY_TTL_MS = 30 * 60 * 1000; // idle window before Mongo auto-expires it
+
+// Returns this chat's recent conversation as a plain { role, content }[]
+// array for gemini.js — empty for a fresh chat, or one Mongo's TTL index
+// already expired. Reading never touches expiresAt itself — only
+// addToHistory extends the idle window, so a history can't be kept alive
+// just by being read.
+async function getHistory(chatId) {
+  const convo = await AiConversation.findOne({ chatId }).catch(err => {
+    console.error('getHistory: lookup failed:', err.message);
+    return null;
+  });
+  return convo ? convo.messages.map(m => ({ role: m.role, content: m.content })) : [];
 }
 
-function addToHistory(chatId, role, content) {
-  const history = getHistory(chatId);
-  history.push({ role, content });
-  if (history.length > 20) history.shift(); // Keep last 20 messages
-  chatHistory.set(chatId, history);
-
-  // Auto-clear after 30 minutes of inactivity
-  setTimeout(() => chatHistory.delete(chatId), 30 * 60 * 1000);
+// Appends one turn and pushes expiresAt another 30 minutes out, so the
+// window is always "30 minutes since the LAST message" rather than a fixed
+// timer from when the conversation started. $push+$slice caps it to the
+// most recent HISTORY_LIMIT messages atomically, in the same update —
+// replacing the old manual push-then-shift-if-too-long logic.
+async function addToHistory(chatId, role, content) {
+  await AiConversation.findOneAndUpdate(
+    { chatId },
+    {
+      $push: { messages: { $each: [{ role, content }], $slice: -HISTORY_LIMIT } },
+      $set: { expiresAt: new Date(Date.now() + HISTORY_TTL_MS) },
+    },
+    { upsert: true }
+  ).catch(err => console.error('addToHistory: save failed:', err.message));
 }
 
 // ─── Marin Kitagawa persona ─────────────────────────────────────────────────
@@ -263,7 +286,7 @@ module.exports = {
     msg.reply('🤖 Thinking...');
 
     try {
-      const history = getHistory(chat.id._serialized);
+      const history = await getHistory(chat.id._serialized);
       const senderName = await resolveSenderName(msg, client);
       const systemPrompt = buildMarinSystemPrompt(senderName);
 
@@ -350,7 +373,7 @@ module.exports = {
 
     let mp3Path, oggPath;
     try {
-      const history = getHistory(chat.id._serialized);
+      const history = await getHistory(chat.id._serialized);
       const senderName = await resolveSenderName(msg, client);
       const systemPrompt = buildMarinVoiceSystemPrompt(senderName);
 
@@ -396,7 +419,7 @@ module.exports = {
 
       const voiceData = fs.readFileSync(oggPath).toString('base64');
       const voiceMedia = new MessageMedia('audio/ogg', voiceData);
-      await chat.sendMessage(voiceMedia, { sendAudioAsVoice: true });
+      await msg.reply(voiceMedia, undefined, { sendAudioAsVoice: true });
     } catch (err) {
       // Fish Audio-specific failures need their own messages (same as
       // .tts); anything else (Gemini transcription/text errors) goes
@@ -426,9 +449,7 @@ module.exports = {
       const ext = mimeType.includes('png') ? 'png' : 'jpg';
       const media = new MessageMedia(mimeType, base64, `imagine.${ext}`);
 
-      const chat = await safeGetChat(msg);
-      if (!chat) return;
-      await chat.sendMessage(media, { caption: `🎨 *Imagine:* ${prompt}` });
+      await msg.reply(media, undefined, { caption: `🎨 *Imagine:* ${prompt}` });
     } catch (err) {
       msg.reply(friendlyAiError(err, 'Image generation'));
     }
@@ -469,9 +490,7 @@ module.exports = {
       }
 
       const upscaledMedia = new MessageMedia('image/jpeg', res.data.result_base64);
-      const chat = await safeGetChat(msg);
-      if (!chat) return;
-      await chat.sendMessage(upscaledMedia, { caption: '✅ Image upscaled 2x!' });
+      await msg.reply(upscaledMedia, undefined, { caption: '✅ Image upscaled 2x!' });
     } catch (err) {
       console.error('Upscale error:', err.response?.status, JSON.stringify(err.response?.data)?.slice(0, 300) || err.message);
       msg.reply('❌ Upscale failed. Make sure you replied to an image and your RapidAPI key is valid.');
@@ -574,9 +593,7 @@ module.exports = {
       const voiceData = fs.readFileSync(oggPath).toString('base64');
       const voiceMedia = new MessageMedia('audio/ogg', voiceData);
 
-      const chat = await safeGetChat(msg);
-      if (!chat) return;
-      await chat.sendMessage(voiceMedia, { sendAudioAsVoice: true });
+      await msg.reply(voiceMedia, undefined, { sendAudioAsVoice: true });
     } catch (err) {
       if (err.code === 'NO_FISH_KEY' || err.code === 'NO_FISH_VOICE') {
         msg.reply(`❌ ${err.message}`);

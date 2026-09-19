@@ -103,35 +103,45 @@ function smvdErrorReason(data) {
   return typeof msg === 'string' && msg.trim() ? msg.trim() : null;
 }
 
-// Same shared-shape reasoning as extractSmvdMediaUrl — Instagram, TikTok,
-// and Facebook all come through this same API family and share this same
-// content object shape.
-//
-// UNCERTAINTY FLAGGED: unlike extractSmvdMediaUrl (already verified working
-// against real Instagram/Facebook responses), this specific field was NOT
-// confirmed against a real captured response — there's no sample on hand
-// showing which key this API actually uses for a thumbnail/cover image,
-// and no network access available here to test it directly. This tries
-// several plausible field names in order; if none of them hit, the preview
-// step is silently skipped (sendDownloadPreview already falls back to
-// plain text when there's no thumbnail URL) — worst case, you just don't
-// get a preview image yet, nothing breaks. If it comes back empty, check
-// `pm2 logs ani-chan-bot` for the raw response JSON (already logged
-// on-failure a few lines below) and share it — I'll wire up the exact key
-// instead of guessing further.
-function extractSmvdThumbnail(content) {
+// CONFIRMED against a real captured Facebook response from this API
+// (Brandon ran it directly against RapidAPI and shared the raw JSON) —
+// the thumbnail is NOT nested inside contents[0] the way extractSmvdMediaUrl's
+// media is; it lives at the top level, under metadata. This function takes
+// the full response body (`res.data`), not the content entry.
+// metadata.thumbnailUrl is the confirmed primary field; the other two are
+// fallbacks seen in that same real response, kept in case thumbnailUrl is
+// ever missing on some post type. Same shared API family as
+// extractSmvdMediaUrl (Instagram/TikTok/Facebook), so this applies to all
+// three the same way.
+function extractSmvdThumbnail(data) {
   return (
-    content.thumbnail ||
-    content.cover ||
-    content.thumb ||
-    content.display_url ||
-    content.videos?.[0]?.thumbnail ||
-    content.videos?.[0]?.cover ||
+    data.metadata?.thumbnailUrl ||
+    data.metadata?.additionalData?.first_frame_thumbnail ||
+    data.metadata?.preferred_thumbnail?.image?.uri ||
     null
   );
 }
 
+// YouTube's own video-details endpoint shares the same API family/host as
+// extractSmvdMediaUrl but has a different response shape: contents[0].videos[]
+// is mostly video-ONLY streams (has_audio: false) at various resolutions —
+// that's how YouTube serves anything above roughly 360p — with separate
+// contents[0].audios[] streams to match. Only the handful of legacy
+// "progressive" formats bundle audio+video together, and those are the only
+// ones downloadable and sendable directly the same way the other platforms
+// already work, without merging two separate streams via ffmpeg. Confirmed
+// against a real captured response (itag 18, 360p, was the progressive
+// stream present there).
+function extractYtProgressiveStream(content) {
+  const progressive = (content.videos || []).find(
+    (v) => v.metadata?.has_audio && v.metadata?.has_video
+  );
+  return progressive?.url || null;
+}
+
 module.exports = {
+
+
 
 
   // .ig [url]
@@ -168,7 +178,7 @@ module.exports = {
       // just be a redundant preview of the exact same image about to be
       // sent as the actual download a moment later.
       if (content.videos?.length) {
-        await sendDownloadPreview(msg, extractSmvdThumbnail(content), '📸 Downloading from Instagram...\nPlease wait...');
+        await sendDownloadPreview(msg, extractSmvdThumbnail(res.data), '📸 Downloading from Instagram...\nPlease wait...');
       }
 
       const mediaUrl = extractSmvdMediaUrl(content);
@@ -212,7 +222,7 @@ module.exports = {
 
       // Preview only for video posts — see .ig's identical comment above.
       if (content.videos?.length) {
-        await sendDownloadPreview(msg, extractSmvdThumbnail(content), '🎵 Downloading from TikTok...\nPlease wait...');
+        await sendDownloadPreview(msg, extractSmvdThumbnail(res.data), '🎵 Downloading from TikTok...\nPlease wait...');
       }
 
       const mediaUrl = extractSmvdMediaUrl(content);
@@ -233,28 +243,67 @@ module.exports = {
     if (!query) return msg.reply('❌ Usage: .yt [youtube url or search]');
 
     try {
-      // Try direct URL first
-      const videoId = query.match(/(?:v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/)?.[1];
+      const videoId = query.match(/(?:v=|youtu\.be\/|shorts\/|embed\/|live\/)([a-zA-Z0-9_-]{11})/)?.[1];
       if (!videoId) return msg.reply('❌ Please provide a valid YouTube URL.');
 
-      // hqdefault.jpg exists for every YouTube video ID at this fixed CDN
-      // path — no search/lookup call needed to get it, unlike the
-      // SMVD-family platforms below.
-      await sendDownloadPreview(msg, `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`, '🎵 Converting YouTube video to MP3...\nPlease wait...');
+      // music.youtube.com is the one unambiguous signal that this is an
+      // audio track rather than a video — a regular youtube.com link to a
+      // song upload looks identical to any other video link from the URL
+      // alone, so this is the only case that can be told apart reliably.
+      // Keeps the existing mp3-conversion flow, since that's genuinely the
+      // right tool for actual music.
+      if (/music\.youtube\.com/i.test(query)) {
+        await sendDownloadPreview(msg, `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`, '🎵 Converting YouTube Music track to MP3...\nPlease wait...');
 
-      const res = await axios.get('https://youtube-mp36.p.rapidapi.com/dl', {
-        params: { id: videoId },
-        headers: {
-          'X-RapidAPI-Key': RAPIDAPI_KEY,
-          'X-RapidAPI-Host': RAPIDAPI_HOST_YT,
-        },
-      });
+        const res = await axios.get('https://youtube-mp36.p.rapidapi.com/dl', {
+          params: { id: videoId },
+          headers: {
+            'X-RapidAPI-Key': RAPIDAPI_KEY,
+            'X-RapidAPI-Host': RAPIDAPI_HOST_YT,
+          },
+        });
 
-      if (res.data.status !== 'ok') {
-        console.error('YT conversion non-ok status:', JSON.stringify(res.data));
-        return msg.reply('❌ Conversion failed.');
+        if (res.data.status !== 'ok') {
+          console.error('YT Music conversion non-ok status:', JSON.stringify(res.data));
+          return msg.reply('❌ Conversion failed.');
+        }
+        return await downloadAndSend(msg, res.data.link, `🎵 ${res.data.title}`);
       }
-      await downloadAndSend(msg, res.data.link, `🎵 ${res.data.title}`);
+
+      // Regular YouTube video or Shorts — download the actual video, same
+      // as .ig/.ttk/.fb/.x, instead of converting to mp3.
+      const res = await axios.get(
+        'https://social-media-video-downloader.p.rapidapi.com/youtube/v3/video/details',
+        {
+          params: { videoId, urlAccess: 'proxied', renderableFormats: '720p,highres', getTranscript: false },
+          headers: {
+            'X-RapidAPI-Key': RAPIDAPI_KEY,
+            'X-RapidAPI-Host': RAPIDAPI_HOST_IG, // same host/subscription as IG/TikTok/FB
+          },
+          timeout: 20000,
+        }
+      );
+
+      const content = res.data?.contents?.[0];
+      if (!content) {
+        console.error('[yt] 200 OK but no contents parsed. Raw:', JSON.stringify(res.data)?.slice(0, 1500));
+        return msg.reply('❌ Could not extract media from this video.');
+      }
+
+      // metadata.thumbnailUrl is confirmed present for YouTube too (same
+      // field as Facebook), with the hqdefault.jpg construction as a
+      // YouTube-only extra fallback since we already have the video ID.
+      const thumbnailUrl = extractSmvdThumbnail(res.data) || `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
+      await sendDownloadPreview(msg, thumbnailUrl, '🎬 Downloading from YouTube...\nPlease wait...');
+
+      const mediaUrl = extractYtProgressiveStream(content);
+      if (!mediaUrl) {
+        console.error('[yt] No progressive (audio+video) stream found. Videos:', JSON.stringify(content.videos?.map(v => ({ label: v.label, has_audio: v.metadata?.has_audio, has_video: v.metadata?.has_video })))?.slice(0, 500));
+        return msg.reply('❌ Could not find a downloadable format for this video — it may only have separate audio and video tracks.');
+      }
+
+      const title = res.data?.metadata?.title;
+      await downloadAndSend(msg, mediaUrl, title ? `🎬 ${title}` : '🎬 Downloaded from YouTube');
     } catch (err) {
       console.error('YT download error:', err.response?.status, JSON.stringify(err.response?.data)?.slice(0, 300) || err.message);
       msg.reply('❌ YouTube download failed.');
@@ -362,7 +411,7 @@ module.exports = {
 
       // Preview only for video posts — see .ig's identical comment above.
       if (content.videos?.length) {
-        await sendDownloadPreview(msg, extractSmvdThumbnail(content), '📘 Downloading from Facebook...\nPlease wait...');
+        await sendDownloadPreview(msg, extractSmvdThumbnail(res.data), '📘 Downloading from Facebook...\nPlease wait...');
       }
 
       const mediaUrl = extractSmvdMediaUrl(content);

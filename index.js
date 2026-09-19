@@ -251,6 +251,14 @@ let reconnectTimer = null;
 let cardDropsStarted = false;
 let participantsSeeded = false;
 let catalogueGrowthStarted = false;
+let mutesResumeStarted = false;
+let schedulerStarted = false;
+let afkInitStarted = false;
+let tttInitStarted = false;
+let c4InitStarted = false;
+let battleInitStarted = false;
+let chessInitStarted = false;
+let quizInitStarted = false;
 let whatsappStarting = false;
 let currentState = null;
 let authTimeoutRecovering = false;
@@ -466,6 +474,21 @@ client.on('ready', () => {
 ╰━━━━━━━━━━━━━━━━━━━━━━╯
   `);
 
+  if (!schedulerStarted) {
+    schedulerStarted = true;
+    const scheduler = require('./utils/scheduler');
+    // Arms the nearest task that survived a PM2 restart (if any), then
+    // backfills a scheduled task for any card that was already mid-lend
+    // BEFORE this scheduler existed — see _initCardLending's own comment
+    // in commands/cards.js for why that backfill matters.
+    scheduler.init(client)
+      .then(() => {
+        const { _initCardLending } = require('./commands/cards');
+        if (_initCardLending) return _initCardLending();
+      })
+      .catch(err => console.error('Scheduler init error:', err.message));
+  }
+
   if (!cardDropsStarted) {
     cardDropsStarted = true;
     const { _initCardDrops } = require('./commands/cards');
@@ -487,6 +510,62 @@ client.on('ready', () => {
     const { _initCatalogueGrowth } = require('./commands/cardmanager');
     if (_initCatalogueGrowth) {
       _initCatalogueGrowth(client).catch(err => console.error('Catalogue auto-growth resume error:', err.message));
+    }
+  }
+
+  if (!mutesResumeStarted) {
+    mutesResumeStarted = true;
+    const { _resumePendingMutes } = require('./commands/admin');
+    if (_resumePendingMutes) {
+      _resumePendingMutes(client).catch(err => console.error('Mute resume error:', err.message));
+    }
+  }
+
+  if (!afkInitStarted) {
+    afkInitStarted = true;
+    const { _initAfk } = require('./commands/afk');
+    if (_initAfk) {
+      _initAfk().catch(err => console.error('AFK restore error:', err.message));
+    }
+  }
+
+  if (!tttInitStarted) {
+    tttInitStarted = true;
+    const { _initTTT } = require('./commands/games/tictactoe');
+    if (_initTTT) {
+      _initTTT(client).catch(err => console.error('Tic Tac Toe restore error:', err.message));
+    }
+  }
+
+  if (!c4InitStarted) {
+    c4InitStarted = true;
+    const { _initC4 } = require('./commands/games/connect4');
+    if (_initC4) {
+      _initC4(client).catch(err => console.error('Connect 4 restore error:', err.message));
+    }
+  }
+
+  if (!battleInitStarted) {
+    battleInitStarted = true;
+    const { _initBattle } = require('./commands/games/battle');
+    if (_initBattle) {
+      _initBattle().catch(err => console.error('Battle restore error:', err.message));
+    }
+  }
+
+  if (!chessInitStarted) {
+    chessInitStarted = true;
+    const { _initChess } = require('./commands/games/chess');
+    if (_initChess) {
+      _initChess(client).catch(err => console.error('Chess restore error:', err.message));
+    }
+  }
+
+  if (!quizInitStarted) {
+    quizInitStarted = true;
+    const { _initQuiz } = require('./commands/games/quiz');
+    if (_initQuiz) {
+      _initQuiz(client).catch(err => console.error('Quiz restore error:', err.message));
     }
   }
 });

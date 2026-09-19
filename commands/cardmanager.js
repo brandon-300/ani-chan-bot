@@ -371,13 +371,10 @@ module.exports = {
         `📺 ${card.series}\n` +
         `${tierEmoji(card.tier)} Tier: ${card.tier}`;
 
-      const chat = await safeGetChat(msg);
-    if (!chat) return;
-      if (!chat) return;
       if (card.imageUrl) {
         try {
           const media = await MessageMedia.fromUrl(card.imageUrl, { unsafeMime: true });
-          return await chat.sendMessage(media, { caption });
+          return await msg.reply(media, undefined, { caption });
         } catch {
           // image fetch failed — fall through to text-only reply
         }

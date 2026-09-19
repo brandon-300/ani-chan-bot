@@ -242,7 +242,7 @@ async function buildAnimatedWebp(frames, quality) {
 // giving up. Throwing here (rather than sending a broken/oversized sticker)
 // is intentional: meme() below catches this and falls back to the
 // guaranteed-working static output instead.
-async function sendAnimatedMemeSticker(client, chat, source, topText, bottomText) {
+async function sendAnimatedMemeSticker(client, msg, chat, source, topText, bottomText) {
   const { frames, totalFrames, sampledFrames } = await renderAnimatedMemeFrames(
     client,
     source.buffer,
@@ -266,7 +266,7 @@ async function sendAnimatedMemeSticker(client, chat, source, topText, bottomText
   }
 
   const stickerMedia = new MessageMedia('image/webp', webpBuffer.toString('base64'));
-  await chat.sendMessage(stickerMedia, {
+  await msg.reply(stickerMedia, undefined, {
     sendMediaAsSticker: true,
     stickerName: BOT_NAME,
     stickerAuthor: 'Brandon',
@@ -543,7 +543,7 @@ module.exports = {
     // comment in utils/memeRender.js for why this fallback exists.
     if (source.isAnimated) {
       try {
-        await sendAnimatedMemeSticker(client, chat, source, topText, bottomText);
+        await sendAnimatedMemeSticker(client, msg, chat, source, topText, bottomText);
         return;
       } catch (err) {
         console.error(
@@ -572,14 +572,14 @@ module.exports = {
           '-q:v', '80',
         ]);
         const stickerMedia = new MessageMedia('image/webp', fs.readFileSync(webpPath).toString('base64'));
-        await chat.sendMessage(stickerMedia, {
+        await msg.reply(stickerMedia, undefined, {
           sendMediaAsSticker: true,
           stickerName: BOT_NAME,
           stickerAuthor: 'Brandon',
         });
       } else {
         const outMedia = new MessageMedia('image/png', composedPng.toString('base64'));
-        await chat.sendMessage(outMedia);
+        await msg.reply(outMedia);
       }
     } catch (err) {
       console.error(

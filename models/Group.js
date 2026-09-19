@@ -11,6 +11,8 @@ const GroupSchema = new mongoose.Schema({
   leaveMsg: { type: String, default: '👋 @user has left the group.' },
   isOpen: { type: Boolean, default: true },
   isMuted: { type: Boolean, default: false },
+  muteUntil: { type: Date, default: null }, // when a timed .mute should auto-unmute; null = indefinite mute (or not muted)
+  muteDurationLabel: { type: String, default: null }, // raw duration text (e.g. "30s") for the auto-unmute notice, kept so it survives a restart
   blacklist: { type: [String], default: [] },
   nsfw: { type: Boolean, default: false },
   cardsEnabled: { type: Boolean, default: false },

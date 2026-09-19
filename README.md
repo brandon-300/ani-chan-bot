@@ -272,7 +272,7 @@ Chess, Tic Tac Toe, and Connect 4 share the same flow: `.<game> start` opens a l
 |---|---|
 | `.ig [url]` | Download an Instagram post/reel — shows a thumbnail preview first for video posts |
 | `.ttk [url]` | Download a TikTok video (no watermark) — shows a thumbnail preview first |
-| `.yt [url or search]` | Download YouTube audio — shows a thumbnail preview while it converts |
+| `.yt [url or search]` | Download a YouTube video or Short (shows a thumbnail preview first) — music.youtube.com links convert to mp3 audio instead |
 | `.x [url]` | Download a Twitter/X video — shows a thumbnail preview first for videos |
 | `.fb [url]` | Download a Facebook video — shows a thumbnail preview first for videos |
 | `.play [song name]` | Search YouTube and send back the audio — shows a thumbnail preview while it processes |
@@ -348,7 +348,7 @@ Chess, Tic Tac Toe, and Connect 4 share the same flow: `.<game> start` opens a l
 | `.blacklist add/remove/list` | Manage blacklisted words |
 | `.promote @user` | Promote a user to group admin |
 | `.demote @user` | Demote a group admin |
-| `.mute / .unmute` | Lock/unlock the group to admins-only messaging |
+| `.mute [time] / .unmute` | Lock the group to admins-only messaging — optionally for a set time (e.g. .mute 30s, .mute 5m, .mute 2h), after which it auto-unmutes; .unmute unlocks it early at any point |
 | `.hidetag [message]` | Mention everyone silently (no notification) |
 | `.tagall [message]` | Mention everyone with a visible notification |
 | `.activity` | Show member activity stats |

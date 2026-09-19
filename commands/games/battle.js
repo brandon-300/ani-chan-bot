@@ -6,6 +6,26 @@ const { BOT_NAME } = require('../../utils/config');
 const { isChatBusy, claim, release } = require('./activeGame');
 const Guild = require('../../models/Guild');
 const { _formatQuestCompletionNote } = require('../guilds');
+const GameSession = require('../../models/GameSession');
+
+// Persists this battle's current state to Mongo — fire-and-forget, since
+// the in-memory battleGames Map (below) stays authoritative while the bot
+// is running; this is purely so _initBattle can restore it after a
+// restart. Same pattern as tictactoe.js's saveTTTSession/deleteTTTSession
+// and connect4.js's saveC4Session/deleteC4Session — battle has no
+// turnTimer to strip out here, since (unlike Tic Tac Toe/Connect 4) it has
+// no per-turn auto-skip timeout at all.
+function saveBattleSession(chatId, game) {
+  GameSession.findOneAndUpdate(
+    { chatId },
+    { chatId, type: 'battle', players: [game.p1.id, game.p2.id].filter(id => id !== 'BOT'), state: game },
+    { upsert: true }
+  ).catch(err => console.error('saveBattleSession: persist failed:', err.message));
+}
+
+function deleteBattleSession(chatId) {
+  GameSession.deleteOne({ chatId, type: 'battle' }).catch(err => console.error('deleteBattleSession: delete failed:', err.message));
+}
 
 // ─── Active Game Sessions ─────────────────────────────────────────────────────
 // chatId -> { p1: { id, name, hp }, p2: { id, name, hp }, turn, mode, difficulty }
@@ -34,8 +54,31 @@ async function sendBoard(msg, game, { turnSide = null, lastAction = null, captio
   }
 }
 
+// Called once from index.js on bot startup — same pattern as
+// tictactoe.js's _initTTT/connect4.js's _initC4. Restores in-progress
+// battles from Mongo and re-claims each restored chat's activeGame.js
+// lock so a new game can't be started on top of it. Simpler than those
+// two: battle has no turn timer to re-arm and no lobby phase to exclude —
+// a battle starts immediately on .startbattle, so every persisted session
+// here is already a real in-progress battle.
+async function _initBattle() {
+  const sessions = await GameSession.find({ type: 'battle' }).catch(err => {
+    console.error('_initBattle: lookup failed:', err.message);
+    return [];
+  });
+
+  for (const session of sessions) {
+    battleGames.set(session.chatId, session.state);
+    claim(session.chatId, 'battle');
+  }
+  if (sessions.length) {
+    console.log(`🎮 Restored ${sessions.length} battle(s)`);
+  }
+}
+
 module.exports = {
   battleGames,
+  _initBattle,
 
   // .startbattle @user — fight another person
   // .startbattle [easy|medium|hard] — fight the bot (defaults to medium)
@@ -64,6 +107,7 @@ module.exports = {
 
       const game = { p1, p2, turn: p1.id, mode: 'pvp' };
       battleGames.set(chatId, game);
+      saveBattleSession(chatId, game);
       claim(chatId, 'battle');
 
       return sendBoard(msg, game, {
@@ -79,6 +123,7 @@ module.exports = {
 
     const game = { p1, p2, turn: p1.id, mode: 'bot', difficulty: difficultyLabel };
     battleGames.set(chatId, game);
+    saveBattleSession(chatId, game);
     claim(chatId, 'battle');
 
     return sendBoard(msg, game, {
@@ -118,6 +163,7 @@ module.exports = {
 
     if (target.hp <= 0) {
       battleGames.delete(chatId);
+      deleteBattleSession(chatId);
       release(chatId, 'battle');
       // attacker is always the human who just called .attack (in both PvP —
       // beating the other person — and bot mode — beating the bot itself),
@@ -144,6 +190,7 @@ module.exports = {
 
         if (game.p1.hp <= 0) {
           battleGames.delete(chatId);
+          deleteBattleSession(chatId);
           release(chatId, 'battle');
           return sendBoard(msg, game, {
             turnSide: null,
@@ -161,6 +208,7 @@ module.exports = {
 
       game.turn = game.p1.id; // back to the human
       battleGames.set(chatId, game);
+      saveBattleSession(chatId, game);
       return sendBoard(msg, game, {
         turnSide: 'p1',
         lastAction: botLastAction,
@@ -170,6 +218,7 @@ module.exports = {
 
     // ── vs person ─────────────────────────────────────────────────────────
     battleGames.set(chatId, game);
+    saveBattleSession(chatId, game);
     return sendBoard(msg, game, {
       turnSide: targetSide,
       lastAction: { side: targetSide, delta: -dmg },
@@ -216,6 +265,7 @@ module.exports = {
 
         if (game.p1.hp <= 0) {
           battleGames.delete(chatId);
+          deleteBattleSession(chatId);
           release(chatId, 'battle');
           return sendBoard(msg, game, {
             turnSide: null,
@@ -233,6 +283,7 @@ module.exports = {
 
       game.turn = game.p1.id; // back to the human
       battleGames.set(chatId, game);
+      saveBattleSession(chatId, game);
       return sendBoard(msg, game, {
         turnSide: 'p1',
         lastAction: botLastAction,
@@ -242,6 +293,7 @@ module.exports = {
 
     // ── vs person ─────────────────────────────────────────────────────────
     battleGames.set(chatId, game);
+    saveBattleSession(chatId, game);
     return sendBoard(msg, game, {
       turnSide: isP1 ? 'p2' : 'p1',
       lastAction: { side: defenderSide, delta: heal },
@@ -267,6 +319,7 @@ module.exports = {
     if (!fleeingPlayer) return msg.reply("❌ You're not part of this battle!");
 
     battleGames.delete(chatId);
+    deleteBattleSession(chatId);
     release(chatId, 'battle');
     return sendBoard(msg, game, {
       turnSide: null,
@@ -285,6 +338,7 @@ module.exports = {
     const quitter = game.p1.id === playerId ? game.p1 : game.p2;
     const winner = game.p1.id === playerId ? game.p2 : game.p1;
     battleGames.delete(chatId);
+    deleteBattleSession(chatId);
     release(chatId, 'battle');
     return { quitterName: quitter.name, winnerName: winner.name };
   },

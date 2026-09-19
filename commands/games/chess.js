@@ -7,6 +7,46 @@ const { BOT_NAME } = require('../../utils/config');
 const { isChatBusy, claim, release } = require('./activeGame');
 const Guild = require('../../models/Guild');
 const { _formatQuestCompletionNote } = require('../guilds');
+const GameSession = require('../../models/GameSession');
+
+// Persists this game's current state to Mongo — fire-and-forget, since the
+// in-memory chessGames Map (below) stays authoritative while the bot is
+// running; this is purely so _initChess can restore it after a restart.
+// `chess` is a chess.js class instance (methods + internal state), not
+// plain data, so it can't go into Mongo's Mixed field as-is — chess.fen()
+// (Forsyth-Edwards Notation) is saved instead, a compact standard string
+// that fully captures the current position, whose turn it is, castling
+// rights, and en passant target. `turnTimer` is a live setTimeout handle,
+// excluded for the same reason as tictactoe.js/connect4.js/battle.js's
+// equivalents.
+//
+// KNOWN LIMITATION, flagging rather than glossing over: FEN captures the
+// current position perfectly but not move history. chess.js normally uses
+// that history for isThreefoldRepetition() — so if the exact same
+// position occurred once before a restart and once after, that specific
+// draw condition won't be detected across the boundary (checkmate,
+// stalemate, insufficient material, and the 50-move rule are unaffected —
+// none of those need history, and the 50-move count is itself part of the
+// FEN). Chose FEN over chess.js's PGN export deliberately: this file's own
+// turn-skip timeout (scheduleTurnTimeout below) already calls chess.load()
+// to flip the side to move, which itself resets chess.js's own move
+// history — so PGN would silently lose history at every turn-skip anyway,
+// while FEN behaves identically (and correctly) whether or not a skip
+// happened. A real but narrow tradeoff, not something worth more
+// complexity to fully close.
+function saveChessSession(chatId, game) {
+  const { chess, turnTimer, ...rest } = game;
+  const state = { ...rest, fen: chess.fen() };
+  GameSession.findOneAndUpdate(
+    { chatId },
+    { chatId, type: 'chess', players: [game.white, game.black].filter(id => id !== 'BOT'), state },
+    { upsert: true }
+  ).catch(err => console.error('saveChessSession: persist failed:', err.message));
+}
+
+function deleteChessSession(chatId) {
+  GameSession.deleteOne({ chatId, type: 'chess' }).catch(err => console.error('deleteChessSession: delete failed:', err.message));
+}
 
 // ─── Active Game Sessions ─────────────────────────────────────────────────────
 // chatId -> { chess, mode: 'pvp' | 'bot', white, black, whiteName, blackName,
@@ -165,6 +205,7 @@ function scheduleTurnTimeout(chat, chatId, game) {
     fenParts[1] = fenParts[1] === 'w' ? 'b' : 'w'; // side to move
     fenParts[3] = '-'; // clear en passant target
     game.chess.load(fenParts.join(' '));
+    saveChessSession(chatId, game);
 
     const nextColor = game.chess.turn();
     const nextId = nextColor === 'w' ? game.white : game.black;
@@ -207,6 +248,7 @@ async function startChessGame(chat, chatId, players) {
     whiteName: white.name, blackName: black.name,
   };
   chessGames.set(chatId, game);
+  saveChessSession(chatId, game);
   // Lobby already held the activeGame.js claim from .chess start — the
   // game reuses it, no re-claim needed here.
 
@@ -222,9 +264,50 @@ async function startChessGame(chat, chatId, players) {
   scheduleTurnTimeout(chat, chatId, game);
 }
 
+// Called once from index.js on bot startup — same pattern as
+// tictactoe.js's _initTTT/connect4.js's _initC4. Restores in-progress
+// Chess games from Mongo (reconstructing a real chess.js instance from the
+// saved FEN — see saveChessSession's comment for why FEN and not the
+// chess.js object itself, and its known move-history limitation) and
+// re-claims each restored chat's activeGame.js lock so a new game can't be
+// started on top of it. Deliberately does NOT restore open lobbies — same
+// reasoning as _initTTT/_initC4. Each restored PvP game's turn timer
+// starts a fresh full 30s window rather than resuming a partial one.
+async function _initChess(client) {
+  const sessions = await GameSession.find({ type: 'chess' }).catch(err => {
+    console.error('_initChess: lookup failed:', err.message);
+    return [];
+  });
+
+  let restored = 0;
+  for (const session of sessions) {
+    const chatId = session.chatId;
+    const { fen, ...rest } = session.state;
+    const chess = new Chess(fen);
+    const game = { ...rest, chess };
+    chessGames.set(chatId, game);
+    claim(chatId, 'chess');
+
+    if (game.mode === 'pvp') {
+      try {
+        const chat = await client.getChatById(chatId);
+        scheduleTurnTimeout(chat, chatId, game);
+      } catch {
+        // Group no longer reachable — leave the restored game without a
+        // running timer rather than failing startup over it.
+      }
+    }
+    restored++;
+  }
+  if (restored) {
+    console.log(`🎮 Restored ${restored} Chess game(s)`);
+  }
+}
+
 module.exports = {
   chessGames,
   chessLobbies,
+  _initChess,
 
   // .chess start — opens a PvP lobby. Anyone (including whoever opened it)
   //   then uses .chess join to take a slot; the game starts automatically
@@ -285,7 +368,7 @@ module.exports = {
         : '';
 
       const chess = new Chess();
-      chessGames.set(chatId, {
+      const game = {
         chess,
         mode: 'bot',
         white: playerId,
@@ -293,7 +376,9 @@ module.exports = {
         whiteName: playerName,
         blackName: `🤖 ${BOT_NAME}`,
         search,
-      });
+      };
+      chessGames.set(chatId, game);
+      saveChessSession(chatId, game);
       claim(chatId, 'chess');
 
       return sendBoard(msg, chess, {
@@ -382,6 +467,7 @@ module.exports = {
     if (game.chess.isGameOver()) {
       if (game.turnTimer) clearTimeout(game.turnTimer);
       chessGames.delete(chatId);
+      deleteChessSession(chatId);
       release(chatId, 'chess');
       const gameOver = describeGameOver(game.chess, game.whiteName, game.blackName);
       // A player's own move can only end in their own win or a draw, never
@@ -405,6 +491,7 @@ module.exports = {
       if (!aiMove) {
         // Shouldn't happen — isGameOver() above already ruled out "no moves".
         chessGames.delete(chatId);
+        deleteChessSession(chatId);
         release(chatId, 'chess');
         return sendBoard(msg, game.chess, {
           lastMove: { from: humanResult.from, to: humanResult.to },
@@ -416,6 +503,7 @@ module.exports = {
 
       if (game.chess.isGameOver()) {
         chessGames.delete(chatId);
+        deleteChessSession(chatId);
         release(chatId, 'chess');
         const gameOver = describeGameOver(game.chess, game.whiteName, game.blackName);
         // Unlike the human-move branch above, this one genuinely can
@@ -431,6 +519,7 @@ module.exports = {
         });
       }
 
+      saveChessSession(chatId, game);
       return sendBoard(msg, game.chess, {
         lastMove: aiLastMove,
         caption: `${moverName} played *${humanResult.san}*\n🤖 ${BOT_NAME} played *${aiMove.san}*\n\n${game.chess.isCheck() ? '⚠️ Check!\n' : ''}Your turn, ${game.whiteName}! Use *.move [e2e4]*.`,
@@ -438,6 +527,7 @@ module.exports = {
     }
 
     // ── vs person ───────────────────────────────────────────────────────
+    saveChessSession(chatId, game);
     const nextId = game.chess.turn() === 'w' ? game.white : game.black;
     const nextSymbol = game.chess.turn() === 'w' ? '♔' : '♚';
     await sendBoard(msg, game.chess, {
@@ -463,6 +553,7 @@ module.exports = {
     const quitterName = game.white === playerId ? game.whiteName : game.blackName;
     const winnerName = game.white === playerId ? game.blackName : game.whiteName;
     chessGames.delete(chatId);
+    deleteChessSession(chatId);
     release(chatId, 'chess');
     return { quitterName, winnerName };
   },

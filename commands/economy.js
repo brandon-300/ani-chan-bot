@@ -59,6 +59,24 @@ async function getTargetMessage(msg) {
   }
 }
 
+// downloadMedia() can transiently fail when called on a message that just
+// arrived this same instant — e.g. .setpic sent as a photo's own caption —
+// because the underlying WhatsApp Web media hasn't finished loading
+// client-side yet. A reply to an older message doesn't hit this, since that
+// media already had time to load before the reply was even typed, which is
+// why .sticker and the other reply-only converter.js commands don't show
+// this symptom. Retries with a short backoff before giving up; a reply to
+// already-loaded media still succeeds on the very first attempt, so this
+// adds no delay for the common case.
+async function downloadMediaWithRetry(targetMsg, attempts = 3, delayMs = 1000) {
+  for (let i = 0; i < attempts; i++) {
+    const media = await targetMsg.downloadMedia().catch(() => null);
+    if (media) return media;
+    if (i < attempts - 1) await new Promise((resolve) => setTimeout(resolve, delayMs));
+  }
+  return null;
+}
+
 function mimeToExt(mime = '') {
   const m = mime.split(';')[0].toLowerCase();
   const map = {
@@ -471,8 +489,7 @@ async lottery(client, msg, args) {
     if (user.profile.picUrl) {
       try {
         const media = await MessageMedia.fromUrl(user.profile.picUrl, { unsafeMime: true });
-        const chat = await safeGetChat(msg);
-        return await chat.sendMessage(media, { caption: card });
+        return await msg.reply(media, undefined, { caption: card });
       } catch (err) {
         console.error('profile pic send failed, falling back to text:', err.message);
       }
@@ -1062,7 +1079,7 @@ async lottery(client, msg, args) {
       return msg.reply('❌ Reply to a photo with .setpic (or send a photo with .setpic as the caption).');
     }
 
-    const media = await targetMsg.downloadMedia().catch(() => null);
+    const media = await downloadMediaWithRetry(targetMsg);
     if (!media) return msg.reply('❌ Failed to download that image — try again.');
     if (!media.mimetype.startsWith('image/')) {
       return msg.reply('❌ That\'s not an image — .setpic only works on photos.');

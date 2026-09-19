@@ -3,6 +3,7 @@ const User = require('../models/User');
 const { OwnedCard } = require('../models/Card');
 const BotState = require('../models/BotState');
 const { isAdmin, botIsAdmin, mentionName, mentionTag, isOwner, safeGetChat, safeGetQuotedMessage, resolveNameById, withRetry, decodeIdKey, formatNum } = require('../utils/helpers');
+const scheduler = require('../utils/scheduler');
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 async function requireAdmin(msg) {
@@ -44,6 +45,92 @@ async function getOrCreateGroup(chatId) {
 // was checked against, but flagging it since it's WhatsApp Web's internal
 // timing, not something this library or this code controls.
 const lastParticipants = new Map(); // chatId -> Set<participantId>
+
+// Parses a duration like "30s", "5m", "2h" into milliseconds. Returns null
+// for anything that doesn't match — a bare .mute, a typo, or an unsupported
+// unit — so the caller falls back to an indefinite mute in that case.
+function parseMuteDuration(raw) {
+  const match = raw.trim().match(/^(\d+)\s*(s|m|h)$/i);
+  if (!match) return null;
+  const amount = parseInt(match[1], 10);
+  if (amount <= 0) return null;
+  const unit = match[2].toLowerCase();
+  const multiplier = unit === 's' ? 1000 : unit === 'm' ? 60 * 1000 : 60 * 60 * 1000;
+  return amount * multiplier;
+}
+
+// Shared by both the group_unmute scheduler handler and the boot-time
+// backfill below, so a timed mute unmutes exactly the same way whether it
+// fires on schedule or turns out to be overdue after a restart. No
+// triggering command message exists by the time this runs either way, so
+// chat.sendMessage() (not msg.reply()) is correct here — same reasoning as
+// dropCard()/lendcard's auto-return.
+async function performAutoUnmute(chat, chatId, label, { wasOverdue = false } = {}) {
+  try {
+    await chat.setMessagesAdminsOnly(false);
+    const group = await getOrCreateGroup(chatId);
+    group.isMuted = false;
+    group.muteUntil = null;
+    group.muteDurationLabel = null;
+    await group.save();
+    const notice = wasOverdue
+      ? `🔊 Group automatically unmuted — the *${label}* timer had already run out while the bot was offline.`
+      : `🔊 Group automatically unmuted after ${label}.`;
+    await chat.sendMessage(notice);
+  } catch (err) {
+    console.error('Auto-unmute failed:', err.message);
+  }
+}
+
+// ─── Timed mute, via the central persistent scheduler ──────────────────────
+// Replaces the old per-group setTimeout (muteTimers Map, removed above):
+// the timer itself now lives in Mongo (utils/scheduler.js), so a restart
+// mid-mute no longer needs its own separate "resume" codepath — it's the
+// same one Mongo-backed timer either way. expiresAt (ms) travels in the
+// payload alongside chatId/label so this handler can tell, on its own,
+// whether it's firing on schedule or very late because the bot was offline
+// — rather than that overdue-detection living only in a separate resume
+// function like it did before.
+scheduler.registerHandler('group_unmute', async (payload, client) => {
+  const { chatId, label, expiresAt } = payload;
+  let chat;
+  try {
+    chat = await client.getChatById(chatId);
+  } catch {
+    // Group no longer reachable (bot removed, etc.) — nothing to unmute.
+    return;
+  }
+  // A few seconds of scheduling jitter is normal and not "the bot was
+  // offline"; anything beyond that means this mute sat un-run through a
+  // restart, which is worth telling the group about explicitly.
+  const wasOverdue = Date.now() - expiresAt > 5000;
+  await performAutoUnmute(chat, chatId, label, { wasOverdue });
+});
+
+// Called once from index.js on bot startup — same pattern as
+// _initCardLending in commands/cards.js. Backfills a scheduled task for
+// any group that was ALREADY mid-timed-mute before this scheduler existed
+// (isMuted + muteUntil set, but no matching task yet). Safe to run on
+// every boot: scheduleTask upserts by key using the group's own
+// already-stored muteUntil, so re-running this never resets or extends
+// anyone's mute. A mute whose muteUntil has already passed schedules a
+// task that's immediately due — the scheduler fires it right away, and the
+// handler above correctly reports it as overdue.
+async function _resumePendingMutes() {
+  const pending = await Group.find({ isMuted: true, muteUntil: { $ne: null } });
+  for (const group of pending) {
+    const label = group.muteDurationLabel || 'the scheduled time';
+    await scheduler.scheduleTask({
+      type: 'group_unmute',
+      key: `mute:${group.id}`,
+      runAt: group.muteUntil,
+      payload: { chatId: group.id, label, expiresAt: group.muteUntil.getTime() },
+    }).catch(err => console.error('_resumePendingMutes: schedule failed for', group.id, err.message));
+  }
+  if (pending.length) {
+    console.log(`🔇 Backfilled ${pending.length} pending mute(s) into the scheduler`);
+  }
+}
 
 // Seeds the snapshot for every group the bot is currently in. Called once
 // from index.js's 'ready' handler (same pattern as _initCardDrops in
@@ -221,6 +308,7 @@ async function _sweepInactiveUsers(client) {
 module.exports = {
   commands: { onJoin, onLeave },
   _seedParticipants,
+  _resumePendingMutes,
   _sweepInactiveUsers,
 
   // .kick @user
@@ -419,14 +507,15 @@ module.exports = {
 
     const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
     if (!chat) return;
-    chat.sendMessage(
+    msg.reply(
        `⚠️ *Warning* for @${mentionTag(target)}\n\nReason: ${reason}\nTotal warns: ${user.warns}/3\n${user.warns >= 3 ? '🔴 Auto-kick threshold reached!' : ''}`,
+      undefined,
       { mentions: [target.id._serialized] }
     );
 
     if (user.warns >= 3 && await botIsAdmin(msg)) {
       await chat.removeParticipants([target.id._serialized]);
-      chat.sendMessage(`👢 @${mentionTag(target)} was auto-kicked after 3 warnings.`, { mentions: [target.id._serialized] });
+      msg.reply(`👢 @${mentionTag(target)} was auto-kicked after 3 warnings.`, undefined, { mentions: [target.id._serialized] });
     }
   },
 
@@ -585,18 +674,54 @@ module.exports = {
     }
   },
 
-  // .mute
+  // .mute [time] — e.g. .mute, .mute 30s, .mute 5m, .mute 2h. With a
+  // duration, the group auto-unmutes once it elapses; without one, it stays
+  // muted until a manual .unmute (unchanged from before).
   async mute(client, msg, args) {
     if (!await requireAdmin(msg)) return;
     if (!await requireBotAdmin(msg)) return;
 
+    const raw = args[0];
+    const durationMs = raw ? parseMuteDuration(raw) : null;
+    if (raw && !durationMs) {
+      return msg.reply('❌ Usage: .mute [time]\nExamples: .mute, .mute 30s, .mute 5m, .mute 2h');
+    }
+
     const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
     if (!chat) return;
+
+    // Computed once and reused below for both the Group record and the
+    // scheduled task, so they can't drift apart by the few ms between two
+    // separate Date.now() calls.
+    const expiresAt = durationMs ? Date.now() + durationMs : null;
+
     await chat.setMessagesAdminsOnly(true);
     const group = await getOrCreateGroup(chat.id._serialized);
     group.isMuted = true;
+    group.muteUntil = expiresAt ? new Date(expiresAt) : null;
+    group.muteDurationLabel = durationMs ? raw : null;
     await group.save();
-    msg.reply('🔇 Group muted. Only admins can send messages.');
+
+    const chatId = chat.id._serialized;
+
+    if (durationMs) {
+      // Upserts by key, so this naturally replaces any earlier still-pending
+      // auto-unmute for this group rather than letting two timers both
+      // eventually fire.
+      await scheduler.scheduleTask({
+        type: 'group_unmute',
+        key: `mute:${chatId}`,
+        runAt: new Date(expiresAt),
+        payload: { chatId, label: raw, expiresAt },
+      }).catch(err => console.error('mute: scheduling auto-unmute failed:', err.message));
+      msg.reply(`🔇 Group muted for *${raw}* — only admins can send messages until then.`);
+    } else {
+      // An indefinite mute cancels any earlier timed one — otherwise that
+      // still-pending auto-unmute would fire later and re-open the group
+      // even though this mute was meant to be indefinite.
+      await scheduler.cancelTask(`mute:${chatId}`);
+      msg.reply('🔇 Group muted. Only admins can send messages.');
+    }
   },
 
   // .unmute
@@ -606,9 +731,16 @@ module.exports = {
 
     const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
     if (!chat) return;
+
+    // Cancel any pending auto-unmute from a timed .mute so it doesn't fire
+    // (and re-notify) after this manual unmute has already taken effect.
+    await scheduler.cancelTask(`mute:${chat.id._serialized}`);
+
     await chat.setMessagesAdminsOnly(false);
     const group = await getOrCreateGroup(chat.id._serialized);
     group.isMuted = false;
+    group.muteUntil = null;
+    group.muteDurationLabel = null;
     await group.save();
     msg.reply('🔊 Group unmuted. Everyone can send messages.');
   },
@@ -622,7 +754,7 @@ module.exports = {
     const botId = client.info.wid._serialized;
     const mentions = chat.participants.map(p => p.id._serialized).filter(id => id !== botId);
     const hiddenMentions = mentions.map(() => '‎').join('');
-    await chat.sendMessage(text + hiddenMentions, { mentions });
+    await msg.reply(text + hiddenMentions, undefined, { mentions });
   },
 
   // .tagall [message]
@@ -641,7 +773,7 @@ async tagall(client, msg, args) {
       mentions.push(p.id._serialized);
     }
 
-    await chat.sendMessage(tagText, { mentions });
+    await msg.reply(tagText, undefined, { mentions });
   },
 
   // .activity — show member activity

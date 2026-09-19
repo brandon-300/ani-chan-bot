@@ -6,6 +6,26 @@ const { BOT_NAME } = require('../../utils/config');
 const { isChatBusy, claim, release } = require('./activeGame');
 const Guild = require('../../models/Guild');
 const { _formatQuestCompletionNote } = require('../guilds');
+const GameSession = require('../../models/GameSession');
+
+// Persists this game's current state to Mongo — fire-and-forget, since the
+// in-memory tttGames Map (below) stays authoritative while the bot is
+// running; this is purely so _initTTT can restore it after a restart.
+// turnTimer is a live setTimeout handle, not data, so it's deliberately
+// excluded — a restored game always gets a freshly-armed timer instead of
+// trying to resurrect the old handle (see _initTTT).
+function saveTTTSession(chatId, game) {
+  const { turnTimer, ...state } = game;
+  GameSession.findOneAndUpdate(
+    { chatId },
+    { chatId, type: 'ttt', players: game.players.filter(id => id !== 'BOT'), state },
+    { upsert: true }
+  ).catch(err => console.error('saveTTTSession: persist failed:', err.message));
+}
+
+function deleteTTTSession(chatId) {
+  GameSession.deleteOne({ chatId, type: 'ttt' }).catch(err => console.error('deleteTTTSession: delete failed:', err.message));
+}
 
 // ─── Active Game Sessions ─────────────────────────────────────────────────────
 // chatId -> { board, mode: 'pvp' | 'bot', turn, players, names, symbols,
@@ -185,6 +205,7 @@ async function startTTTGame(chat, chatId, players) {
     lastMove: null,
   };
   tttGames.set(chatId, game);
+  saveTTTSession(chatId, game);
   // Lobby already held the activeGame.js claim from .ttt start — the game
   // reuses it, no re-claim needed here.
 
@@ -198,9 +219,50 @@ async function startTTTGame(chat, chatId, players) {
   scheduleTurnTimeout(chat, chatId, game);
 }
 
+// Called once from index.js on bot startup — same pattern as
+// _initCardDrops/_initAfk. Restores in-progress Tic Tac Toe games from
+// Mongo and re-claims each restored chat's activeGame.js lock so a new
+// game can't be started on top of it. Deliberately does NOT restore open
+// lobbies (.ttt start with nobody having joined yet) — those aren't
+// persisted at all (see saveTTTSession's comment); losing one just means
+// opening a new one, a minor inconvenience next to losing an actual game
+// partway through. Each restored PvP game's turn timer starts a fresh
+// full 30s window rather than resuming a partial one — the original
+// elapsed time isn't tracked anywhere, and a slightly more generous
+// window right after a restart is a harmless tradeoff.
+async function _initTTT(client) {
+  const sessions = await GameSession.find({ type: 'ttt' }).catch(err => {
+    console.error('_initTTT: lookup failed:', err.message);
+    return [];
+  });
+
+  let restored = 0;
+  for (const session of sessions) {
+    const chatId = session.chatId;
+    const game = session.state;
+    tttGames.set(chatId, game);
+    claim(chatId, 'ttt');
+
+    if (game.mode === 'pvp') {
+      try {
+        const chat = await client.getChatById(chatId);
+        scheduleTurnTimeout(chat, chatId, game);
+      } catch {
+        // Group no longer reachable — leave the restored game without a
+        // running timer rather than failing startup over it.
+      }
+    }
+    restored++;
+  }
+  if (restored) {
+    console.log(`🎮 Restored ${restored} Tic Tac Toe game(s)`);
+  }
+}
+
 module.exports = {
   tttGames,
   tttLobbies,
+  _initTTT,
 
   // .ttt start — opens a PvP lobby. Anyone (including whoever opened it)
   //   then uses .ttt join to take a slot; the game starts automatically the
@@ -254,6 +316,7 @@ module.exports = {
       if (result) {
         if (game.turnTimer) clearTimeout(game.turnTimer);
         tttGames.delete(chatId);
+        deleteTTTSession(chatId);
         release(chatId, 'ttt');
         const outcome = result === 'draw' ? "🤝 *It's a draw!*" : `🏆 *${moverName} wins!*`;
         // game.players[game.turn] is whoever just moved (the turn index isn't
@@ -277,6 +340,7 @@ module.exports = {
         if (botIndex === null) {
           // Shouldn't happen — checkTTTWin() above already ruled out "board full".
           tttGames.delete(chatId);
+          deleteTTTSession(chatId);
           release(chatId, 'ttt');
           return sendBoard(msg, game, `❌ ${BOT_NAME} couldn't find a move — ending the game.`);
         }
@@ -289,6 +353,7 @@ module.exports = {
         result = checkTTTWin(game.board);
         if (result) {
           tttGames.delete(chatId);
+          deleteTTTSession(chatId);
           release(chatId, 'ttt');
           const outcome = result === 'draw' ? "🤝 *It's a draw!*" : `🏆 *${game.names[1]} wins!*`;
           return sendBoard(
@@ -298,6 +363,7 @@ module.exports = {
         }
 
         tttGames.set(chatId, game); // game.turn stays 0 — it's the human's turn again
+        saveTTTSession(chatId, game);
         return sendBoard(
           msg, game,
           `${moverName} played position ${movePos}\n🤖 ${BOT_NAME} played position ${botIndex + 1}\n\nYour turn! Type *.ttt [1-9]* to play.`
@@ -307,6 +373,7 @@ module.exports = {
       // ── vs person ─────────────────────────────────────────────────────────
       game.turn = game.turn === 0 ? 1 : 0;
       tttGames.set(chatId, game);
+      saveTTTSession(chatId, game);
       const nextId = game.players[game.turn];
       await sendBoard(msg, game, turnPrompt(game.symbols[game.turn], nextId), [nextId]);
       scheduleTurnTimeout(chat, chatId, game);
@@ -360,6 +427,7 @@ module.exports = {
         lastMove: null,
       };
       tttGames.set(chatId, newGame);
+      saveTTTSession(chatId, newGame);
       claim(chatId, 'ttt');
 
       return sendBoard(
@@ -416,6 +484,7 @@ module.exports = {
     const idx = game.players.indexOf(playerId);
     const winnerIdx = idx === 0 ? 1 : 0;
     tttGames.delete(chatId);
+    deleteTTTSession(chatId);
     release(chatId, 'ttt');
     return { quitterName: game.names[idx], winnerName: game.names[winnerIdx] };
   },

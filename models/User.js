@@ -120,6 +120,19 @@ const UserSchema = new mongoose.Schema({
   // note in findOrCreate below for why this doesn't update on literally
   // every single call.
   lastActiveAt: { type: Number, default: null },
+  // Explicit AFK status (.afk [reason], commands/afk.js) — persisted so it
+  // survives a PM2 restart. This is only ever written on the low-frequency
+  // .afk/welcome-back events and read once at boot to rehydrate the
+  // in-memory afkUsers Map there — the actual per-message AFK checks
+  // (_checkAfkReturn/_checkAfkMentions, which run on EVERY incoming
+  // message across every group) keep reading that Map directly rather
+  // than querying Mongo on every message. Automatic (non-explicit) AFK
+  // detection has no persisted state at all — see afk.js's lastActive Map.
+  afk: {
+    active: { type: Boolean, default: false },
+    reason: { type: String, default: null },
+    since: { type: Date, default: null },
+  },
 });
 
 // ─── Daily Bank Interest ────────────────────────────────────────────────────

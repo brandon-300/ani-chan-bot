@@ -304,7 +304,7 @@ module.exports = {
     try {
       const ownerContact = await client.getContactById(ownerId);
       await msg.reply(`👑 *${BOT_NAME}'s* owner:`);
-      await chat.sendMessage(ownerContact);
+      await msg.reply(ownerContact);
     } catch (err) {
       console.error('owner command failed:', err.message);
       msg.reply(`❌ Couldn't fetch the owner's contact card right now.`);

@@ -218,7 +218,7 @@ const COMMAND_REFERENCE = [
     items: [
       { cmd: '.ig [url]', desc: 'Download an Instagram post/reel — shows a thumbnail preview first for video posts' },
       { cmd: '.ttk [url]', desc: 'Download a TikTok video (no watermark) — shows a thumbnail preview first' },
-      { cmd: '.yt [url or search]', desc: 'Download YouTube audio — shows a thumbnail preview while it converts' },
+      { cmd: '.yt [url or search]', desc: 'Download a YouTube video or Short (shows a thumbnail preview first) — music.youtube.com links convert to mp3 audio instead' },
       { cmd: '.x [url]', desc: 'Download a Twitter/X video — shows a thumbnail preview first for videos' },
       { cmd: '.fb [url]', desc: 'Download a Facebook video — shows a thumbnail preview first for videos' },
       { cmd: '.play [song name]', desc: 'Search YouTube and send back the audio — shows a thumbnail preview while it processes' },
@@ -306,7 +306,7 @@ const COMMAND_REFERENCE = [
       { cmd: '.blacklist add/remove/list', desc: 'Manage blacklisted words' },
       { cmd: '.promote @user', desc: 'Promote a user to group admin' },
       { cmd: '.demote @user', desc: 'Demote a group admin' },
-      { cmd: '.mute / .unmute', desc: 'Lock/unlock the group to admins-only messaging' },
+      { cmd: '.mute [time] / .unmute', desc: 'Lock the group to admins-only messaging — optionally for a set time (e.g. .mute 30s, .mute 5m, .mute 2h), after which it auto-unmutes; .unmute unlocks it early at any point' },
       { cmd: '.hidetag [message]', desc: 'Mention everyone silently (no notification)' },
       { cmd: '.tagall [message]', desc: 'Mention everyone with a visible notification' },
       { cmd: '.activity', desc: 'Show member activity stats' },

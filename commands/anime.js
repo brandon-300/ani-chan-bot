@@ -32,10 +32,7 @@ async function sendAnimeImg(msg, url, caption, nsfw = false) {
     }
 
     const media = await MessageMedia.fromUrl(url, { unsafeMime: true });
-    const chat = await safeGetChat(msg);
-    if (!chat) return;
-    if (!chat) return;
-    await chat.sendMessage(media, { caption });
+    await msg.reply(media, undefined, { caption });
   } catch (err) {
     msg.reply(`❌ Failed to fetch image. API may be down.\n${caption}`);
   }

@@ -106,8 +106,8 @@ function buildGenerationConfig(maxOutputTokens) {
 
 // ─── Text generation (single-turn or with history) ─────────────────────────
 // history: array of { role: 'user' | 'assistant', content: string } — the
-// same shape ai.js already keeps in its chatHistory Map. Gemini calls the
-// assistant role "model", so it gets remapped here.
+// same shape ai.js keeps per chat in Mongo (models/AiConversation.js).
+// Gemini calls the assistant role "model", so it gets remapped here.
 //
 // maxOutputTokens default raised from the original 800 to 2048 — 800 was
 // tight enough that even minimal thinking + a genuinely detailed answer

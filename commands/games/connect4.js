@@ -4,6 +4,27 @@ const { BOT_NAME } = require('../../utils/config');
 const { isChatBusy, claim, release } = require('./activeGame');
 const Guild = require('../../models/Guild');
 const { _formatQuestCompletionNote } = require('../guilds');
+const GameSession = require('../../models/GameSession');
+
+// Persists this game's current state to Mongo — fire-and-forget, since the
+// in-memory c4Games Map (below) stays authoritative while the bot is
+// running; this is purely so _initC4 can restore it after a restart.
+// turnTimer is a live setTimeout handle, not data, so it's deliberately
+// excluded — a restored game always gets a freshly-armed timer instead of
+// trying to resurrect the old handle (see _initC4). Same pattern as
+// tictactoe.js's saveTTTSession/deleteTTTSession.
+function saveC4Session(chatId, game) {
+  const { turnTimer, ...state } = game;
+  GameSession.findOneAndUpdate(
+    { chatId },
+    { chatId, type: 'c4', players: game.players.map(p => p.id).filter(id => id !== 'BOT'), state },
+    { upsert: true }
+  ).catch(err => console.error('saveC4Session: persist failed:', err.message));
+}
+
+function deleteC4Session(chatId) {
+  GameSession.deleteOne({ chatId, type: 'c4' }).catch(err => console.error('deleteC4Session: delete failed:', err.message));
+}
 
 // ─── Active Game Sessions ─────────────────────────────────────────────────────
 // chatId -> { board, mode: 'pvp' | 'bot', turn, players, difficulty,
@@ -185,6 +206,7 @@ async function startC4Game(chat, chatId, players) {
   const turn = Math.random() < 0.5 ? 0 : 1;
   const game = { board, turn, mode: 'pvp', players, lastMove: null };
   c4Games.set(chatId, game);
+  saveC4Session(chatId, game);
   // Lobby already held the activeGame.js claim from .c4 start — the game
   // reuses it, no re-claim needed here.
 
@@ -198,9 +220,50 @@ async function startC4Game(chat, chatId, players) {
   scheduleTurnTimeout(chat, chatId, game);
 }
 
+// Called once from index.js on bot startup — same pattern as
+// tictactoe.js's _initTTT. Restores in-progress Connect 4 games from Mongo
+// and re-claims each restored chat's activeGame.js lock so a new game
+// can't be started on top of it. Deliberately does NOT restore open
+// lobbies (.c4 start with nobody having joined yet) — those aren't
+// persisted at all (see saveC4Session's comment); losing one just means
+// opening a new one, a minor inconvenience next to losing an actual game
+// partway through. Each restored PvP game's turn timer starts a fresh
+// full 30s window rather than resuming a partial one — the original
+// elapsed time isn't tracked anywhere, and a slightly more generous window
+// right after a restart is a harmless tradeoff.
+async function _initC4(client) {
+  const sessions = await GameSession.find({ type: 'c4' }).catch(err => {
+    console.error('_initC4: lookup failed:', err.message);
+    return [];
+  });
+
+  let restored = 0;
+  for (const session of sessions) {
+    const chatId = session.chatId;
+    const game = session.state;
+    c4Games.set(chatId, game);
+    claim(chatId, 'c4');
+
+    if (game.mode === 'pvp') {
+      try {
+        const chat = await client.getChatById(chatId);
+        scheduleTurnTimeout(chat, chatId, game);
+      } catch {
+        // Group no longer reachable — leave the restored game without a
+        // running timer rather than failing startup over it.
+      }
+    }
+    restored++;
+  }
+  if (restored) {
+    console.log(`🎮 Restored ${restored} Connect 4 game(s)`);
+  }
+}
+
 module.exports = {
   c4Games,
   c4Lobbies,
+  _initC4,
 
   // .c4 start — opens a PvP lobby. Anyone (including whoever opened it)
   //   then uses .c4 join to take a slot; the game starts automatically the
@@ -262,6 +325,7 @@ module.exports = {
 
       const game = { board, turn: 0, mode: 'bot', difficulty: difficultyLabel, players, lastMove: null };
       c4Games.set(chatId, game);
+      saveC4Session(chatId, game);
       claim(chatId, 'c4');
 
       return sendBoard(
@@ -337,6 +401,7 @@ module.exports = {
     if (checkC4Win(game.board, current.piece)) {
       if (game.turnTimer) clearTimeout(game.turnTimer);
       c4Games.delete(chatId);
+      deleteC4Session(chatId);
       release(chatId, 'c4');
       // current.id is always a real WhatsApp id here — never the literal
       // 'BOT' string — since this check only ever fires right after a
@@ -349,6 +414,7 @@ module.exports = {
     if (isBoardFull(game.board)) {
       if (game.turnTimer) clearTimeout(game.turnTimer);
       c4Games.delete(chatId);
+      deleteC4Session(chatId);
       release(chatId, 'c4');
       return sendBoard(msg, game, "🤝 *It's a draw!*");
     }
@@ -363,6 +429,7 @@ module.exports = {
       if (botCol === null) {
         // Shouldn't happen — isBoardFull() above already ruled out "board full".
         c4Games.delete(chatId);
+        deleteC4Session(chatId);
         release(chatId, 'c4');
         return sendBoard(msg, game, `❌ ${BOT_NAME} couldn't find a move — ending the game.`);
       }
@@ -372,23 +439,27 @@ module.exports = {
 
       if (checkC4Win(game.board, botPlayer.piece)) {
         c4Games.delete(chatId);
+        deleteC4Session(chatId);
         release(chatId, 'c4');
         return sendBoard(msg, game, `🤖 ${BOT_NAME} played column ${botCol + 1}\n\n🏆 *${botPlayer.name} wins Connect 4!*`);
       }
 
       if (isBoardFull(game.board)) {
         c4Games.delete(chatId);
+        deleteC4Session(chatId);
         release(chatId, 'c4');
         return sendBoard(msg, game, `🤖 ${BOT_NAME} played column ${botCol + 1}\n\n🤝 *It's a draw!*`);
       }
 
       game.turn = 0; // back to the human
       c4Games.set(chatId, game);
+      saveC4Session(chatId, game);
       return sendBoard(msg, game, `🤖 ${BOT_NAME} played column ${botCol + 1}\n\nYour turn! Type *.drop [1-7]* to play.`);
     }
 
     // ── vs person ─────────────────────────────────────────────────────────
     c4Games.set(chatId, game);
+    saveC4Session(chatId, game);
     const next = game.players[game.turn];
     await sendBoard(msg, game, turnPrompt(next), [next.id]);
     scheduleTurnTimeout(chat, chatId, game);
@@ -410,6 +481,7 @@ module.exports = {
     const quitter = game.players.find(p => p.id === playerId);
     const winner = game.players.find(p => p.id !== playerId);
     c4Games.delete(chatId);
+    deleteC4Session(chatId);
     release(chatId, 'c4');
     return { quitterName: quitter.name, winnerName: winner.name };
   },

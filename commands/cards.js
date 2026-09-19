@@ -8,6 +8,7 @@ const Group = require('../models/Group');
 const Guild = require('../models/Guild');
 const { _formatQuestCompletionNote } = require('./guilds');
 const { tierEmoji, rollTier, formatNum, pick, mentionName, mentionTag, generateUniqueCode, safeGetChat, cardValue, tierAbove, TIER_DROP_RATES, addXP, XP_REWARDS, parseAmount, boldSans, doubleStruck, cleanDescription } = require('../utils/helpers');
+const scheduler = require('../utils/scheduler');
 const crypto = require('crypto');
 
 // ─── Shared card media resolution — custom render, then raw image, then none ──
@@ -348,42 +349,133 @@ Type *.claim ${claimCode}* to claim it!`;
   return card;
 }
 
-// ─── Track active drop intervals so toggling never leaks or duplicates them ──
-const cardIntervals = new Map(); // chatId -> intervalId
+// ─── Card drops, via the central persistent scheduler ─────────────────────
+// Replaces the old per-group setInterval (one JS timer per enabled group,
+// lost and rebuilt from scratch on every PM2 restart). Each enabled group
+// now has exactly ONE ScheduledTask row (key: `card_drop:<groupId>`); the
+// handler drops a card, then reschedules its own next occurrence — that
+// self-rescheduling is what makes it recurring under a scheduler that only
+// ever tracks one-off tasks.
+const CARD_DROP_INTERVAL_MS = 5 * 60 * 1000;
 
-function startDropInterval(chat, client) {
-  const chatId = chat.id._serialized;
-  if (cardIntervals.has(chatId)) clearInterval(cardIntervals.get(chatId));
-  const intervalId = setInterval(() => dropCard(chat, client), 5 * 60 * 1000);
-  cardIntervals.set(chatId, intervalId);
-}
+scheduler.registerHandler('card_drop', async (payload, client) => {
+  const { chatId } = payload;
 
-function stopDropInterval(chatId) {
-  if (cardIntervals.has(chatId)) {
-    clearInterval(cardIntervals.get(chatId));
-    cardIntervals.delete(chatId);
+  // Re-check the group is still enabled right before dropping — it may
+  // have been turned off (or the row deleted) since this was scheduled.
+  // Returning without rescheduling here is what actually stops the cycle;
+  // .cards off's cancelTask is the fast path, this is the safety net.
+  const group = await Group.findOne({ id: chatId }).catch(() => null);
+  if (!group || !group.cardsEnabled) return;
+
+  let chat;
+  try {
+    chat = await client.getChatById(chatId);
+  } catch {
+    // Group no longer reachable (bot removed, chat deleted, etc.) — stop
+    // rescheduling rather than looping on a chat that will never resolve.
+    return;
   }
-}
 
-// Called once from index.js on bot startup to resume drops after any restart
+  await dropCard(chat, client).catch(err => console.error('card_drop: dropCard failed:', err.message));
+
+  await scheduler.scheduleTask({
+    type: 'card_drop',
+    key: `card_drop:${chatId}`,
+    runAt: new Date(Date.now() + CARD_DROP_INTERVAL_MS),
+    payload: { chatId },
+  }).catch(err => console.error('card_drop: reschedule failed:', err.message));
+});
+
+// Called once from index.js on bot startup. Uses scheduleIfMissing rather
+// than scheduleTask deliberately: a group that already has a pending
+// card_drop task (the normal case — it survived the restart in Mongo) must
+// keep its existing runAt untouched, or every restart would reset every
+// group's countdown back to a full 5 minutes. Only a group with no task
+// yet (freshly enabled, or upgrading from the old setInterval system for
+// the first time) gets a fresh one.
 async function _initCardDrops(client) {
   const enabledGroups = await Group.find({ cardsEnabled: true });
   for (const group of enabledGroups) {
-    try {
-      const chat = await client.getChatById(group.id);
-      startDropInterval(chat, client);
-    } catch (e) {
-      // Group may no longer exist / bot may have been removed — skip it
-    }
+    await scheduler.scheduleIfMissing({
+      type: 'card_drop',
+      key: `card_drop:${group.id}`,
+      runAt: new Date(Date.now() + CARD_DROP_INTERVAL_MS),
+      payload: { chatId: group.id },
+    }).catch(err => console.error('_initCardDrops: schedule failed for', group.id, err.message));
   }
   if (enabledGroups.length) {
-    console.log(`🎴 Resumed card drops in ${enabledGroups.length} group(s)`);
+    console.log(`🎴 Card drops active in ${enabledGroups.length} group(s)`);
+  }
+}
+
+// ─── Card-lend auto-return, via the central persistent scheduler ──────────────
+// Replaces the old per-card setTimeout: the actual timer now lives in
+// Mongo (utils/scheduler.js), so it survives PM2 restarts on its own
+// instead of relying only on the lazy expired-lend cleanup at the top of
+// .lendcard below. Registered once here, at module load — well before
+// index.js's client.on('ready') calls scheduler.init().
+scheduler.registerHandler('card_lend_return', async (payload, client) => {
+  // updateOne against the DB rather than trusting an old in-memory `card`
+  // doc — a plain .save() could silently clobber any other field changed
+  // on the card in the meantime (e.g. isForSale toggled via .sellc). The
+  // `isLent: true` filter also makes this a no-op (no false "returned"
+  // message) if .unlendcard already returned it early and cancelled this
+  // task — kept as a second safety net in case cancellation itself ever
+  // fails.
+  const result = await OwnedCard.findOneAndUpdate(
+    { _id: payload.cardId, isLent: true },
+    { $set: { isLent: false, lentTo: null, lendExpiresAt: null } }
+  ).catch(err => { console.error('lendcard: auto-return failed:', err.message); return null; });
+
+  if (result && payload.lentToChatId) {
+    try {
+      const lentChat = await client.getChatById(payload.lentToChatId);
+      const who = payload.pushname || 'The owner';
+      if (lentChat) await lentChat.sendMessage(`⏰ ${who}'s *${result.name}* has been returned.`);
+    } catch {
+      // Group may no longer exist / bot may have been removed — not fatal.
+    }
+  }
+});
+
+// Called once from index.js on bot startup, after scheduler.init(). Backfills
+// a ScheduledTask row for any card that was ALREADY mid-lend before this
+// scheduler existed (isLent + lendExpiresAt set, but no matching task yet) —
+// otherwise a lend that happened to be active right when this change
+// deployed would never auto-return. Safe to run on every boot: scheduleTask
+// upserts by key, and this always passes the card's own already-stored
+// lendExpiresAt, so re-running it never resets or extends anyone's timer.
+async function _initCardLending() {
+  const lentCards = await OwnedCard.find({ isLent: true, lendExpiresAt: { $ne: null } }).catch(err => {
+    console.error('_initCardLending: lookup failed:', err.message);
+    return [];
+  });
+
+  for (const card of lentCards) {
+    await scheduler.scheduleTask({
+      type: 'card_lend_return',
+      key: `lend:${card._id}`,
+      runAt: card.lendExpiresAt,
+      payload: {
+        cardId: String(card._id),
+        lentToChatId: card.lentTo,
+        // Unknown for a pre-existing lend backfilled at boot — the handler
+        // falls back to a generic "The owner's ..." when this is missing.
+        pushname: null,
+      },
+    }).catch(err => console.error('_initCardLending: schedule failed for', card._id, err.message));
+  }
+
+  if (lentCards.length) {
+    console.log(`🎴 Backfilled ${lentCards.length} pre-existing card lend(s) into the scheduler`);
   }
 }
 
 // ─── Commands ─────────────────────────────────────────────────────────────────
 module.exports = {
   _initCardDrops,
+  _initCardLending,
   // .cards on/off
   async cards(client, msg, args) {
     const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
@@ -402,9 +494,14 @@ module.exports = {
     msg.reply(`🎴 Cards are now *${group.cardsEnabled ? 'ON' : 'OFF'}*`);
 
     if (group.cardsEnabled) {
-      startDropInterval(chat, client);
+      await scheduler.scheduleTask({
+        type: 'card_drop',
+        key: `card_drop:${chat.id._serialized}`,
+        runAt: new Date(Date.now() + CARD_DROP_INTERVAL_MS),
+        payload: { chatId: chat.id._serialized },
+      }).catch(err => console.error('cards: schedule drop failed:', err.message));
     } else {
-      stopDropInterval(chat.id._serialized);
+      await scheduler.cancelTask(`card_drop:${chat.id._serialized}`);
     }
   },
 
@@ -1434,22 +1531,20 @@ if (existing)
 
     msg.reply(`✅ You lent ${tierEmoji(card.tier)} *${card.name}* to this group for 1 hour!\nUse *.unlendcard ${index}* to get it back early.`);
 
-    const cardId = card._id;
-    setTimeout(async () => {
-      // updateOne against the DB rather than re-saving this hour-old
-      // in-memory `card` doc — that stale copy wouldn't reflect any other
-      // field changed on the card in the meantime (e.g. isForSale toggled
-      // via .sellc), and a plain .save() here would silently clobber that.
-      // The `isLent: true` filter also means this is a no-op (no false
-      // "returned" message) if .unlendcard already returned it early.
-      const result = await OwnedCard.findOneAndUpdate(
-        { _id: cardId, isLent: true },
-        { $set: { isLent: false, lentTo: null, lendExpiresAt: null } }
-      ).catch(err => { console.error('lendcard: auto-return failed:', err.message); return null; });
-      if (result) {
-        chat.sendMessage(`⏰ ${contact.pushname}'s *${result.name}* has been returned.`).catch(() => {});
-      }
-    }, 60 * 60 * 1000);
+    // Persisted via the central scheduler (utils/scheduler.js) instead of
+    // an in-memory setTimeout — see scheduler.registerHandler('card_lend_return', ...)
+    // above for what actually runs when this comes due. Survives PM2
+    // restarts because runAt lives in Mongo, not in this process's RAM.
+    await scheduler.scheduleTask({
+      type: 'card_lend_return',
+      key: `lend:${card._id}`,
+      runAt: expiresAt,
+      payload: {
+        cardId: String(card._id),
+        lentToChatId: chat.id._serialized,
+        pushname: contact.pushname,
+      },
+    }).catch(err => console.error('lendcard: scheduling auto-return failed:', err.message));
   },
 
   // .unlendcard [index] — reclaim a card you lent out before its 1-hour
@@ -1484,6 +1579,11 @@ if (existing)
     target.lentTo = null;
     target.lendExpiresAt = null;
     await target.save();
+
+    // Cancel the scheduled auto-return — otherwise it would still fire
+    // later, find isLent already false, and silently no-op, but there's
+    // no reason to leave it sitting in Mongo until then.
+    await scheduler.cancelTask(`lend:${target._id}`);
 
     msg.reply(`✅ ${tierEmoji(target.tier)} *${target.name}* has been returned to you early.`);
 

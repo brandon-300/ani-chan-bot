@@ -10,10 +10,7 @@ const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY;
 async function sendImage(msg, url, caption) {
   try {
     const media = await MessageMedia.fromUrl(url, { unsafeMime: true });
-    const chat = await safeGetChat(msg);
-    if (!chat) return;
-    if (!chat) return;
-    await chat.sendMessage(media, { caption });
+    await msg.reply(media, undefined, { caption });
   } catch {
     msg.reply(caption + `\n🔗 ${url}`);
   }
