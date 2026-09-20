@@ -65,20 +65,33 @@ function parseMuteDuration(raw) {
 // triggering command message exists by the time this runs either way, so
 // chat.sendMessage() (not msg.reply()) is correct here — same reasoning as
 // dropCard()/lendcard's auto-return.
+// The two state changes below (un-admin-onlying the chat, clearing the
+// group's mute fields in Mongo) are the actual thing this function exists
+// to do, and a genuine failure in either now propagates instead of being
+// swallowed — the scheduler's group_unmute handler relies on that to retry
+// a failed unmute instead of leaving a group muted forever with nothing
+// left to fix it. Only the final "here's what happened" notice is
+// best-effort: a group that's gone or unreachable by the time we try to
+// announce it is an expected, already-fine outcome (the unmute itself
+// already succeeded), not something worth retrying the whole task over.
 async function performAutoUnmute(chat, chatId, label, { wasOverdue = false } = {}) {
+  await chat.setMessagesAdminsOnly(false);
+  const group = await getOrCreateGroup(chatId);
+  group.isMuted = false;
+  group.muteUntil = null;
+  group.muteDurationLabel = null;
+  await group.save();
+
+  const notice = wasOverdue
+    ? `🔊 Group automatically unmuted — the *${label}* timer had already run out while the bot was offline.`
+    : `🔊 Group automatically unmuted after ${label}.`;
   try {
-    await chat.setMessagesAdminsOnly(false);
-    const group = await getOrCreateGroup(chatId);
-    group.isMuted = false;
-    group.muteUntil = null;
-    group.muteDurationLabel = null;
-    await group.save();
-    const notice = wasOverdue
-      ? `🔊 Group automatically unmuted — the *${label}* timer had already run out while the bot was offline.`
-      : `🔊 Group automatically unmuted after ${label}.`;
     await chat.sendMessage(notice);
   } catch (err) {
-    console.error('Auto-unmute failed:', err.message);
+    // Group may no longer exist / bot may have been removed / send hiccup
+    // — the unmute itself already succeeded above, so this isn't a
+    // failure worth retrying over.
+    console.error('Auto-unmute: notice send failed (unmute itself still succeeded):', err.message);
   }
 }
 

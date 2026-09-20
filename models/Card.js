@@ -104,7 +104,28 @@ const OwnedCardSchema = new mongoose.Schema({
   },
 catalogueId: {
     type: String,
-    ref: 'CardCatalogue'
+    ref: 'CardCatalogue',
+    // ADDED: nothing previously stopped two OwnedCard documents from
+    // sharing the same catalogueId — the "only one owner at a time"
+    // invariant was purely an application-level check (each command reads
+    // "does an OwnedCard with this catalogueId already exist?" before
+    // creating one), which two concurrent requests can both pass before
+    // either has written anything. This unique index makes the database
+    // itself the actual enforcer: a second concurrent create() for the
+    // same catalogueId now fails outright (E11000) instead of silently
+    // succeeding and creating two owners for one card. sparse (matching
+    // `code` below) so it only applies once a card is actually
+    // catalogue-linked, not to every OwnedCard row in general.
+    //
+    // UNCERTAIN: if any duplicate catalogueId rows already exist in the
+    // live collection from before this fix, MongoDB will refuse to build
+    // this index and will keep running WITHOUT it (silently, no crash) —
+    // functionally the same unprotected state as today. Worth a one-off
+    // check (`db.ownedcards.aggregate([{$match:{catalogueId:{$ne:null}}},
+    // {$group:{_id:"$catalogueId",n:{$sum:1}}},{$match:{n:{$gt:1}}}])` in
+    // mongosh) after deploying, rather than assuming it applied cleanly.
+    unique: true,
+    sparse: true,
 },
   code: {
     type: String,

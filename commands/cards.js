@@ -10,6 +10,19 @@ const { _formatQuestCompletionNote } = require('./guilds');
 const { tierEmoji, rollTier, formatNum, pick, mentionName, mentionTag, generateUniqueCode, safeGetChat, cardValue, tierAbove, TIER_DROP_RATES, addXP, XP_REWARDS, parseAmount, boldSans, doubleStruck, cleanDescription } = require('../utils/helpers');
 const scheduler = require('../utils/scheduler');
 const crypto = require('crypto');
+const mongoose = require('mongoose');
+
+// Thrown inside a mongoose session.withTransaction(...) callback purely to
+// abort it with a specific, already-worded user-facing message attached.
+// withTransaction() aborts the transaction and rethrows whatever the
+// callback throws — the surrounding try/catch just below each transaction
+// catches this specific type and replies with `.message` verbatim, instead
+// of the generic "something went wrong" fallback used for a genuinely
+// unexpected failure. Not a real error condition — insufficient funds or
+// "already claimed" are normal, expected outcomes — just reusing
+// exceptions as the cleanest way to bail out from the middle of a
+// transaction callback with the transaction guaranteed to be rolled back.
+class TransactionAbort extends Error {}
 
 // ─── Shared card media resolution — custom render, then raw image, then none ──
 // Every single-card send point (sendCardDetail, sendOwnedCardInfo, .ci's
@@ -357,6 +370,12 @@ Type *.claim ${claimCode}* to claim it!`;
 // self-rescheduling is what makes it recurring under a scheduler that only
 // ever tracks one-off tasks.
 const CARD_DROP_INTERVAL_MS = 5 * 60 * 1000;
+// When every catalogue card is already claimed, dropping every 5 minutes
+// just re-sends "already been claimed" and hammers Mongo for nothing new
+// — slow way down instead of retrying at full speed forever. Still checks
+// periodically (rather than stopping outright) so the group picks back up
+// automatically once the catalogue grows (e.g. via .autoexpand).
+const CARD_DROP_ALL_CLAIMED_INTERVAL_MS = 30 * 60 * 1000;
 
 scheduler.registerHandler('card_drop', async (payload, client) => {
   const { chatId } = payload;
@@ -377,12 +396,34 @@ scheduler.registerHandler('card_drop', async (payload, client) => {
     return;
   }
 
-  await dropCard(chat, client).catch(err => console.error('card_drop: dropCard failed:', err.message));
+  // Deliberately NOT caught here anymore. A real failure inside dropCard
+  // (a Mongo query, a WhatsApp send that fails for both media AND the
+  // text fallback, etc.) now propagates up to the scheduler, which
+  // retries this exact task with backoff (30s, then 2min, 10min, 30min)
+  // instead of either silently eating the failure and waiting the full
+  // 5-minute interval, or — worse — the old delete-first design losing
+  // the cycle's task row entirely. Retrying is safe here: on a genuine
+  // failure, nothing was actually delivered (or, at worst, an orphaned
+  // unclaimed active-card code got overwritten), never a duplicate drop.
+  //
+  // Returning null (nothing left to claim) is a normal, non-throwing
+  // outcome, not a failure — handled below via a longer reschedule
+  // interval, not a retry.
+  const droppedCard = await dropCard(chat, client);
 
+  // Rescheduling the next occurrence stays in its own try/catch, same as
+  // before: a failure here must NOT propagate and retry the whole
+  // handler, because dropCard() already ran (successfully or as a no-op)
+  // — retrying the handler would call dropCard() again and risk a
+  // duplicate drop. If this write itself fails, it's logged and the cycle
+  // silently stops for this group until a restart or a `.cards off` /
+  // `.cards on` toggle recreates it — a known gap (scheduler reconciliation
+  // is a separate, later improvement), not something this step fixes.
+  const nextInterval = droppedCard ? CARD_DROP_INTERVAL_MS : CARD_DROP_ALL_CLAIMED_INTERVAL_MS;
   await scheduler.scheduleTask({
     type: 'card_drop',
     key: `card_drop:${chatId}`,
-    runAt: new Date(Date.now() + CARD_DROP_INTERVAL_MS),
+    runAt: new Date(Date.now() + nextInterval),
     payload: { chatId },
   }).catch(err => console.error('card_drop: reschedule failed:', err.message));
 });
@@ -419,22 +460,33 @@ scheduler.registerHandler('card_lend_return', async (payload, client) => {
   // updateOne against the DB rather than trusting an old in-memory `card`
   // doc — a plain .save() could silently clobber any other field changed
   // on the card in the meantime (e.g. isForSale toggled via .sellc). The
-  // `isLent: true` filter also makes this a no-op (no false "returned"
-  // message) if .unlendcard already returned it early and cancelled this
-  // task — kept as a second safety net in case cancellation itself ever
-  // fails.
+  // `isLent: true` filter also makes this a legitimate, idempotent no-op
+  // (not a failure) if .unlendcard already returned it early and
+  // cancelled this task — kept as a second safety net in case cancellation
+  // itself ever fails.
+  //
+  // Deliberately NOT wrapped in a .catch() here anymore: a real DB failure
+  // (connection drop, timeout, etc.) now propagates up to the scheduler so
+  // the task is retried, instead of silently leaving the card
+  // isLent: true forever with nothing left to fix it.
   const result = await OwnedCard.findOneAndUpdate(
     { _id: payload.cardId, isLent: true },
     { $set: { isLent: false, lentTo: null, lendExpiresAt: null } }
-  ).catch(err => { console.error('lendcard: auto-return failed:', err.message); return null; });
+  );
 
-  if (result && payload.lentToChatId) {
+  // result === null means the query legitimately matched nothing — the
+  // card was already returned (e.g. by .unlendcard) — not a failure.
+  if (!result) return;
+
+  if (payload.lentToChatId) {
     try {
       const lentChat = await client.getChatById(payload.lentToChatId);
       const who = payload.pushname || 'The owner';
       if (lentChat) await lentChat.sendMessage(`⏰ ${who}'s *${result.name}* has been returned.`);
     } catch {
-      // Group may no longer exist / bot may have been removed — not fatal.
+      // Group may no longer exist / bot may have been removed — expected,
+      // not a failure. The card was already returned in the DB above, so
+      // failing to notify the group doesn't warrant retrying the task.
     }
   }
 });
@@ -1036,31 +1088,95 @@ const cards = await OwnedCard.find({
     }
 
     const contact = await msg.getContact();
-    const user = await User.findOrCreate(contact.id._serialized, contact.pushname);
+    // Ensures the user exists / runs the lazy daily-interest catch-up,
+    // same as before. Deliberately kept OUTSIDE the transaction below —
+    // findOrCreate() isn't session-aware, and it isn't part of the
+    // purchase's atomicity boundary anyway. The transaction re-reads this
+    // user's live bank balance itself, so the small gap between here and
+    // the transaction starting doesn't matter.
+    await User.findOrCreate(contact.id._serialized, contact.pushname);
     const price = cardValue(catalogue.tier);
 
-    if (user.bank < price) {
-      return msg.reply(`❌ Not enough in your bank. Need 💰 ${formatNum(price)}, you have ${formatNum(user.bank)}. Try *.deposit* first.`);
+    // ─── Transaction: the actual "pay + receive" boundary ─────────────────
+    // The bank debit and the OwnedCard creation now happen in one MongoDB
+    // transaction — either both commit or neither does. Before this, a
+    // successful bank save() followed by a failed OwnedCard.create() (or
+    // the two calls in the other order) could charge someone for a card
+    // they never received, or hand one out for free.
+    //
+    // Also re-checks "already claimed" and the live bank balance again
+    // INSIDE the transaction — the checks above ran before the
+    // transaction started and can be stale by the time it actually runs.
+    // This re-check, combined with the new unique index on
+    // OwnedCard.catalogueId (models/Card.js), is what closes the race
+    // where two people buy the same catalogue card at nearly the same
+    // moment: whichever transaction's OwnedCard.create() commits second
+    // now fails outright instead of silently succeeding, and is reported
+    // below as "just claimed by someone else" rather than a raw DB error.
+    //
+    // UNCERTAIN: this requires MongoDB running as a replica set — Atlas
+    // (including the free M0 tier) always is one, which is what this
+    // project uses, so this should work as-is. Flagging the assumption
+    // rather than guessing quietly: if MONGO_URI ever pointed at a
+    // standalone non-Atlas mongod instead, transactions would fail
+    // outright on every .buyc call.
+    let ownedCard;
+    const session = await mongoose.startSession();
+    try {
+      await session.withTransaction(async () => {
+        const [freshCatalogue, freshUser, stillUnclaimed] = await Promise.all([
+          CardCatalogue.findOne({ cardId: code }).session(session),
+          User.findOne({ id: contact.id._serialized }).session(session),
+          OwnedCard.findOne({ catalogueId: catalogue.cardId }).session(session),
+        ]);
+
+        if (!freshCatalogue) throw new TransactionAbort('❌ That catalogue card no longer exists.');
+        if (stillUnclaimed) {
+          throw new TransactionAbort('❌ That card has already been claimed — check *.cardshop* for what\'s still available, or *.claim* if someone has it listed for sale.');
+        }
+        if (!freshUser || freshUser.bank < price) {
+          throw new TransactionAbort(`❌ Not enough in your bank. Need 💰 ${formatNum(price)}, you have ${formatNum(freshUser ? freshUser.bank : 0)}. Try *.deposit* first.`);
+        }
+
+        freshUser.bank -= price;
+        await freshUser.save({ session });
+
+        const created = await OwnedCard.create([{
+          ownerId: contact.id._serialized,
+          catalogueId: freshCatalogue.cardId,
+          code: await generateUniqueCode(OwnedCard),
+          name: freshCatalogue.name,
+          series: freshCatalogue.series,
+          tier: freshCatalogue.tier,
+          firstOwner: contact.id._serialized,
+        }], { session });
+        ownedCard = created[0];
+      });
+    } catch (err) {
+      if (err instanceof TransactionAbort) return msg.reply(err.message);
+      if (err && err.code === 11000) {
+        if (err.keyPattern && err.keyPattern.catalogueId) {
+          // Someone else's purchase committed a moment first — the new
+          // unique index caught it. No money was taken; the whole
+          // transaction aborted.
+          return msg.reply('❌ That card was just claimed by someone else — check *.cardshop* for what\'s still available.');
+        }
+        // Extremely rare: generateUniqueCode() happened to hand back a
+        // code that collided with an existing one. Also no charge —
+        // just try again.
+        return msg.reply('⚠️ Something went wrong completing that purchase — you were not charged. Please try again.');
+      }
+      console.error('buyc: transaction failed:', err.message);
+      return msg.reply('⚠️ Something went wrong completing that purchase — you were not charged. Please try again.');
+    } finally {
+      await session.endSession();
     }
-
-    user.bank -= price;
-    await user.save();
-
-    const owned = await OwnedCard.create({
-      ownerId: contact.id._serialized,
-      catalogueId: catalogue.cardId,
-      code: await generateUniqueCode(OwnedCard),
-      name: catalogue.name,
-      series: catalogue.series,
-      tier: catalogue.tier,
-      firstOwner: contact.id._serialized,
-    });
 
     const xpResult = await addXP(contact.id._serialized, XP_REWARDS.shopBuy);
     const unlocked = await checkAchievements(contact.id._serialized);
     const newTitle = await checkTitle(contact.id._serialized);
     const xpLine = `\n⭐ +${XP_REWARDS.shopBuy} XP${xpResult.levelUp ? ` — 🎉 Level up! You're now level ${xpResult.level}!` : ''}`;
-    msg.reply(`✅ You bought *${owned.name}* [${owned.tier}] for 💰 ${formatNum(price)}!` + xpLine + formatUnlockNotice(unlocked) + formatTitleUnlockNotice(newTitle));
+    msg.reply(`✅ You bought *${ownedCard.name}* [${ownedCard.tier}] for 💰 ${formatNum(price)}!` + xpLine + formatUnlockNotice(unlocked) + formatTitleUnlockNotice(newTitle));
   },
 
   // .sellc [index] [price]
@@ -1101,7 +1217,7 @@ const cards = await OwnedCard.find({
     const id = args[0]?.trim();
     if (!id) return msg.reply('❌ Usage: .claim [code]');
 
-    const user = await User.findOrCreate(contact.id._serialized, contact.pushname);
+    await User.findOrCreate(contact.id._serialized, contact.pushname);
 
     // Check if it's a shop card
     const shopCard = await OwnedCard.findOne({ code: id.toUpperCase(), isForSale: true }).catch(() => null);
@@ -1117,25 +1233,72 @@ const cards = await OwnedCard.find({
       if (sellerId === contact.id._serialized) {
         return msg.reply('❌ You can\'t buy your own listed card — remove it with *.rc* instead.');
       }
-      // Payment now comes from the bank, not the wallet — same policy as
-      // .loan (deposits go to bank) and .sc/.acceptsale below, so every
-      // coin transfer in the card economy moves through one consistent
-      // account instead of splitting unpredictably between the two.
-      if (user.bank < price) {
-        return msg.reply(`❌ Not enough in your bank. Need 💰 ${formatNum(price)}, you have ${formatNum(user.bank)}. Try *.deposit* first.`);
+
+      // ─── Transaction: buyer pays, seller gets paid, card transfers — all
+      // or nothing ────────────────────────────────────────────────────────
+      // Previously this was several separate writes (buyer save, card
+      // save, then a seller payout wrapped in its OWN swallowed .catch()).
+      // A transient failure on that last payout alone meant the buyer had
+      // already paid and received the card while the seller's coins were
+      // simply gone, with only a console.error to show for it — the exact
+      // same class of bug the BUGFIX above already fixed once, just moved
+      // one step later. Now buyer-debit, card-transfer, and seller-credit
+      // commit or roll back together.
+      //
+      // Also re-checks isForSale/price/ownerId again INSIDE the
+      // transaction, same reasoning as .buyc — the outer read above can be
+      // stale by the time this actually runs (two buyers racing the same
+      // listing, or the seller pulling it with .rc a moment later).
+      let boughtCard;
+      const session = await mongoose.startSession();
+      try {
+        await session.withTransaction(async () => {
+          const [freshCard, freshBuyer] = await Promise.all([
+            OwnedCard.findById(shopCard._id).session(session),
+            User.findOne({ id: contact.id._serialized }).session(session),
+          ]);
+
+          if (!freshCard || !freshCard.isForSale) {
+            throw new TransactionAbort('❌ That listing is no longer available — someone may have already bought it, or the seller removed it.');
+          }
+          if (freshCard.price !== price) {
+            // Price changed underneath us (re-listed at a different price
+            // between the read above and now) — safer to bail than charge
+            // a stale amount.
+            throw new TransactionAbort('❌ That listing changed — please check *.cardshop* again and retry.');
+          }
+          if (!freshBuyer || freshBuyer.bank < price) {
+            // Payment comes from the bank, not the wallet — same policy as
+            // .loan (deposits go to bank) and .sc/.acceptsale, so every
+            // coin transfer in the card economy moves through one
+            // consistent account instead of splitting unpredictably
+            // between the two.
+            throw new TransactionAbort(`❌ Not enough in your bank. Need 💰 ${formatNum(price)}, you have ${formatNum(freshBuyer ? freshBuyer.bank : 0)}. Try *.deposit* first.`);
+          }
+
+          freshBuyer.bank -= price;
+          await freshBuyer.save({ session });
+
+          freshCard.ownerId = contact.id._serialized;
+          freshCard.isForSale = false;
+          freshCard.price = 0;
+          freshCard.timesTraded += 1;
+          await freshCard.save({ session });
+
+          if (sellerId) {
+            await User.updateOne({ id: sellerId }, { $inc: { bank: price } }, { upsert: false, session });
+          }
+
+          boughtCard = freshCard;
+        });
+      } catch (err) {
+        if (err instanceof TransactionAbort) return msg.reply(err.message);
+        console.error('claim: shop purchase transaction failed:', err.message);
+        return msg.reply('⚠️ Something went wrong completing that purchase — you were not charged. Please try again.');
+      } finally {
+        await session.endSession();
       }
 
-      user.bank -= price;
-      shopCard.ownerId = contact.id._serialized;
-      shopCard.isForSale = false;
-      shopCard.price = 0;
-      shopCard.timesTraded += 1;
-      await shopCard.save();
-      await user.save();
-      if (sellerId) {
-        await User.updateOne({ id: sellerId }, { $inc: { bank: price } }, { upsert: false })
-          .catch(err => console.error('claim: seller payout failed:', err.message));
-      }
       const xpResult = await addXP(contact.id._serialized, XP_REWARDS.shopBuy);
       const unlocked = await checkAchievements(contact.id._serialized);
       const newTitle = await checkTitle(contact.id._serialized);
@@ -1143,27 +1306,27 @@ const cards = await OwnedCard.find({
       // guild or this doesn't advance the guild's currently active quest.
       const questResult = await Guild.addQuestProgress(contact.id._serialized, 'cards', 1);
       const xpLine = `\n⭐ +${XP_REWARDS.shopBuy} XP${xpResult.levelUp ? ` — 🎉 Level up! You're now level ${xpResult.level}!` : ''}`;
-      return msg.reply(`✅ You bought *${shopCard.name}* [${shopCard.tier}] for 💰 ${formatNum(price)}!` + xpLine + formatUnlockNotice(unlocked) + formatTitleUnlockNotice(newTitle) + _formatQuestCompletionNote(questResult));
+      return msg.reply(`✅ You bought *${boughtCard.name}* [${boughtCard.tier}] for 💰 ${formatNum(price)}!` + xpLine + formatUnlockNotice(unlocked) + formatTitleUnlockNotice(newTitle) + _formatQuestCompletionNote(questResult));
     }
 
-// Drop claim
-const group = await Group.findOne({ id: chat.id._serialized });
-let catalogue = null;
+    // Drop claim
+    const group = await Group.findOne({ id: chat.id._serialized });
+    let catalogue = null;
 
-if (/^[A-Z0-9]{6}$/i.test(id)) {
-  catalogue = await CardCatalogue.findOne({
-    cardId: id.toUpperCase()
-  }).catch(() => null);
-}
+    if (/^[A-Z0-9]{6}$/i.test(id)) {
+      catalogue = await CardCatalogue.findOne({
+        cardId: id.toUpperCase()
+      }).catch(() => null);
+    }
 
-if (
-  group?.activeCardCode &&
-  id.toUpperCase() === group.activeCardCode
-) {
-  catalogue = await CardCatalogue.findOne({
-    cardId: group.activeCardId
-  }).catch(() => null);
-}
+    if (
+      group?.activeCardCode &&
+      id.toUpperCase() === group.activeCardCode
+    ) {
+      catalogue = await CardCatalogue.findOne({
+        cardId: group.activeCardId
+      }).catch(() => null);
+    }
 
     if (!group) {
       return msg.reply('❌ This card has already been claimed or the claim code expired.');
@@ -1173,28 +1336,59 @@ if (
       return msg.reply('❌ Invalid or expired claim code.');
     }
 
-const existing = await OwnedCard.findOne({
-  ownerId: contact.id._serialized,
-  catalogueId: catalogue.cardId
-});
-
-if (existing)
-  return msg.reply('❌ You already claimed this card!');
-
-    const owned = await OwnedCard.create({
+    const existing = await OwnedCard.findOne({
       ownerId: contact.id._serialized,
-      catalogueId: catalogue.cardId,
-      code: await generateUniqueCode(OwnedCard),
-      name: catalogue.name,
-      series: catalogue.series,
-      tier: catalogue.tier,
-      firstOwner: contact.id._serialized,
+      catalogueId: catalogue.cardId
     });
 
-    await Group.findOneAndUpdate(
-      { id: chat.id._serialized },
-      { $unset: { activeCardId: '', activeCardCode: '', activeCardExpiresAt: '' } }
-    );
+    if (existing)
+      return msg.reply('❌ You already claimed this card!');
+
+    // Claiming is free (no money involved), but still two dependent writes
+    // — create the OwnedCard, then clear the group's active-drop state —
+    // that should either both happen or neither, plus a fresh re-check
+    // that nobody else claimed this exact code a moment earlier. Uses the
+    // same session/transaction pattern as the shop-purchase branch above,
+    // and the catalogueId unique index added alongside .buyc's fix
+    // (models/Card.js) is what makes the re-check airtight instead of just
+    // best-effort: a second concurrent claim's create() now fails outright
+    // rather than silently creating two owners for one card.
+    let owned;
+    const dropSession = await mongoose.startSession();
+    try {
+      await dropSession.withTransaction(async () => {
+        const stillUnclaimed = await OwnedCard.findOne({ catalogueId: catalogue.cardId }).session(dropSession);
+        if (stillUnclaimed) {
+          throw new TransactionAbort('❌ Someone else already claimed that card just now — better luck on the next drop!');
+        }
+
+        const created = await OwnedCard.create([{
+          ownerId: contact.id._serialized,
+          catalogueId: catalogue.cardId,
+          code: await generateUniqueCode(OwnedCard),
+          name: catalogue.name,
+          series: catalogue.series,
+          tier: catalogue.tier,
+          firstOwner: contact.id._serialized,
+        }], { session: dropSession });
+        owned = created[0];
+
+        await Group.findOneAndUpdate(
+          { id: chat.id._serialized },
+          { $unset: { activeCardId: '', activeCardCode: '', activeCardExpiresAt: '' } },
+          { session: dropSession }
+        );
+      });
+    } catch (err) {
+      if (err instanceof TransactionAbort) return msg.reply(err.message);
+      if (err && err.code === 11000) {
+        return msg.reply('❌ Someone else already claimed that card just now — better luck on the next drop!');
+      }
+      console.error('claim: drop-claim transaction failed:', err.message);
+      return msg.reply('⚠️ Something went wrong claiming that card. Please try again.');
+    } finally {
+      await dropSession.endSession();
+    }
 
     const unlocked = await checkAchievements(contact.id._serialized);
     const xpResult = await addXP(contact.id._serialized, XP_REWARDS.claim);
@@ -1283,7 +1477,12 @@ if (existing)
     const card = await OwnedCard.findById(sale.cardId);
     // Re-check ownership AND availability in case anything changed between
     // the offer and this acceptance — same defense-in-depth .accepttrade
-    // applies to trades.
+    // applies to trades. (Everything here is re-checked again, fresh,
+    // inside the transaction right before money actually moves below —
+    // this fast outer check just avoids starting a transaction at all for
+    // the common case of an obviously stale offer, and is what eagerly
+    // deletes it instead of waiting for the 10-minute expiry above to
+    // eventually catch it.)
     if (!card || card.ownerId !== sale.sellerId) {
       await sale.deleteOne();
       return msg.reply('❌ This sale is no longer valid — the card changed hands since the offer.');
@@ -1293,21 +1492,89 @@ if (existing)
       return msg.reply('❌ This sale is no longer valid — the card is no longer available (staked, listed, or lent).');
     }
 
+    // Ensures both accounts exist before the transaction (findOrCreate
+    // isn't session-aware, same reasoning as .buyc/.claim above) — live
+    // balances are re-read fresh INSIDE the transaction regardless.
     const buyerUser = await User.findOrCreate(contact.id._serialized, contact.pushname);
     if (buyerUser.bank < sale.price) {
       return msg.reply(`❌ Not enough in your bank. Need 💰 ${formatNum(sale.price)}, you have ${formatNum(buyerUser.bank)}. Try *.deposit* first.`);
     }
+    await User.findOrCreate(sale.sellerId);
 
-    const sellerUser = await User.findOrCreate(sale.sellerId);
-    buyerUser.bank -= sale.price;
-    sellerUser.bank += sale.price;
-    card.ownerId = contact.id._serialized;
-    card.timesTraded += 1;
+    // ─── Transaction: buyer pays, seller gets paid, card transfers, offer
+    // is consumed — all or nothing ────────────────────────────────────────
+    // Previously these four writes (buyer save, seller save, card save,
+    // sale delete) ran concurrently via Promise.all with NO atomicity
+    // between them — any one failing while the others succeeded could
+    // charge the buyer without transferring the card, pay the seller
+    // without charging the buyer, or leave a consumed offer sitting
+    // around. Re-reads and re-checks everything fresh inside the
+    // transaction too — if something changed in the moment between the
+    // outer checks above and now (another accept racing this one, the
+    // card getting staked elsewhere, etc.), this safely aborts the whole
+    // transaction with nothing charged.
+    //
+    // Deliberately does NOT also try to delete the now-stale SaleRequest
+    // in that rare abort case — a delete performed inside a transaction
+    // that then throws gets rolled back along with everything else, so
+    // attempting it here would be dead code. It's left for the outer
+    // check above to catch on a retry, or the 10-minute expiry to clean
+    // up naturally.
+    let boughtCard;
+    const session = await mongoose.startSession();
+    try {
+      await session.withTransaction(async () => {
+        const [freshSale, freshCard] = await Promise.all([
+          SaleRequest.findById(sale._id).session(session),
+          OwnedCard.findById(sale.cardId).session(session),
+        ]);
 
-    await Promise.all([buyerUser.save(), sellerUser.save(), card.save(), sale.deleteOne()]);
+        if (!freshSale) {
+          throw new TransactionAbort('❌ This sale is no longer valid — it was already accepted, declined, or expired.');
+        }
+        if (!freshCard || freshCard.ownerId !== freshSale.sellerId) {
+          throw new TransactionAbort('❌ This sale is no longer valid — the card changed hands since the offer.');
+        }
+        if (freshCard.isStaked || freshCard.isForSale || freshCard.isLent) {
+          throw new TransactionAbort('❌ This sale is no longer valid — the card is no longer available (staked, listed, or lent).');
+        }
+
+        const [freshBuyer, freshSeller] = await Promise.all([
+          User.findOne({ id: contact.id._serialized }).session(session),
+          User.findOne({ id: freshSale.sellerId }).session(session),
+        ]);
+
+        if (!freshBuyer || freshBuyer.bank < freshSale.price) {
+          throw new TransactionAbort(`❌ Not enough in your bank. Need 💰 ${formatNum(freshSale.price)}, you have ${formatNum(freshBuyer ? freshBuyer.bank : 0)}. Try *.deposit* first.`);
+        }
+        if (!freshSeller) {
+          throw new TransactionAbort('⚠️ Something went wrong finding the seller\'s account. Please try again.');
+        }
+
+        freshBuyer.bank -= freshSale.price;
+        freshSeller.bank += freshSale.price;
+        freshCard.ownerId = contact.id._serialized;
+        freshCard.timesTraded += 1;
+
+        await Promise.all([
+          freshBuyer.save({ session }),
+          freshSeller.save({ session }),
+          freshCard.save({ session }),
+          SaleRequest.deleteOne({ _id: freshSale._id }).session(session),
+        ]);
+
+        boughtCard = freshCard;
+      });
+    } catch (err) {
+      if (err instanceof TransactionAbort) return msg.reply(err.message);
+      console.error('acceptsale: transaction failed:', err.message);
+      return msg.reply('⚠️ Something went wrong completing that purchase — you were not charged. Please try again.');
+    } finally {
+      await session.endSession();
+    }
 
     msg.reply(
-      `✅ Bought *${card.name}* [${card.tier}] from @${sale.sellerId.split('@')[0]} for 💰 ${formatNum(sale.price)} coins!`,
+      `✅ Bought *${boughtCard.name}* [${boughtCard.tier}] from @${sale.sellerId.split('@')[0]} for 💰 ${formatNum(sale.price)} coins!`,
       undefined,
       { mentions: [sale.sellerId] }
     );
@@ -1413,7 +1680,12 @@ if (existing)
     ]);
 
     // Re-check ownership in case a card changed hands (sold, traded, or
-    // auctioned elsewhere) between the offer and this acceptance.
+    // auctioned elsewhere) between the offer and this acceptance. (Fast
+    // outer check — everything here is re-verified again, fresh, inside
+    // the transaction right before ownership actually swaps below; this
+    // just avoids starting a transaction at all for an obviously stale
+    // offer, and is what eagerly cleans it up instead of waiting for the
+    // 10-minute expiry above.)
     if (!myCard || myCard.ownerId !== contact.id._serialized ||
         !theirCard || theirCard.ownerId !== trade.initiatorId) {
       await trade.deleteOne();
@@ -1428,12 +1700,63 @@ if (existing)
       return msg.reply('❌ This trade is no longer valid — one of the cards is no longer available (staked, listed, or lent).');
     }
 
-    myCard.ownerId = trade.initiatorId;
-    theirCard.ownerId = trade.partnerId;
-    myCard.timesTraded += 1;
-    theirCard.timesTraded += 1;
+    // ─── Transaction: both cards swap owners, offer is consumed — all or
+    // nothing ────────────────────────────────────────────────────────────
+    // Previously the two card saves and the trade deletion ran
+    // concurrently via Promise.all with NO atomicity between them — one
+    // card's save failing while the other succeeded would leave a
+    // one-sided trade: one person's card gone, the other's never arriving.
+    // Re-verifies ownership/availability again fresh INSIDE the
+    // transaction, same reasoning as the outer check above — closes the
+    // race window between that check and this one actually running.
+    //
+    // Same as .acceptsale: a stale-offer abort here does NOT also try to
+    // delete the TradeRequest — a delete performed inside a transaction
+    // that then throws gets rolled back along with everything else, so
+    // attempting it would be dead code. Left for the outer check above on
+    // retry, or the 10-minute expiry, to clean up naturally.
+    let swappedMyCard, swappedTheirCard;
+    const session = await mongoose.startSession();
+    try {
+      await session.withTransaction(async () => {
+        const [freshTrade, freshMyCard, freshTheirCard] = await Promise.all([
+          TradeRequest.findById(trade._id).session(session),
+          OwnedCard.findById(trade.partnerCardId).session(session),
+          OwnedCard.findById(trade.initiatorCardId).session(session),
+        ]);
 
-    await Promise.all([myCard.save(), theirCard.save(), trade.deleteOne()]);
+        if (!freshTrade) {
+          throw new TransactionAbort('❌ This trade is no longer valid — it was already accepted, declined, or expired.');
+        }
+        if (!freshMyCard || freshMyCard.ownerId !== contact.id._serialized ||
+            !freshTheirCard || freshTheirCard.ownerId !== freshTrade.initiatorId) {
+          throw new TransactionAbort('❌ This trade is no longer valid — one of the cards changed hands since the offer.');
+        }
+        if (freshMyCard.isStaked || freshTheirCard.isStaked || freshMyCard.isForSale || freshTheirCard.isForSale || freshMyCard.isLent || freshTheirCard.isLent) {
+          throw new TransactionAbort('❌ This trade is no longer valid — one of the cards is no longer available (staked, listed, or lent).');
+        }
+
+        freshMyCard.ownerId = freshTrade.initiatorId;
+        freshTheirCard.ownerId = freshTrade.partnerId;
+        freshMyCard.timesTraded += 1;
+        freshTheirCard.timesTraded += 1;
+
+        await Promise.all([
+          freshMyCard.save({ session }),
+          freshTheirCard.save({ session }),
+          TradeRequest.deleteOne({ _id: freshTrade._id }).session(session),
+        ]);
+
+        swappedMyCard = freshMyCard;
+        swappedTheirCard = freshTheirCard;
+      });
+    } catch (err) {
+      if (err instanceof TransactionAbort) return msg.reply(err.message);
+      console.error('accepttrade: transaction failed:', err.message);
+      return msg.reply('⚠️ Something went wrong completing that trade — nothing changed hands. Please try again.');
+    } finally {
+      await session.endSession();
+    }
 
     await User.updateOne({ id: trade.initiatorId }, { $inc: { tradesCompleted: 1 } });
     await User.updateOne({ id: trade.partnerId }, { $inc: { tradesCompleted: 1 } });
@@ -1453,7 +1776,7 @@ if (existing)
     ]);
 
     let text =
-      `✅ *Trade Complete!*\n\n@${trade.initiatorId.split('@')[0]} ➜ ${tierEmoji(myCard.tier)} ${myCard.name}\n@${trade.partnerId.split('@')[0]} ➜ ${tierEmoji(theirCard.tier)} ${theirCard.name}\n\n⭐ Both sides +${XP_REWARDS.trade} XP`;
+      `✅ *Trade Complete!*\n\n@${trade.initiatorId.split('@')[0]} ➜ ${tierEmoji(swappedMyCard.tier)} ${swappedMyCard.name}\n@${trade.partnerId.split('@')[0]} ➜ ${tierEmoji(swappedTheirCard.tier)} ${swappedTheirCard.name}\n\n⭐ Both sides +${XP_REWARDS.trade} XP`;
     if (initiatorXp.levelUp) text += `\n🎉 @${trade.initiatorId.split('@')[0]} leveled up to ${initiatorXp.level}!`;
     if (partnerXp.levelUp) text += `\n🎉 @${trade.partnerId.split('@')[0]} leveled up to ${partnerXp.level}!`;
     if (initiatorUnlocks.length || initiatorTitle) text += `\n\n@${trade.initiatorId.split('@')[0]}${formatUnlockNotice(initiatorUnlocks)}${formatTitleUnlockNotice(initiatorTitle)}`;
