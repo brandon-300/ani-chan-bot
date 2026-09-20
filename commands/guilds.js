@@ -6,6 +6,7 @@ const BotState = require('../models/BotState');
 const User = require('../models/User');
 const { formatNum, formatCooldown, mentionName, mentionTag, resolveNameById, boldSans, doubleStruck, parseAmount, decodeIdKey, isOwner, safeGetChat } = require('../utils/helpers');
 const { GUILD_ACHIEVEMENTS, checkGuildAchievements, formatGuildUnlockNotice } = require('../utils/guildAchievements');
+const { withGuildLock } = require('../utils/guildLock');
 
 const ROLE_RANK = Guild.ROLE_RANK;
 const QUEST_DEFS = Guild.QUEST_DEFS;
@@ -379,6 +380,11 @@ module.exports = {
   // to this plain `guild` export directly.
   async guild(client, msg, args) {
     const openGuilds = await Guild.find({ recruitment: 'open' }).sort({ level: -1 }).limit(15);
+    // Pure read, no other mutation in this command — the post-find hook in
+    // models/Guild.js no longer auto-saves (see its comment for why), so
+    // this explicitly persists whatever it normalized (interest, a rolled
+    // quest/mission) instead of silently discarding it after every browse.
+    await Promise.all(openGuilds.map(g => Guild.ensureGuildState(g)));
     const recruiting = openGuilds.filter(g => g.members.length < Guild.effectiveMaxMembers(g));
 
     if (!recruiting.length) {
@@ -501,6 +507,15 @@ module.exports = {
       // ── Per-guild anniversaries ────────────────────────────────────
       const guilds = await Guild.find();
       for (const guild of guilds) {
+        // Doubles as the daily maintenance sweep for every guild in the
+        // database — interest/quest/mission normalization used to get
+        // persisted as a side effect of this same Guild.find() via the
+        // model's read hooks; now that those hooks no longer auto-save
+        // (see models/Guild.js), this explicit call keeps that same
+        // "every guild gets freshened at least once a day" guarantee for
+        // any guild that isn't otherwise touched by a command that day.
+        await Guild.ensureGuildState(guild);
+
         const ageYears = Math.floor((Date.now() - guild.createdAt.getTime()) / (365 * 24 * 60 * 60 * 1000));
         if (ageYears < 1 || ageYears <= (guild.lastAnniversaryYearRewarded || 0)) continue;
 
@@ -558,6 +573,11 @@ module.exports = {
       await user.save();
       return msg.reply('❌ Guild not found.');
     }
+
+    // Pure read, no other mutation in this command — see the .guild
+    // (bare) comment above for why this explicit call is needed now that
+    // the post-find hook in models/Guild.js no longer auto-saves.
+    await Guild.ensureGuildState(guild);
 
     // Lazy re-check on view — same convention as .profile re-checking the
     // title on every view (see commands/economy.js). Catches anything that
@@ -897,37 +917,64 @@ module.exports = {
     const user = await User.findOrCreate(contact.id._serialized);
     if (!user.guildId) return msg.reply('❌ You are not in a guild.');
 
-    const guild = await Guild.findById(user.guildId);
-    if (!guild) {
+    if (user.coins < amount) return msg.reply('❌ Not enough coins.');
+
+    // Everything that touches the guild document — load, membership
+    // check, bank/contribution/quest mutation, save — happens inside this
+    // guild's lock (utils/guildLock.js). Without it, two members donating
+    // to the SAME guild at nearly the same instant could both load the
+    // same bank/contribution/quest values, each apply their own donation
+    // in memory, and have one save silently overwrite the other's — the
+    // second donor's coins would leave their wallet but never actually
+    // land in the guild's bank.
+    //
+    // Restructured so the donor's OWN wallet debit (below, after this)
+    // only happens once the guild side is confirmed saved — if the guild
+    // save throws, this whole call rejects and the wallet is never
+    // touched, rather than the original code's Promise.all firing both
+    // saves at once regardless of whether the other succeeded.
+    const result = await withGuildLock(user.guildId, async () => {
+      const guild = await Guild.findById(user.guildId);
+      if (!guild) return { error: 'notfound' };
+
+      const member = getMember(guild, contact.id._serialized);
+      if (!member) return { error: 'nomember' };
+
+      // Same convention as guild_info above — reflects interest already
+      // credited by the post-find hook in models/Guild.js at fetch time,
+      // before this donation's own += is applied below.
+      const interestNote = guild._interestCredited > 0
+        ? ` (📈 +${formatNum(guild._interestCredited)} interest just credited)`
+        : '';
+
+      guild.bank += amount;
+      member.contribution += amount;
+      Guild.logActivity(guild, { eventType: 'donate', userId: contact.id._serialized, amount });
+
+      // In-memory only — guild is already loaded and already being saved
+      // below, so this reuses that same write instead of a second
+      // fetch/save. No-ops (returns null) if the active quest isn't a
+      // "donate" quest.
+      const questResult = Guild.applyQuestProgress(guild, contact.id._serialized, 'donate', amount);
+
+      await guild.save();
+      return { guild, member, interestNote, questResult };
+    });
+
+    if (result.error === 'notfound') {
       user.guildId = null;
       await user.save();
       return msg.reply('❌ Guild not found.');
     }
+    if (result.error === 'nomember') {
+      return msg.reply('❌ Guild membership record not found — try leaving and rejoining.');
+    }
 
-    if (user.coins < amount) return msg.reply('❌ Not enough coins.');
-
-    const member = getMember(guild, contact.id._serialized);
-    if (!member) return msg.reply('❌ Guild membership record not found — try leaving and rejoining.');
-
-    // Same convention as guild_info above — reflects interest already
-    // credited by the post-find hook in models/Guild.js at fetch time,
-    // before this donation's own += is applied below.
-    const interestNote = guild._interestCredited > 0
-      ? ` (📈 +${formatNum(guild._interestCredited)} interest just credited)`
-      : '';
-
+    const { guild, member, interestNote, questResult } = result;
     user.coins -= amount;
-    guild.bank += amount;
-    member.contribution += amount;
-    Guild.logActivity(guild, { eventType: 'donate', userId: contact.id._serialized, amount });
+    await user.save();
 
-    // In-memory only — guild is already loaded and already being saved
-    // below, so this reuses that same write instead of a second fetch/save.
-    // No-ops (returns null) if the active quest isn't a "donate" quest.
-    const questResult = Guild.applyQuestProgress(guild, contact.id._serialized, 'donate', amount);
     const questNote = _formatQuestCompletionNote(questResult);
-
-    await Promise.all([user.save(), guild.save()]);
 
     // Bank just changed (and possibly level/questsCompleted too, if that
     // donation finished off the active quest) — check right after, rather
@@ -1869,6 +1916,9 @@ module.exports = {
 
     const season = await _getCurrentSeason();
     const top = await Guild.find().sort({ seasonReputation: -1 }).limit(5);
+    // Pure read, no other mutation in this command — see the .guild
+    // (bare) comment above for why this explicit call is needed.
+    await Promise.all(top.map(g => Guild.ensureGuildState(g)));
     const remaining = Math.max(0, season.endsAt - Date.now());
 
     let text = `⚔️ *SEASON ${season.seasonNumber}*\n⏳ Ends in ${formatCooldown(remaining)}\n\n`;
@@ -1899,6 +1949,9 @@ module.exports = {
 
     const guilds = await Guild.find().sort(sortSpec).limit(10);
     if (!guilds.length) return msg.reply('❌ No guilds have been created yet.');
+    // Pure read, no other mutation in this command — see the .guild
+    // (bare) comment above for why this explicit call is needed.
+    await Promise.all(guilds.map(g => Guild.ensureGuildState(g)));
 
     const valueFor = g =>
       metric === 'wealth' ? `💰 ${formatNum(g.bank)}` :

@@ -1,6 +1,18 @@
+const mongoose = require('mongoose');
 const User = require('../models/User');
 const { OwnedCard } = require('../models/Card');
 const { formatNum, tierEmoji, cardValue, TIER_ORDER, parseAmount } = require('../utils/helpers');
+
+// Thrown inside a mongoose session.withTransaction(...) callback purely to
+// abort it with a specific, already-worded user-facing message attached —
+// same pattern as commands/cards.js's TransactionAbort, duplicated locally
+// rather than imported for the same reason getUserCards/getCardByIndex
+// below are duplicated: keeps .loan self-contained. withTransaction()
+// aborts the transaction and rethrows whatever the callback throws — the
+// surrounding try/catch just below each transaction catches this specific
+// type and replies with `.message` verbatim, instead of the generic
+// "something went wrong" fallback used for a genuinely unexpected failure.
+class TransactionAbort extends Error {}
 
 // ─── Bank Vault ─────────────────────────────────────────────────────────────
 // When a loan goes unpaid past its due date, the staked card is seized
@@ -91,29 +103,10 @@ function formatDuration(ms) {
   return parts.join(' ');
 }
 
-// ─── Auto-default check ─────────────────────────────────────────────────────
-// Called at the top of every .loan subcommand. If the user has an active
-// loan that's past its due date, this seizes the staked card to the bank
-// vault, clears the loan, saves the user, and returns a message describing
-// what happened. Returns null if there's nothing to resolve (no active loan,
-// or one that's still within its term) — callers proceed normally in that
-// case.
-async function resolveOverdueIfNeeded(user) {
-  if (!user.loan?.active || !user.loan.dueAt) return null;
-  if (Date.now() <= user.loan.dueAt) return null;
-
-  const seizedCardName = user.loan.cardName || 'your staked card';
-  const seizedCardTier = user.loan.cardTier || '';
-  const owedAtDefault = user.loan.totalOwed;
-
-  if (user.loan.cardId) {
-    await OwnedCard.updateOne(
-      { _id: user.loan.cardId },
-      { $set: { ownerId: BANK_VAULT_ID, isStaked: false } }
-    ).catch(err => console.error('loan default: card seizure failed:', err.message));
-  }
-
-  user.loan = {
+// A blank loan object, shared by both the default-seizure and repay paths
+// below so the "cleared" shape is defined in exactly one place.
+function clearedLoan() {
+  return {
     active: false,
     bracket: null,
     principal: 0,
@@ -125,7 +118,69 @@ async function resolveOverdueIfNeeded(user) {
     issuedAt: null,
     dueAt: null,
   };
-  await user.save();
+}
+
+// ─── Auto-default check ─────────────────────────────────────────────────────
+// Called at the top of every .loan subcommand. If the user has an active
+// loan that's past its due date, this seizes the staked card to the bank
+// vault, clears the loan, and returns a message describing what happened.
+// Returns null if there's nothing to resolve (no active loan, one that's
+// still within its term, or a seizure attempt that failed and was left
+// active/overdue for the next retry) — callers proceed normally in that
+// case.
+//
+// The card seizure and the loan clearing now happen in one transaction —
+// previously the seizure was a swallowed .catch(), and the loan was
+// cleared and saved regardless of whether it succeeded. A transient
+// failure there meant the debt simply vanished while the card was never
+// actually transferred to the vault and never had isStaked cleared either
+// — permanently stuck (staked forever, with no loan left to repay against
+// it, and no way to seize it again since the loan record was already
+// gone). Now both commit together or neither does.
+//
+// Deliberately builds the cleared loan into a local variable and only
+// assigns it to `user.loan` AFTER the transaction is confirmed committed —
+// mutating `user.loan` (the caller's in-memory document) any earlier would
+// leave it wrongly showing "cleared" if the transaction then aborted,
+// even though nothing was actually saved.
+async function resolveOverdueIfNeeded(user) {
+  if (!user.loan?.active || !user.loan.dueAt) return null;
+  if (Date.now() <= user.loan.dueAt) return null;
+
+  const seizedCardName = user.loan.cardName || 'your staked card';
+  const seizedCardTier = user.loan.cardTier || '';
+  const owedAtDefault = user.loan.totalOwed;
+  const cardId = user.loan.cardId;
+  const newLoan = clearedLoan();
+
+  const session = await mongoose.startSession();
+  try {
+    await session.withTransaction(async () => {
+      if (cardId) {
+        await OwnedCard.updateOne(
+          { _id: cardId },
+          { $set: { ownerId: BANK_VAULT_ID, isStaked: false } },
+          { session }
+        );
+      }
+      await User.updateOne(
+        { _id: user._id },
+        { $set: { loan: newLoan } },
+        { session }
+      );
+    });
+  } catch (err) {
+    console.error('loan default: seizure transaction failed — loan left active/overdue for retry:', err.message);
+    return null;
+  } finally {
+    await session.endSession();
+  }
+
+  // Only reaches here once both writes above are confirmed committed —
+  // now safe to reflect the change on the in-memory object the caller
+  // holds, so its own subsequent checks (e.g. "already have an active
+  // loan?") see the update.
+  user.loan = newLoan;
 
   return (
     `⚠️ *Loan Defaulted*\n\n` +
@@ -199,22 +254,65 @@ module.exports = {
       const issuedAt = Date.now();
       const dueAt = issuedAt + bracket.days * 86_400_000;
 
-      card.isStaked = true;
-      user.loan = {
-        active: true,
-        bracket: bracket.id,
-        principal: amount,
-        interest,
-        totalOwed,
-        cardId: card._id.toString(),
-        cardName: card.name,
-        cardTier: card.tier,
-        issuedAt,
-        dueAt,
-      };
-      user.bank += amount;
+      // ─── Transaction: stake the card AND record the loan together ──────
+      // Previously these were two independent Promise.all saves — one
+      // succeeding while the other failed could lock a card as staked
+      // with no loan ever recorded against it (permanently stuck, no
+      // coins credited), or record the loan without ever actually marking
+      // the card staked (letting it be freely sold/traded/lent while
+      // still "securing" an active loan). Re-checks the card's flags and
+      // the user's loan status again fresh inside the transaction, same
+      // reasoning as everywhere else in this pass — the reads above can
+      // be stale by the time this actually runs. Uses atomic update
+      // operators ($set/$inc) rather than loading-then-.save()-ing full
+      // documents, so nothing here mutates `card`/`user` until the
+      // transaction is confirmed committed, below.
+      let newLoan;
+      const session = await mongoose.startSession();
+      try {
+        await session.withTransaction(async () => {
+          const [freshCard, freshUser] = await Promise.all([
+            OwnedCard.findById(card._id).session(session),
+            User.findOne({ id: userId }).session(session),
+          ]);
 
-      await Promise.all([card.save(), user.save()]);
+          if (!freshCard || freshCard.isStaked || freshCard.isLent || freshCard.isForSale) {
+            throw new TransactionAbort('❌ That card is no longer available to stake — check *.col* and try again.');
+          }
+          if (freshUser?.loan?.active) {
+            throw new TransactionAbort(`❌ You already have an active loan of 💰 ${formatNum(freshUser.loan.totalOwed)} coins.\nRepay it first with *.loan repay*, or check *.loan status*.`);
+          }
+
+          newLoan = {
+            active: true,
+            bracket: bracket.id,
+            principal: amount,
+            interest,
+            totalOwed,
+            cardId: freshCard._id.toString(),
+            cardName: freshCard.name,
+            cardTier: freshCard.tier,
+            issuedAt,
+            dueAt,
+          };
+
+          await Promise.all([
+            OwnedCard.updateOne({ _id: freshCard._id }, { $set: { isStaked: true } }, { session }),
+            User.updateOne({ _id: freshUser._id }, { $set: { loan: newLoan }, $inc: { bank: amount } }, { session }),
+          ]);
+        });
+      } catch (err) {
+        if (err instanceof TransactionAbort) return msg.reply(err.message);
+        console.error('loan request: transaction failed:', err.message);
+        return msg.reply('⚠️ Something went wrong setting up that loan — nothing was staked or credited. Please try again.');
+      } finally {
+        await session.endSession();
+      }
+
+      // Only reaches here once everything above is confirmed committed.
+      card.isStaked = true;
+      user.loan = newLoan;
+      user.bank += amount;
 
       return msg.reply(
         (overdueMsg ? overdueMsg + '\n\n' : '') +
@@ -246,36 +344,70 @@ module.exports = {
         );
       }
 
-      const fromBank = Math.min(user.bank, owed);
-      const fromWallet = owed - fromBank;
-      user.bank -= fromBank;
-      user.coins -= fromWallet;
+      const { cardName, cardTier } = user.loan;
 
-      const { cardId, cardName, cardTier } = user.loan;
-      if (cardId) {
-        await OwnedCard.updateOne({ _id: cardId }, { $set: { isStaked: false } })
-          .catch(err => console.error('loan repay: unstake failed:', err.message));
+      // ─── Transaction: pay off the loan AND unstake the card together ───
+      // Previously the unstake update was a swallowed .catch() — the
+      // money was already deducted and the loan already cleared
+      // regardless of whether it succeeded. A transient failure there
+      // meant the user was charged in full and owed nothing anymore, but
+      // their card stayed isStaked forever with no loan left to repay
+      // against it — permanently stuck. Now the payment and the unstake
+      // commit together or not at all; a failure here leaves the loan
+      // exactly as it was (still active, still owed), safe to retry. Also
+      // re-checks the balance fresh inside the transaction, same
+      // reasoning as everywhere else in this pass.
+      let finalBank, finalCoins;
+      const session = await mongoose.startSession();
+      try {
+        await session.withTransaction(async () => {
+          const freshUser = await User.findOne({ id: userId }).session(session);
+          if (!freshUser?.loan?.active) {
+            throw new TransactionAbort('❌ You have no active loan to repay.');
+          }
+
+          const freshOwed = freshUser.loan.totalOwed;
+          const freshAvailable = freshUser.bank + freshUser.coins;
+          if (freshAvailable < freshOwed) {
+            throw new TransactionAbort(
+              `❌ Not enough to repay. You owe 💰 ${formatNum(freshOwed)} coins.\n` +
+              `🏦 Bank: ${formatNum(freshUser.bank)} | 💰 Wallet: ${formatNum(freshUser.coins)}\n` +
+              `You need ${formatNum(freshOwed - freshAvailable)} more coins.`
+            );
+          }
+
+          const fromBank = Math.min(freshUser.bank, freshOwed);
+          const fromWallet = freshOwed - fromBank;
+
+          if (freshUser.loan.cardId) {
+            await OwnedCard.updateOne(
+              { _id: freshUser.loan.cardId },
+              { $set: { isStaked: false } },
+              { session }
+            );
+          }
+          await User.updateOne(
+            { _id: freshUser._id },
+            { $set: { loan: clearedLoan() }, $inc: { bank: -fromBank, coins: -fromWallet } },
+            { session }
+          );
+
+          finalBank = freshUser.bank - fromBank;
+          finalCoins = freshUser.coins - fromWallet;
+        });
+      } catch (err) {
+        if (err instanceof TransactionAbort) return msg.reply(err.message);
+        console.error('loan repay: transaction failed:', err.message);
+        return msg.reply('⚠️ Something went wrong repaying that loan — you were not charged. Please try again.');
+      } finally {
+        await session.endSession();
       }
-
-      user.loan = {
-        active: false,
-        bracket: null,
-        principal: 0,
-        interest: 0,
-        totalOwed: 0,
-        cardId: null,
-        cardName: null,
-        cardTier: null,
-        issuedAt: null,
-        dueAt: null,
-      };
-      await user.save();
 
       return msg.reply(
         `✅ *Loan Repaid!*\n\n` +
         `💳 Paid off: ${formatNum(owed)} coins\n` +
         `🔓 ${tierEmoji(cardTier)} *${cardName}* [${cardTier}] is no longer staked.\n\n` +
-        `🏦 Bank: ${formatNum(user.bank)} | 💰 Wallet: ${formatNum(user.coins)}`
+        `🏦 Bank: ${formatNum(finalBank)} | 💰 Wallet: ${formatNum(finalCoins)}`
       );
     }
 

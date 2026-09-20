@@ -10,6 +10,7 @@ const mongoose = require('mongoose');
 const User = require('./User');
 const { getNextSequence } = require('./Counter');
 const { xpNeededForLevel, encodeIdKey } = require('../utils/helpers');
+const { withGuildLock } = require('../utils/guildLock');
 
 const ROLES = ['leader', 'officer', 'veteran', 'member'];
 // Higher number = more senior. Used by .guild promote/.guild demote to
@@ -563,39 +564,48 @@ GuildSchema.pre('save', async function (next) {
 // thin wrapper around findOne, so this single hook catches both. Does NOT
 // fire for findByIdAndDelete/findOneAndDelete (a different Mongoose query
 // op), which is correct — a guild about to be disbanded shouldn't be
-// re-saved with fresh interest/quests on the way out.
-GuildSchema.post('findOne', async function (doc) {
+// re-normalized on the way out.
+//
+// CHANGED: this used to also call doc.save() itself whenever normalization
+// changed something, which meant even a read-only query like .guild
+// leaderboard could silently write to the database as a side effect of
+// nothing more than being read. That's removed — this hook now ONLY
+// normalizes the in-memory document. That part is still essential: every
+// caller throughout commands/guilds.js relies on activeQuest/bank/etc.
+// already being current the instant they read a guild, and removing the
+// normalization itself (not just the save) would show genuinely stale
+// data, not just fail to persist it. Persistence is now left to whoever
+// calls .save() next — either the caller's own subsequent mutation (the
+// common case, and today's behavior is preserved for free there, per the
+// note on Guild.ensureGuildState below), or an explicit call to that
+// static for the handful of call sites that are pure reads.
+GuildSchema.post('findOne', function (doc) {
   if (!doc) return;
   // Defensive: a query that projects out fields this normalization needs
   // (.select(...)) or returns a plain object instead of a document
-  // (.lean()) can't be safely normalized or saved — skip rather than
-  // crash reading .questType (etc.) off a field that was never fetched.
-  // Every current Guild.find/findOne/findById call in this codebase
-  // fetches full documents, so this only guards against a FUTURE
-  // .select()/.lean() being added without remembering this hook exists.
+  // (.lean()) can't be safely normalized — skip rather than crash reading
+  // .questType (etc.) off a field that was never fetched. Every current
+  // Guild.find/findOne/findById call in this codebase fetches full
+  // documents, so this only guards against a FUTURE .select()/.lean()
+  // being added without remembering this hook exists.
   if (typeof doc.save !== 'function' || doc.activeQuest === undefined) return;
-  const needsInterestSave = applyDailyGuildInterest(doc);
-  const needsQuestSave = ensureActiveQuest(doc);
-  const needsMissionSave = ensureActiveMission(doc);
-  if (needsInterestSave || needsQuestSave || needsMissionSave) {
-    await doc.save();
-  }
+  applyDailyGuildInterest(doc);
+  ensureActiveQuest(doc);
+  ensureActiveMission(doc);
 });
 
 // Covers Guild.find(...) (e.g. .guild leaderboard's top-10 query) — same
-// logic, applied per-document across the result set.
-GuildSchema.post('find', async function (docs) {
+// logic, applied per-document across the result set. See the findOne hook
+// above for why this no longer saves anything itself.
+GuildSchema.post('find', function (docs) {
   if (!Array.isArray(docs) || docs.length === 0) return;
-  const saves = [];
   for (const doc of docs) {
     // Same defensive skip as the findOne hook above.
     if (typeof doc.save !== 'function' || doc.activeQuest === undefined) continue;
-    const needsInterestSave = applyDailyGuildInterest(doc);
-    const needsQuestSave = ensureActiveQuest(doc);
-    const needsMissionSave = ensureActiveMission(doc);
-    if (needsInterestSave || needsQuestSave || needsMissionSave) saves.push(doc.save());
+    applyDailyGuildInterest(doc);
+    ensureActiveQuest(doc);
+    ensureActiveMission(doc);
   }
-  if (saves.length) await Promise.all(saves);
 });
 
 // ─── Public quest API ───────────────────────────────────────────────────────
@@ -688,17 +698,28 @@ GuildSchema.statics.addQuestProgress = async function (userId, questType, amount
     const user = await User.findOne({ id: userId });
     if (!user || !user.guildId) return null;
 
-    const guild = await this.findById(user.guildId);
-    if (!guild) return null;
-    if (!guild.members.some(m => m.userId === userId)) return null;
+    // Everything from the load through the save happens inside this
+    // guild's lock (utils/guildLock.js). Without it, two members of the
+    // SAME guild claiming cards or finishing games at nearly the same
+    // instant could both load the same quest progress, each add their own
+    // amount in memory, and have one save silently overwrite the other's
+    // — one member's progress would just vanish instead of both counting.
+    // This is the single highest-frequency guild mutation in the bot (a
+    // card claim or game win anywhere, for any guild member, calls this),
+    // so it's the first place this lock is applied.
+    return await withGuildLock(user.guildId, async () => {
+      const guild = await this.findById(user.guildId);
+      if (!guild) return null;
+      if (!guild.members.some(m => m.userId === userId)) return null;
 
-    const result = this.applyQuestProgress(guild, userId, questType, amount);
-    if (!result) return null;
+      const result = this.applyQuestProgress(guild, userId, questType, amount);
+      if (!result) return null;
 
-    result.guildName = guild.name;
-    result.guildEmblem = guild.emblem;
-    await guild.save();
-    return result;
+      result.guildName = guild.name;
+      result.guildEmblem = guild.emblem;
+      await guild.save();
+      return result;
+    });
   } catch (err) {
     console.error('Guild.addQuestProgress error:', err.message);
     return null;
@@ -719,5 +740,34 @@ GuildSchema.statics.getUpgradeCost = getUpgradeCost;
 GuildSchema.statics.SHOP_BANNERS = SHOP_BANNERS;
 GuildSchema.statics.awardReputation = awardReputation;
 GuildSchema.statics.logActivity = logActivity;
+
+// ─── Explicit guild-state maintenance (replaces the old auto-save read
+// hooks — see the findOne/find hooks earlier in this file) ──────────────
+// Normalizes `guild` in place (daily interest, quest/mission rollover —
+// the same three functions those hooks still run on every read) and
+// persists the result if anything actually changed. Most callers that load
+// a guild don't need to call this explicitly: they're about to do their
+// OWN further mutations and their OWN eventual .save(), which already
+// carries these same normalization changes forward for free — Mongoose
+// persists every modified path on a document, not just the ones a caller
+// explicitly touched. This exists for the handful of call sites in
+// commands/guilds.js that are PURE reads with no other mutation of their
+// own (the bare `.guild` browse, `.guild info`, `.guild season`, `.guild
+// leaderboard`) and for _maybeSendGuildEvents' daily per-guild sweep,
+// which acts as the safety net for every OTHER guild that isn't otherwise
+// touched by any command on a given day — ChatGPT's own suggested
+// alternative for this ("Or use a scheduler for daily/periodic guild-state
+// maintenance") landed almost for free since that function already loops
+// every guild once a day.
+GuildSchema.statics.ensureGuildState = async function (guild) {
+  if (!guild || typeof guild.save !== 'function') return guild;
+  const needsInterestSave = applyDailyGuildInterest(guild);
+  const needsQuestSave = ensureActiveQuest(guild);
+  const needsMissionSave = ensureActiveMission(guild);
+  if (needsInterestSave || needsQuestSave || needsMissionSave) {
+    await guild.save();
+  }
+  return guild;
+};
 
 module.exports = mongoose.model('Guild', GuildSchema);

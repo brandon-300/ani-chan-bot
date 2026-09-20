@@ -1,224 +1,99 @@
+// commands/anime.js — SFW anime image commands
+// All NSFW commands live in commands/nsfw.js (enabled per-group with .nsfw on).
+
 const axios = require('axios');
 const { MessageMedia } = require('whatsapp-web.js');
-const Group = require('../models/Group');
-const { safeGetChat } = require('../utils/helpers');
+const { fetchRandomImage } = require('../utils/danbooru');
 
-// ─── nekos.best — SFW anime images ───────────────────────────────────────────
-async function getSFW(endpoint) {
-  const res = await axios.get(`https://nekos.best/api/v2/${endpoint}`);
-  return res.data.results[0].url;
+// Build tag-set variants: for each tag combo, try general first, then sensitive.
+// Anonymous Danbooru searches allow max 2 tags, so each combo must be ONE tag
+// (plus the rating: meta-tag). Animated/comic filtering happens client-side
+// in utils/danbooru.js after the response comes back.
+function sfwSets(...tagCombos) {
+  const sets = [];
+  for (const tags of tagCombos.filter(Boolean)) {
+    sets.push(`rating:general ${tags}`);
+    sets.push(`rating:sensitive ${tags}`);
+  }
+  return sets;
 }
 
-// ─── waifu.im — NSFW anime images ────────────────────────────────────────────
-async function getNSFW(tag) {
-  const res = await axios.get('https://api.waifu.im/search', {
-    params: { included_tags: tag, is_nsfw: 'true' },
-  });
-  return res.data.images[0].url;
-}
-
-async function sendAnimeImg(msg, url, caption, nsfw = false) {
+async function sendAnimeImg(msg, url, caption) {
   try {
-    if (nsfw) {
-      const chat = await safeGetChat(msg);
-    if (!chat) return;
-      if (!chat) return;
-      if (!chat.isGroup) return msg.reply('❌ NSFW commands can only be used in groups.');
+    // Prefer downloading ourselves so we control the User-Agent / size.
+    // Fall back to MessageMedia.fromUrl if the direct download fails.
+    let media;
+    try {
+      const ext = String(url.split('.').pop() || 'jpg').toLowerCase();
+      const mime =
+        ext === 'png' ? 'image/png' :
+        ext === 'webp' ? 'image/webp' : 'image/jpeg';
 
-      const group = await Group.findOne({ id: chat.id._serialized });
-      if (!group?.nsfw) {
-        return msg.reply('❌ NSFW is disabled in this group.\nAdmin can enable it with *.nsfw on*');
-      }
+      const res = await axios.get(url, {
+        responseType: 'arraybuffer',
+        timeout: 45000,
+        maxContentLength: 20 * 1024 * 1024,
+        headers: {
+          'User-Agent': 'AniChanBot/1.0 (anime-commands)',
+          Referer: 'https://danbooru.donmai.us/',
+        },
+      });
+      media = new MessageMedia(mime, Buffer.from(res.data).toString('base64'), `anichan_${Date.now()}.${ext}`);
+    } catch {
+      media = await MessageMedia.fromUrl(url, { unsafeMime: true });
     }
 
-    const media = await MessageMedia.fromUrl(url, { unsafeMime: true });
     await msg.reply(media, undefined, { caption });
   } catch (err) {
-    msg.reply(`❌ Failed to fetch image. API may be down.\n${caption}`);
+    console.error(`[anime] send failed (${caption}):`, err.message);
+    return msg.reply(`❌ Failed to fetch image. API may be down.\n${caption}`).catch(() => {});
   }
 }
 
-// ─── SFW Commands ─────────────────────────────────────────────────────────────
+async function handleSfwImage(msg, tagSets, caption) {
+  const post = await fetchRandomImage(tagSets).catch(() => null);
+  if (!post) return msg.reply('❌ API unavailable.');
+  await sendAnimeImg(msg, post.url, caption);
+}
+
 module.exports = {
   // .waifu
-  async waifu(client, msg, args) {
-    const url = await getSFW('waifu').catch(() => null);
-    if (!url) return msg.reply('❌ API unavailable.');
-    await sendAnimeImg(msg, url, '🌸 Waifu');
+  async waifu(client, msg) {
+    await handleSfwImage(msg, sfwSets('1girl', '2girls'), '🌸 Waifu');
   },
 
   // .neko
-  async neko(client, msg, args) {
-    const url = await getSFW('neko').catch(() => null);
-    if (!url) return msg.reply('❌ API unavailable.');
-    await sendAnimeImg(msg, url, '🐱 Neko');
+  async neko(client, msg) {
+    await handleSfwImage(msg, sfwSets('cat_girl', 'cat_ears'), '🐱 Neko');
   },
 
   // .maid
-  async maid(client, msg, args) {
-    const url = await getSFW('maid').catch(() => null);
-    if (!url) return msg.reply('❌ API unavailable.');
-    await sendAnimeImg(msg, url, '🧹 Maid');
+  async maid(client, msg) {
+    await handleSfwImage(msg, sfwSets('maid'), '🧹 Maid');
   },
 
   // .mori-calliope
-  async ['mori-calliope'](client, msg, args) {
-    try {
-      const res = await axios.get('https://nekos.best/api/v2/neko');
-      await sendAnimeImg(msg, res.data.results[0].url, '💀 Mori Calliope');
-    } catch {
-      msg.reply('❌ API unavailable.');
-    }
+  async ['mori-calliope'](client, msg) {
+    await handleSfwImage(msg, sfwSets('mori_calliope'), '💀 Mori Calliope');
   },
 
   // .raiden-shogun
-  async ['raiden-shogun'](client, msg, args) {
-    try {
-      const res = await axios.get('https://nekos.best/api/v2/waifu');
-      await sendAnimeImg(msg, res.data.results[0].url, '⚡ Raiden Shogun');
-    } catch {
-      msg.reply('❌ API unavailable.');
-    }
+  async ['raiden-shogun'](client, msg) {
+    await handleSfwImage(msg, sfwSets('raiden_shogun'), '⚡ Raiden Shogun');
   },
 
-  // .oppai
-  async oppai(client, msg, args) {
-    try {
-      const res = await axios.get('https://nekos.best/api/v2/waifu');
-      await sendAnimeImg(msg, res.data.results[0].url, '🌸 Oppai');
-    } catch {
-      msg.reply('❌ API unavailable.');
-    }
-  },
-
-  // .selfies
-  async selfies(client, msg, args) {
-    const url = await getSFW('waifu').catch(() => null);
-    if (!url) return msg.reply('❌ API unavailable.');
-    await sendAnimeImg(msg, url, '🤳 Anime Selfie');
+  // .selfies — SFW
+  async selfies(client, msg) {
+    await handleSfwImage(msg, sfwSets('taking_selfie', 'smartphone'), '🤳 Anime Selfie');
   },
 
   // .uniform
-  async uniform(client, msg, args) {
-    const url = await getSFW('maid').catch(() => null);
-    if (!url) return msg.reply('❌ API unavailable.');
-    await sendAnimeImg(msg, url, '👘 Uniform');
+  async uniform(client, msg) {
+    await handleSfwImage(msg, sfwSets('school_uniform', 'serafuku'), '👘 Uniform');
   },
 
   // .kamisato-ayaka
-  async ['kamisato-ayaka'](client, msg, args) {
-    try {
-      const res = await axios.get('https://nekos.best/api/v2/waifu');
-      await sendAnimeImg(msg, res.data.results[0].url, '❄️ Kamisato Ayaka');
-    } catch {
-      msg.reply('❌ API unavailable.');
-    }
-  },
-
-  // ─── NSFW Toggle ─────────────────────────────────────────────────────────────
-  // .nsfw on/off
-  async nsfw(client, msg, args) {
-    const chat = await safeGetChat(msg);
-    if (!chat) return;
-    if (!chat) return;
-    if (!chat.isGroup) return msg.reply('❌ Group only.');
-
-    const contact = await msg.getContact();
-    const participant = chat.participants.find(p => p.id._serialized === contact.id._serialized);
-    if (!participant?.isAdmin && !participant?.isSuperAdmin) {
-      return msg.reply('❌ Admins only!');
-    }
-
-    const sub = args[0]?.toLowerCase();
-    if (!sub || !['on', 'off'].includes(sub)) return msg.reply('❌ Usage: .nsfw [on/off]');
-
-    const group = await Group.findOneAndUpdate(
-      { id: chat.id._serialized },
-      { nsfw: sub === 'on' },
-      { upsert: true, new: true }
-    );
-
-    msg.reply(`🔞 NSFW is now *${group.nsfw ? 'ON' : 'OFF'}* in this group.`);
-  },
-
-  // ─── NSFW Commands ────────────────────────────────────────────────────────────
-  // .milf
-  async milf(client, msg, args) {
-    const url = await getNSFW('milf').catch(() => null);
-    if (!url) return msg.reply('❌ API unavailable.');
-    await sendAnimeImg(msg, url, '🔞 Milf', true);
-  },
-
-  // .ass
-  async ass(client, msg, args) {
-    const url = await getNSFW('ass').catch(() => null);
-    if (!url) return msg.reply('❌ API unavailable.');
-    await sendAnimeImg(msg, url, '🍑 Ass', true);
-  },
-
-  // .hentai
-  async hentai(client, msg, args) {
-    const url = await getNSFW('hentai').catch(() => null);
-    if (!url) return msg.reply('❌ API unavailable.');
-    await sendAnimeImg(msg, url, '🔞 Hentai', true);
-  },
-
-  // .oral
-  async oral(client, msg, args) {
-    const url = await getNSFW('oral').catch(() => null);
-    if (!url) return msg.reply('❌ API unavailable.');
-    await sendAnimeImg(msg, url, '🔞 Oral', true);
-  },
-
-  // .ecchi
-  async ecchi(client, msg, args) {
-    const url = await getNSFW('ecchi').catch(() => null);
-    if (!url) return msg.reply('❌ API unavailable.');
-    await sendAnimeImg(msg, url, '🔞 Ecchi', true);
-  },
-
-  // .paizuri
-  async paizuri(client, msg, args) {
-    const url = await getNSFW('paizuri').catch(() => null);
-    if (!url) return msg.reply('❌ API unavailable.');
-    await sendAnimeImg(msg, url, '🔞 Paizuri', true);
-  },
-
-  // .ero
-  async ero(client, msg, args) {
-    const url = await getNSFW('ero').catch(() => null);
-    if (!url) return msg.reply('❌ API unavailable.');
-    await sendAnimeImg(msg, url, '🔞 Ero', true);
-  },
-
-  // .ehentai — link to e-hentai with tag
-  async ehentai(client, msg, args) {
-    const chat = await safeGetChat(msg);
-    if (!chat) return;
-    if (!chat) return;
-    if (chat.isGroup) {
-      const group = await Group.findOne({ id: chat.id._serialized });
-      if (!group?.nsfw) return msg.reply('❌ NSFW is disabled here.');
-    }
-    const tag = args.join('+') || 'anime';
-    msg.reply(`🔞 *E-Hentai Search*\n\n🔗 https://e-hentai.org/?f_search=${tag}`);
-  },
-
-  // .nhentai — link to nhentai with code or tag
-  async nhentai(client, msg, args) {
-    const chat = await safeGetChat(msg);
-    if (!chat) return;
-    if (!chat) return;
-    if (chat.isGroup) {
-      const group = await Group.findOne({ id: chat.id._serialized });
-      if (!group?.nsfw) return msg.reply('❌ NSFW is disabled here.');
-    }
-    const code = args[0];
-    if (code && /^\d+$/.test(code)) {
-      msg.reply(`🔞 *NHentai*\n\n🔗 https://nhentai.net/g/${code}/`);
-    } else {
-      const tag = args.join('+') || 'anime';
-      msg.reply(`🔞 *NHentai Search*\n\n🔗 https://nhentai.net/search/?q=${tag}`);
-    }
+  async ['kamisato-ayaka'](client, msg) {
+    await handleSfwImage(msg, sfwSets('kamisato_ayaka'), '❄️ Kamisato Ayaka');
   },
 };
