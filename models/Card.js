@@ -47,16 +47,27 @@ const CardCatalogueSchema = new mongoose.Schema({
 
   // Which service imageUrl currently points at — 'anilist' (the original
   // pipeline, commands/cardmanager.js's createCardFromAniList/
-  // .backfillimages), 'danbooru' (.upgradeimages, utils/danbooru.js), or
-  // 'gelbooru' (same command — utils/danbooru.js's fallback source for
-  // characters Danbooru itself has no usable art for). Exists purely so a
-  // later spot-check can find what changed:
+  // .backfillimages), 'danbooru'/'gelbooru'/'safebooru' (.upgradeimages,
+  // utils/danbooru.js), or 'google_image_search' (repairCardImages.js).
+  // Exists purely so a later spot-check can find what changed:
   // db.cardcatalogues.find({ imageSource: 'danbooru' }) in mongosh, or
   // filter on it from a future review command — .upgradeimages applies its
   // best guess automatically (no per-card confirmation), so this is what
   // makes "I'll check it after the fact" actually practical instead of
   // having to remember/diff which 300 cards changed.
-  imageSource: { type: String, enum: ['anilist', 'danbooru', 'gelbooru'], default: 'anilist' },
+  //
+  // BUGFIX: 'safebooru' was missing from this enum even though
+  // utils/danbooru.js's findCharacterArtwork() can return
+  // { source: 'safebooru', ... } and commands/cardmanager.js's
+  // .upgradeimages writes that straight into this field. Mongoose enum
+  // validation runs on doc.save() and rejects any value not listed here —
+  // so every card that matched via the Safebooru fallback was silently
+  // failing to save, landing in .upgradeimages' "skipped/no match" list
+  // even though a match WAS found (the save() threw inside that command's
+  // try/catch, which logs it as a generic lookup failure with no obvious
+  // sign it was actually this). Added here, plus 'google_image_search' for
+  // repairCardImages.js's new pipeline.
+  imageSource: { type: String, enum: ['anilist', 'danbooru', 'gelbooru', 'safebooru', 'google_image_search'], default: 'anilist' },
 
   // The exact post ID on whichever site imageSource points to (Danbooru's
   // or Gelbooru's own numeric post ID, not our cardId). ADDED Aug 2026
@@ -66,8 +77,27 @@ const CardCatalogueSchema = new mongoose.Schema({
   // on a technically-valid-but-disliked match (e.g. an oddly stylized
   // Inuyasha) would just return the identical picture again. Passing this
   // back in as excludePostId lets retry actually surface the next-best
-  // candidate instead.
+  // candidate instead. Left null for google_image_search cards — there's
+  // no equivalent "post id" concept there, see imageSourceUrl instead.
   sourcePostId: { type: String, default: null },
+
+  // ─── Image-repair provenance (repairCardImages.js) ─────────────────────
+  // Populated only once a card has gone through the Google Image Search +
+  // Gemini Vision repair pipeline (imageSource === 'google_image_search').
+  // Every field defaults to null and nothing else in the codebase reads
+  // them, so adding this block is purely additive — it can't affect
+  // .upgradeimages, .backfillimages, .editcard, or the renderer.
+  imageSourceUrl: { type: String, default: null }, // the page the image was found on (Custom Search's image.contextLink)
+  imageSourceTitle: { type: String, default: null }, // that page/result's title — lets a human spot-check without re-searching
+  imageQualityScore: { type: Number, default: null }, // repairCardImages.js's own 0-100 domain+resolution+text-match+vision score
+  imageConfidence: { type: Number, default: null }, // Gemini Vision's own 0-1 confidence, when a vision check ran
+  imageHash: { type: String, default: null }, // sha256 of the stored image bytes — flags the same picture reused across cards later
+  imageVerifiedAt: { type: Date, default: null },
+  imageReviewStatus: {
+    type: String,
+    enum: ['verified', 'needs_review', 'failed'],
+    default: null, // null = never touched by repairCardImages.js — distinct from having been checked and cleared
+  },
 
   // ─── Rendered card cache (utils/cardRenderer.js) ───────────────────────────
   // The custom trading-card PNG is expensive to (re)build — a Puppeteer
