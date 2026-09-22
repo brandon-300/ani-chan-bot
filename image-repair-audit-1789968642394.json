@@ -1,0 +1,236 @@
+[
+  {
+    "cardId": "5Z5DXD",
+    "name": "Rem",
+    "series": "Re:Zero",
+    "status": "needs_review",
+    "reason": "every candidate was hard-rejected",
+    "attempted": [
+      {
+        "imageUrl": "https://static.wikia.nocookie.net/p__/images/b/b1/Rem_Season_Three_Infobox_2.png/revision/latest?cb=20241002140209&path-prefix=protagonist",
+        "error": "download failed: Request failed with status code 403",
+        "score": null,
+        "reasons": null
+      },
+      {
+        "imageUrl": "https://static.wikia.nocookie.net/p__/images/5/52/Ram_Season_Four_Infobox.png/revision/latest?cb=20250706114344&path-prefix=protagonist",
+        "error": "download failed: Request failed with status code 403",
+        "score": null,
+        "reasons": null
+      },
+      {
+        "imageUrl": "https://static.wikia.nocookie.net/p__/images/d/d7/ReZero_Light_Novel_Volume_2_Cover.jpg/revision/latest?cb=20201107130032&path-prefix=protagonist",
+        "error": "download failed: Request failed with status code 403",
+        "score": null,
+        "reasons": null
+      },
+      {
+        "imageUrl": "https://static.wikia.nocookie.net/dragonball/images/f/fa/Keiji_Fujiwara.jpg/revision/latest?cb=20230329013621",
+        "error": "download failed: Request failed with status code 403",
+        "score": null,
+        "reasons": null
+      },
+      {
+        "imageUrl": "https://static.wikia.nocookie.net/jujutsu-kaisen/images/5/5a/Satoru_Gojo_arrives_on_the_battlefield_%28Anime%29.png/revision/latest?cb=20210226205256",
+        "error": "download failed: Request failed with status code 403",
+        "score": null,
+        "reasons": null
+      }
+    ]
+  },
+  {
+    "cardId": "WRY79P",
+    "name": "Emilia",
+    "series": "Re:Zero",
+    "status": "needs_review",
+    "reason": "every candidate was hard-rejected",
+    "attempted": [
+      {
+        "imageUrl": "https://static.wikia.nocookie.net/p__/images/7/7f/Emilia_Season_Three_Infobox.png/revision/latest?cb=20240324091650&path-prefix=protagonist",
+        "error": "download failed: Request failed with status code 403",
+        "score": null,
+        "reasons": null
+      },
+      {
+        "imageUrl": "https://static.wikia.nocookie.net/p__/images/8/8c/Emilia_Light_Novel_Concept_Art_1.jpg/revision/latest?cb=20201005211905&path-prefix=protagonist",
+        "error": "download failed: Request failed with status code 403",
+        "score": null,
+        "reasons": null
+      },
+      {
+        "imageUrl": "https://static.wikia.nocookie.net/dragonball/images/a/aa/Dawn_M._Bennett.jpg/revision/latest?cb=20180829125528",
+        "error": "download failed: Request failed with status code 403",
+        "score": null,
+        "reasons": null
+      },
+      {
+        "imageUrl": "https://static.wikia.nocookie.net/dragonball/images/3/39/Yoko_Hikasa.jpg/revision/latest?cb=20240910171057",
+        "error": "download failed: Request failed with status code 403",
+        "score": null,
+        "reasons": null
+      },
+      {
+        "imageUrl": "https://static.wikia.nocookie.net/bokunoheroacademia/images/5/5e/Emi_Fukukado_Anime_Hero_Costume.png/revision/latest?cb=20251115183526",
+        "error": "download failed: Request failed with status code 403",
+        "score": null,
+        "reasons": null
+      }
+    ]
+  },
+  {
+    "cardId": "YBZM8Y",
+    "name": "Beatrice",
+    "series": "Re:Zero",
+    "status": "needs_review",
+    "reason": "every candidate was hard-rejected",
+    "attempted": [
+      {
+        "imageUrl": "https://static.wikia.nocookie.net/p__/images/1/16/Beatrice_Season_Three_Infobox.png/revision/latest?cb=20240324092359&path-prefix=protagonist",
+        "error": "download failed: Request failed with status code 403",
+        "score": null,
+        "reasons": null
+      },
+      {
+        "imageUrl": "https://static.wikia.nocookie.net/p__/images/a/a1/Beatrice_Light_Novel_Concept_Art_1.jpg/revision/latest?cb=20201018215601&path-prefix=protagonist",
+        "error": "download failed: Request failed with status code 403",
+        "score": null,
+        "reasons": null
+      },
+      {
+        "imageUrl": "https://static.wikia.nocookie.net/dragonball/images/7/7d/BeerusWikia_%283%29.jpg/revision/latest?cb=20240224003806",
+        "error": "download failed: Request failed with status code 403",
+        "score": null,
+        "reasons": null
+      },
+      {
+        "imageUrl": "https://static.wikia.nocookie.net/dragonball/images/6/60/Ultra_Instinct_Goku_Full_Body.jpg/revision/latest?cb=20181007075243",
+        "error": "download failed: Request failed with status code 403",
+        "score": null,
+        "reasons": null
+      },
+      {
+        "imageUrl": "https://static.wikia.nocookie.net/dragonball/images/a/a7/Bulma_and_Nami.png/revision/latest?cb=20091005042915",
+        "error": "download failed: Request failed with status code 403",
+        "score": null,
+        "reasons": null
+      }
+    ]
+  },
+  {
+    "cardId": "CBRR8S",
+    "name": "Asuna Yuuki",
+    "series": "Sword Art Online",
+    "status": "needs_review",
+    "reason": "every candidate was hard-rejected",
+    "attempted": [
+      {
+        "imageUrl": "https://static.wikia.nocookie.net/p__/images/8/88/Asuna_SAO.png/revision/latest?cb=20130909135032&path-prefix=protagonist",
+        "error": "download failed: Request failed with status code 403",
+        "score": null,
+        "reasons": null
+      },
+      {
+        "imageUrl": "https://static.wikia.nocookie.net/p__/images/7/7a/Yuuki_Konno.png/revision/latest?cb=20200502124016&path-prefix=protagonist",
+        "error": "download failed: Request failed with status code 403",
+        "score": null,
+        "reasons": null
+      },
+      {
+        "imageUrl": "https://static.wikia.nocookie.net/p__/images/e/e3/Yz50883c91170662a298ch.jpg/revision/latest?cb=20160515070633&path-prefix=protagonist",
+        "error": "download failed: Request failed with status code 403",
+        "score": null,
+        "reasons": null
+      },
+      {
+        "imageUrl": "https://static.wikia.nocookie.net/onepiece/images/4/4e/Aisa_Anime_Post_Timeskip_Infobox.png/revision/latest?cb=20251207162352",
+        "error": "download failed: Request failed with status code 403",
+        "score": null,
+        "reasons": null
+      },
+      {
+        "imageUrl": "https://static.wikia.nocookie.net/onepiece/images/f/f2/Ally_Anime_Infobox.png/revision/latest?cb=20140917053123",
+        "error": "download failed: Request failed with status code 403",
+        "score": null,
+        "reasons": null
+      }
+    ]
+  },
+  {
+    "cardId": "Y5RU4A",
+    "name": "Kazuto Kirigaya",
+    "series": "Sword Art Online",
+    "status": "needs_review",
+    "reason": "every candidate was hard-rejected",
+    "attempted": [
+      {
+        "imageUrl": "https://static.wikia.nocookie.net/p__/images/4/4e/Kirito_Full_Body.png/revision/latest?cb=20130720135349&path-prefix=protagonist",
+        "error": "download failed: Request failed with status code 403",
+        "score": null,
+        "reasons": null
+      },
+      {
+        "imageUrl": "https://static.wikia.nocookie.net/p__/images/7/72/Leafa_ALO_Infobox.png/revision/latest?cb=20200818142755&path-prefix=protagonist",
+        "error": "download failed: Request failed with status code 403",
+        "score": null,
+        "reasons": null
+      },
+      {
+        "imageUrl": "https://static.wikia.nocookie.net/p__/images/d/d2/550743_480824621962682_162835256_n.png/revision/latest?cb=20151205030032&path-prefix=protagonist",
+        "error": "download failed: Request failed with status code 403",
+        "score": null,
+        "reasons": null
+      },
+      {
+        "imageUrl": "https://static.wikia.nocookie.net/onepiece/images/f/f0/Saga_Anime_Infobox.png/revision/latest?cb=20231206231059",
+        "error": "download failed: Request failed with status code 403",
+        "score": null,
+        "reasons": null
+      },
+      {
+        "imageUrl": "https://static.wikia.nocookie.net/onepiece/images/4/44/Sword_Infobox.png/revision/latest?cb=20230430031352",
+        "error": "download failed: Request failed with status code 403",
+        "score": null,
+        "reasons": null
+      }
+    ]
+  },
+  {
+    "cardId": "9FR8JN",
+    "name": "Levi Ackerman",
+    "series": "Attack on Titan",
+    "status": "needs_review",
+    "reason": "every candidate was hard-rejected",
+    "attempted": [
+      {
+        "imageUrl": "https://static.wikia.nocookie.net/p__/images/c/c3/LeviAckerman854FullBodyAnime.png/revision/latest?cb=20220323131847&path-prefix=protagonist",
+        "error": "download failed: Request failed with status code 403",
+        "score": null,
+        "reasons": null
+      },
+      {
+        "imageUrl": "https://static.wikia.nocookie.net/p__/images/9/97/The_Levi_Squad_Poster.png/revision/latest?cb=20131109151202&path-prefix=protagonist",
+        "error": "download failed: Request failed with status code 403",
+        "score": null,
+        "reasons": null
+      },
+      {
+        "imageUrl": "https://static.wikia.nocookie.net/p__/images/7/7a/413.png/revision/latest?cb=20150604180206&path-prefix=protagonist",
+        "error": "download failed: Request failed with status code 403",
+        "score": null,
+        "reasons": null
+      },
+      {
+        "imageUrl": "https://static.wikia.nocookie.net/onepiece/images/6/6f/Pandaman_Manga_Infobox.png/revision/latest?cb=20231114045015",
+        "error": "download failed: Request failed with status code 403",
+        "score": null,
+        "reasons": null
+      },
+      {
+        "imageUrl": "https://static.wikia.nocookie.net/onepiece/images/c/c4/Smoker_Anime_Post_Timeskip_Infobox.png/revision/latest?cb=20221101011905",
+        "error": "download failed: Request failed with status code 403",
+        "score": null,
+        "reasons": null
+      }
+    ]
+  }
+]

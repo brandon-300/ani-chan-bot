@@ -1,0 +1,23 @@
+[
+  {
+    "cardId": "8FHCCJ",
+    "name": "Rias Gremory",
+    "series": "High School DxD",
+    "status": "needs_review",
+    "reason": "every candidate was hard-rejected",
+    "attempted": [
+      {
+        "imageUrl": "https://static.wikia.nocookie.net/highschooldxd/images/6/61/Volume_20_-_Rias.jpg/revision/latest?cb=20230512014330",
+        "error": "download failed: timeout of 15000ms exceeded",
+        "score": null,
+        "reasons": null
+      },
+      {
+        "imageUrl": "https://static.wikia.nocookie.net/highschooldxd/images/b/b1/HSDxD_vol_01_057.jpeg/revision/latest?cb=20201217142923",
+        "error": "download failed: read ECONNABORTED",
+        "score": null,
+        "reasons": null
+      }
+    ]
+  }
+]

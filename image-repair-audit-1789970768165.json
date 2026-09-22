@@ -1,0 +1,22 @@
+[
+  {
+    "cardId": "8FHCCJ",
+    "name": "Rias Gremory",
+    "series": "High School DxD",
+    "oldImageUrl": "https://cdn.donmai.us/sample/ac/b9/sample-acb9fca3ee3db4a7322687624207c00f.jpg",
+    "oldImageSource": "danbooru",
+    "chosenImageUrl": "https://static.wikia.nocookie.net/highschooldxd/images/6/61/Volume_20_-_Rias.jpg/revision/latest?cb=20230512014330",
+    "chosenSourcePageUrl": "https://highschooldxd.fandom.com/wiki/Rias_Gremory",
+    "chosenTitle": "Rias Gremory",
+    "score": 80,
+    "confidence": null,
+    "reasons": [
+      "acceptable domain (+10)",
+      "search result text mentions both name and series (+15)",
+      "high resolution 1507x1985 (+15)",
+      "no Gemini Vision check performed for this candidate (scored on domain/resolution/text only)"
+    ],
+    "candidatesTried": 2,
+    "status": "proposed"
+  }
+]

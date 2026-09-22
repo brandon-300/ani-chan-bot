@@ -1,0 +1,68 @@
+[
+  {
+    "cardId": "CBRR8S",
+    "name": "Asuna Yuuki",
+    "series": "Sword Art Online",
+    "status": "needs_review",
+    "reason": "best candidate scored 57 (< 65)",
+    "attempted": [
+      {
+        "imageUrl": "https://static.wikia.nocookie.net/swordartonline/images/2/20/WordGear_ver4_Asuna_static.png/revision/latest?cb=20240113010830",
+        "error": null,
+        "score": 22,
+        "reasons": [
+          "acceptable domain (+10)",
+          "search result text does not clearly mention name or series (-8)",
+          "low resolution 304x598 (-20)",
+          "no Gemini Vision check performed for this candidate (scored on domain/resolution/text only)"
+        ]
+      },
+      {
+        "imageUrl": "https://static.wikia.nocookie.net/swordartonline/images/a/af/Kirito_kissing_Asuna_BD.png/revision/latest?cb=20130202030324",
+        "error": null,
+        "score": 42,
+        "reasons": [
+          "acceptable domain (+10)",
+          "search result text does not clearly mention name or series (-8)",
+          "high resolution 1920x1080 (+15)",
+          "Gemini Vision confirms character match at 100% confidence (+15)",
+          "Gemini Vision detected a group image, not a solo portrait (-15)",
+          "Gemini Vision detected a screenshot/manga panel (-15)"
+        ]
+      },
+      {
+        "imageUrl": "https://static.wikia.nocookie.net/swordartonline/images/0/06/Asuna_with_Yui_Biprobe.png/revision/latest?cb=20141220180221",
+        "error": null,
+        "score": 57,
+        "reasons": [
+          "acceptable domain (+10)",
+          "search result text does not clearly mention name or series (-8)",
+          "high resolution 1920x1080 (+15)",
+          "Gemini Vision confirms character match at 100% confidence (+15)",
+          "Gemini Vision detected a screenshot/manga panel (-15)"
+        ]
+      }
+    ]
+  },
+  {
+    "cardId": "Y5RU4A",
+    "name": "Kazuto Kirigaya",
+    "series": "Sword Art Online",
+    "status": "needs_review",
+    "reason": "every candidate was hard-rejected",
+    "attempted": [
+      {
+        "imageUrl": "https://static.wikia.nocookie.net/swordartonline/images/6/6d/Star_King_Insignia.png/revision/latest?cb=20260217002942",
+        "error": null,
+        "score": 0,
+        "reasons": [
+          "acceptable domain (+10)",
+          "search result text does not clearly mention name or series (-8)",
+          "low resolution 390x523 (-20)",
+          "Gemini Vision says this does NOT depict the canonical character (-60, hard reject)",
+          "Gemini Vision detected a screenshot/manga panel (-15)"
+        ]
+      }
+    ]
+  }
+]

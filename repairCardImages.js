@@ -173,7 +173,7 @@ async function evaluateCandidates(doc, candidates, useVision) {
     const formatMismatch = !dims && !(contentType || '').startsWith('image/');
 
     const domainTier = classifyDomain(candidate.displayLink || hostnameOf(candidate.imageUrl));
-    const textMatch = matchTextSignal(doc.name, doc.series, candidate.title, candidate.snippet);
+    const textMatch = matchTextSignal(doc.name, doc.series, candidate.title, candidate.snippet, doc.aliases);
 
     const preScore = scoreCandidate({ candidate, dims, domainTier, textMatch, vision: null, formatMismatch });
     attempts.push({ candidate, buffer, contentType, dims, domainTier, textMatch, formatMismatch, preScore });
@@ -355,7 +355,7 @@ async function materializeProposed(doc, entry) {
   let processedCount = 0;
   for (const doc of pending) {
     try {
-      const candidates = await searchCandidateImages(doc.name, doc.series);
+      const candidates = await searchCandidateImages(doc.name, doc.series, doc.aliases);
 
       if (!candidates.length) {
         needsReview++;

@@ -4,142 +4,141 @@
 // JSON API is closed to new Cloud projects — confirmed, not a setup mistake;
 // a new project gets a 403 "This project does not have access" no matter
 // what the console says is enabled, and Bing's Image Search API was fully
-// retired in August 2025. The previous backend here used Wikipedia's API,
-// which works but has thin anime coverage (most anime characters simply
-// have no Wikipedia article — that's why well-known cards like "Rias
-// Gremory" came back with zero candidates).
+// retired in August 2025. Wikipedia's API alone had thin anime coverage.
 //
-// WHAT THIS VERSION DOES INSTEAD — three keyless sources, widest-first:
+// WHAT THIS VERSION DOES — three keyless sources, widest-first:
 //
-//   1. FANDOM (primary). Big anime wikis run the same MediaWiki software
-//      as Wikipedia, so each wiki's api.php supports the exact
-//      generator=search + prop=pageimages pattern this project already
-//      proved works. Character articles carry infobox renders/official
-//      art as page images. We query a curated list of the largest anime
-//      wikis in small concurrent batches. A wiki that doesn't cover a
-//      character just returns nothing — it's one silent miss among many,
-//      not an error.
+//   1. FANDOM (primary). Big anime wikis run MediaWiki, so each wiki's
+//      api.php supports generator=search + prop=pageimages. Character
+//      articles carry infobox renders/official art as page images.
+//      FIX IN THIS VERSION: each wiki is searched with "name + series",
+//      and results are FILTERED so the page title must contain the
+//      character name — this is what previously let One Piece's wiki
+//      return SBS header images and the Protagonist wiki return wrong
+//      characters for "Rias Gremory".
 //   2. ZEROCHAN (secondary). Its JSON endpoint (?json) returns direct
-//      hotlinkable image URLs plus per-image tags; entries tagged
-//      "Official Art" / "Render" are boosted to the front, "Scan"/
-//      "Screenshot" pushed to the back. The validator's Gemini Vision
-//      check remains the real quality gate — this is only an ordering hint.
-//   3. WIKIPEDIA (fallback). Kept from the previous version — when a
-//      character DOES have an article, its infobox image is usually
-//      excellent official art.
+//      hotlinkable image URLs plus per-image tags; "Official Art"/"Render"
+//      tagged entries are boosted, "Scan"/"Screenshot" pushed back. (The
+//      301 seen in curl probes is just an http->https redirect — axios
+//      follows it automatically, not an error.)
+//   3. WIKIPEDIA (fallback). Kept — when a character HAS an article its
+//      infobox image is usually excellent official art.
 //
-// CONTRACT WITH THE REST OF THE PIPELINE (unchanged): exports
-// searchCandidateImages(name, series), isConfigured(), buildQuery() and
-// returns candidates shaped { imageUrl, sourcePageUrl, title, snippet,
-// displayLink, width, height, byteSize }. repairCardImages.js and
-// utils/imageValidator.js need no changes — fandom.com, zerochan.net and
-// wikipedia.org are all already in ACCEPTABLE_DOMAINS there.
+// CONTRACT WITH THE REST OF THE PIPELINE: exports searchCandidateImages(
+// name, series, aliases?), isConfigured(), buildQuery(). Candidates are
+// shaped { imageUrl, sourcePageUrl, title, snippet, displayLink, width,
+// height }.
 //
-// FAILURE MODEL: each source fails OPEN (logs a warning, contributes
-// nothing) so one blocked/down site can't kill a batch on flaky mobile
-// data. searchCandidateImages only throws if EVERY source failed —
-// that's treated as "connection dead right now", and the repair script
-// skips just that card and keeps going.
+// ALIAS FALLBACK (added after the "Kazuto Kirigaya"/"Asuna Yuuki" case —
+// renameCardsWithGemini.js corrects catalogue names to a character's real
+// full name, but Fandom wikis and Wikipedia almost always title the page
+// after the popular nickname instead, e.g. "Kirito", not "Kazuto
+// Kirigaya" — the two share no substring at all, so every source came
+// back with zero hits, not just Fandom's title filter). If searching the
+// canonical `name` finds NOTHING across all three sources, and the card
+// has `aliases` (see models/Card.js — populated by
+// backfillAliasesFromRenameLog.js for already-renamed cards), each alias
+// is tried in turn, stopping at the first one that returns candidates.
+// Cards whose primary-name search already succeeds make zero extra
+// requests — this only fires for the genuinely-empty case.
 //
-// UNCERTAINTY FLAGS (no live network in the sandbox this was written in):
-//   - The Fandom query uses the long-stable MediaWiki conventions the
-//     Wikipedia backend already uses in production here; subdomain drift
-//     (a wiki renamed/moved) shows up as one silent empty source.
-//   - Zerochan's ?json shape is its public frontend API; if it changes,
-//     that source silently yields nothing and the log line below says so.
-//   Neither case can corrupt anything — worst case is fewer candidates,
-//   and the audit log still tells you exactly why.
+// TERMUX NOTES: no new npm dependencies; short timeouts; Fandom wikis are
+// queried in small concurrent batches so one flaky wiki can't stall the
+// batch; sources run sequentially to be gentle on unstable data.
 
 const axios = require('axios');
 
-const USER_AGENT = 'AniChanBot/1.0 (WhatsApp anime trading-card bot; run by a hobbyist on Termux)';
+const USER_AGENT =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 const REQUEST_TIMEOUT_MS = 15000;
 
-const WIKI_LANG = process.env.WIKI_SEARCH_LANG || 'en';
+// Curated largest anime wikis (host without .fandom.com suffix). A wiki
+// that doesn't cover a character returns zero rows — one silent miss
+// among many, not an error. Add series-specific hosts as your catalogue
+// grows; keep names lowercase, exactly as the subdomain appears.
+const FANDOM_WIKIS = [
+  { host: 'highschooldxd', label: 'High School DxD' },
+  { host: 'naruto', label: 'Naruto' },
+  { host: 'onepiece', label: 'One Piece' },
+  { host: 'bleach', label: 'Bleach' },
+  { host: 'dragonball', label: 'Dragon Ball' },
+  { host: 'fairytail', label: 'Fairy Tail' },
+  { host: 'attackontitan', label: 'Attack on Titan' },
+  { host: 'myheroacademia', label: 'My Hero Academia' },
+  { host: 'kimetsunoyaiba', label: 'Demon Slayer' },
+  { host: 'jujutsu-kaisen', label: 'Jujutsu Kaisen' },
+  { host: 'tokyoghoul', label: 'Tokyo Ghoul' },
+  { host: 'swordartonline', label: 'Sword Art Online' },
+  { host: 'rezero', label: 'Re:Zero' },
+  { host: 'onepunchman', label: 'One Punch Man' },
+  { host: 'jojo', label: 'JoJo' },
+  { host: 'hunterxhunter', label: 'Hunter x Hunter' },
+  { host: 'blackclover', label: 'Black Clover' },
+  { host: 'drstone', label: 'Dr. Stone' },
+  { host: 'haikyuu', label: 'Haikyuu' },
+  { host: 'nanatsu-no-taizai', label: 'Seven Deadly Sins' },
+  { host: 'toarumajutsunoindex', label: 'Toaru' },
+  { host: 'date-a-live', label: 'Date A Live' },
+  { host: 'kancolle', label: 'KanColle' },
+  { host: 'genshin-impact', label: 'Genshin Impact' },
+].map(w => ({ ...w, host: `${w.host}.fandom.com` }));
+
+const WIKI_BATCH_SIZE = 4;       // concurrent wikis per batch — gentle on data
+// Per-card result-count knob. Was documented in repairCardImages.js's
+// header as WIKI_SEARCH_NUM but never actually wired up here (leftover
+// from before this file's Fandom/Zerochan rewrite) — now it genuinely
+// bumps both Fandom's per-wiki count and Wikipedia's gsrlimit together,
+// capped at 10. Unset, behavior is UNCHANGED from before (3 and 5
+// respectively). Useful for a one-off retry on a card whose default pool
+// comes back too thin to give Vision a real choice — see the "Kazuto
+// Kirigaya"/"Kirito" case: only one (wrong) candidate surfaced at the
+// defaults, and Vision correctly hard-rejected it rather than guess.
+const WIKI_SEARCH_NUM_OVERRIDE = process.env.WIKI_SEARCH_NUM
+  ? Math.min(10, Math.max(1, parseInt(process.env.WIKI_SEARCH_NUM, 10) || 0)) || null
+  : null;
+const FANDOM_RESULTS_PER_WIKI = WIKI_SEARCH_NUM_OVERRIDE || 3; // unchanged default
+const ZEROCHAN_RESULTS = 5;
+const MAX_TOTAL_CANDIDATES = 15; // pool size; repairCardImages.js caps downstream
+const WIKIPEDIA_RESULTS = WIKI_SEARCH_NUM_OVERRIDE || 5; // unchanged default
+
+const WIKI_LANG = process.env.WIKI_SEARCH_LANG || 'en'; // was hardcoded 'en'; now actually reads the documented env var
 const WIKI_API_URL = `https://${WIKI_LANG}.wikipedia.org/w/api.php`;
 
-// ─── Tuning (env-overridable, same philosophy as repairCardImages.js) ──────
-function clampInt(raw, fallback, min, max) {
-  const n = parseInt(raw, 10);
-  if (!Number.isFinite(n)) return fallback;
-  return Math.min(max, Math.max(min, n));
-}
-const PER_WIKI_RESULTS = clampInt(process.env.FANDOM_PER_WIKI, 2, 1, 5);
-const WIKI_BATCH_SIZE = 4;            // concurrent api.php calls at a time
-const ZEROCHAN_RESULTS = clampInt(process.env.ZEROCHAN_RESULTS, 8, 1, 15);
-const MAX_TOTAL_CANDIDATES = clampInt(process.env.REPAIR_CANDIDATE_POOL, 12, 5, 20);
-
-// Curated list of the largest anime-character wikis on Fandom. Order is
-// roughly "most likely to cover a random character" — anime.fandom.com is
-// the general Animepedia and catches a lot on its own. A wiki that has no
-// article for the character just contributes zero results; dead/renamed
-// subdomains are harmless (one silent miss). Prune/add based on what your
-// audit logs actually hit — see the failure-model note above.
-const FANDOM_WIKIS = [
-  { host: 'anime.fandom.com', label: 'Animepedia' },
-  { host: 'hero.fandom.com', label: 'Heroes Wiki' },
-  { host: 'onepiece.fandom.com', label: 'One Piece Wiki' },
-  { host: 'naruto.fandom.com', label: 'Narutopedia' },
-  { host: 'dragonball.fandom.com', label: 'Dragon Ball Wiki' },
-  { host: 'myheroacademia.fandom.com', label: 'My Hero Academia Wiki' },
-  { host: 'kimetsu-no-yaiba.fandom.com', label: 'Kimetsu no Yaiba Wiki' },
-  { host: 'jujutsu-kaisen.fandom.com', label: 'Jujutsu Kaisen Wiki' },
-  { host: 'attackontitan.fandom.com', label: 'Attack on Titan Wiki' },
-  { host: 'bleach.fandom.com', label: 'Bleach Wiki' },
-  { host: 'fairytail.fandom.com', label: 'Fairy Tail Wiki' },
-  { host: 'blackclover.fandom.com', label: 'Black Clover Wiki' },
-  { host: 'rezero.fandom.com', label: 'Re:Zero Wiki' },
-  { host: 'konosuba.fandom.com', label: 'KonoSuba Wiki' },
-  { host: 'swordartonline.fandom.com', label: 'Sword Art Online Wiki' },
-  { host: 'date-a-live.fandom.com', label: 'Date A Live Wiki' },
-  { host: 'highschooldxd.fandom.com', label: 'High School DxD Wiki' },
-  { host: 'typemoon.fandom.com', label: 'TYPE-MOON Wiki' },
-  { host: 'fategrandorder.fandom.com', label: 'FGO Wiki' },
-  { host: 'evangelion.fandom.com', label: 'EvaGeeks' },
-  { host: 'gundam.fandom.com', label: 'Gundam Wiki' },
-  { host: 'toarumajutsunoindex.fandom.com', label: 'Toaru Wiki' },
-  { host: 'overlordmaruyama.fandom.com', label: 'Overlord Wiki' },
-];
-
-function isConfigured() {
-  return true; // every source here is keyless — nothing to configure
-}
-
+// ─── Shared helpers ─────────────────────────────────────────────────────────
 function buildQuery(name, series) {
   return series ? `${name} ${series}` : name;
 }
 
-// Shared candidate shape → keeps repairCardImages.js / imageValidator.js
-// completely backend-agnostic.
+function isConfigured() {
+  // Keyless pipeline — nothing to configure, always ready.
+  return true;
+}
+
 function toCandidate({ imageUrl, sourcePageUrl, title, snippet, displayLink, width, height }) {
+  if (!imageUrl || !/^https?:\/\//i.test(imageUrl)) return null;
   return {
-    imageUrl,
-    sourcePageUrl,
-    title: String(title || '').trim(),
-    snippet: String(snippet || '').trim(),
-    displayLink,
+    imageUrl: imageUrl.replace(/^http:\/\//i, 'https://'),
+    sourcePageUrl: sourcePageUrl || null,
+    title: title || '',
+    snippet: snippet || '',
+    displayLink: displayLink || null,
     width: width || null,
     height: height || null,
-    byteSize: null,
   };
 }
 
-// ─── Source 1: Fandom wikis (MediaWiki API, same pattern as Wikipedia) ─────
-async function searchOneFandomWiki(host, label, query) {
+// ─── Source 1: Fandom MediaWiki APIs ────────────────────────────────────────
+async function searchOneFandomWiki(host, label, query, nameForFilter) {
   const res = await axios.get(`https://${host}/api.php`, {
     params: {
       action: 'query',
       generator: 'search',
       gsrsearch: query,
-      gsrlimit: PER_WIKI_RESULTS,
-      gsrnamespace: 0,               // articles only, not file pages
-      prop: 'pageimages|info|extracts',
-      piprop: 'original',            // full-resolution page image
+      gsrlimit: FANDOM_RESULTS_PER_WIKI,
+      prop: 'pageimages|info',
+      piprop: 'original',
       inprop: 'url',
-      exintro: 1,
-      explaintext: 1,
-      exlimit: 'max',
-      exchars: 300,
+      redirects: 1,
       format: 'json',
     },
     headers: { 'User-Agent': USER_AGENT },
@@ -149,33 +148,37 @@ async function searchOneFandomWiki(host, label, query) {
   const pages = res.data && res.data.query && res.data.query.pages;
   if (!pages) return [];
 
+  const needle = String(nameForFilter || '').toLowerCase();
   return Object.values(pages)
+    // Title filter: kills cross-wiki noise like One Piece SBS headers or
+    // a "Protagonist" wiki page for a different character with a shared
+    // voice actor. A page about this character almost always names them.
+    .filter(p => !needle || String(p.title || '').toLowerCase().includes(needle))
     .filter(p => p.original && p.original.source)
     .map(p => toCandidate({
       imageUrl: p.original.source,
       sourcePageUrl: p.fullurl || `https://${host}/wiki/${encodeURIComponent(p.title)}`,
       title: p.title,
-      snippet: p.extract || '',
+      snippet: label,
       displayLink: host,
       width: p.original.width || null,
       height: p.original.height || null,
-    }));
+    }))
+    .filter(Boolean);
 }
 
-async function searchFandom(query) {
+async function searchFandom(query, nameForFilter) {
   const found = [];
   for (let i = 0; i < FANDOM_WIKIS.length; i += WIKI_BATCH_SIZE) {
     const batch = FANDOM_WIKIS.slice(i, i + WIKI_BATCH_SIZE);
     const settled = await Promise.allSettled(
-      batch.map(w => searchOneFandomWiki(w.host, w.label, query))
+      batch.map(w => searchOneFandomWiki(w.host, w.label, query, nameForFilter))
     );
     settled.forEach((s, j) => {
       if (s.status === 'fulfilled') {
         found.push(...s.value);
       } else {
         const reason = (s.reason && (s.reason.code || s.reason.message)) || 'unknown';
-        // Expected noise level: a wiki without an article, a renamed
-        // subdomain, a flaky-data timeout. One line each, batch continues.
         console.warn(`[wikiImageSearch] fandom:${batch[j].host} skipped (${reason})`);
       }
     });
@@ -184,14 +187,12 @@ async function searchFandom(query) {
 }
 
 // ─── Source 2: Zerochan JSON ────────────────────────────────────────────────
-// Tag lookup: the character name IS the tag ("Rias Gremory"). Unknown tags
-// return a 404/HTML page — both are treated as "no results", not an error.
 function zerochanRank(item) {
   const tags = (item.tags || []).join(' ').toLowerCase();
   let r = 0;
-  if (tags.includes('official art')) r -= 100; // best possible source type
+  if (tags.includes('official art')) r -= 100;
   if (tags.includes('render')) r -= 50;
-  if (tags.includes('scan')) r += 30;          // manga/book scans — deprioritize
+  if (tags.includes('scan')) r += 30;
   if (tags.includes('screenshot')) r += 30;
   return r;
 }
@@ -201,7 +202,6 @@ async function searchZerochan(name) {
   const res = await axios.get(url, {
     headers: { 'User-Agent': USER_AGENT, 'Accept': 'application/json' },
     timeout: REQUEST_TIMEOUT_MS,
-    // Zerochan answers unknown tags with its HTML site — don't blow up on it
     validateStatus: (s) => (s >= 200 && s < 300) || s === 404,
   });
 
@@ -225,10 +225,11 @@ async function searchZerochan(name) {
         width: it.width || null,
         height: it.height || null,
       });
-    });
+    })
+    .filter(Boolean);
 }
 
-// ─── Source 3: Wikipedia (kept from the previous backend) ──────────────────
+// ─── Source 3: Wikipedia (fallback) ─────────────────────────────────────────
 async function searchWikipedia(query) {
   const res = await axios.get(WIKI_API_URL, {
     params: {
@@ -262,16 +263,20 @@ async function searchWikipedia(query) {
       displayLink: `${WIKI_LANG}.wikipedia.org`,
       width: p.original.width || null,
       height: p.original.height || null,
-    }));
+    }))
+    .filter(Boolean);
 }
 
-// ─── Entry point (same contract as before) ─────────────────────────────────
-async function searchCandidateImages(name, series) {
-  const query = buildQuery(name, series || '');
+// Runs all three sources for one search term (a name OR an alias) and
+// returns deduped candidates. Throws WIKI_SEARCH_ERROR only when EVERY
+// source failed outright (a real connectivity problem) — a term that
+// simply has no matches anywhere returns [], which is not an error.
+async function searchByTerm(term, series) {
+  const query = buildQuery(term, series || '');
 
   const sources = [
-    { label: 'fandom', run: () => searchFandom(query) },
-    { label: 'zerochan', run: () => searchZerochan(name) }, // name only — the character name IS the tag
+    { label: 'fandom', run: () => searchFandom(query, term) },
+    { label: 'zerochan', run: () => searchZerochan(term) },
     { label: 'wikipedia', run: () => searchWikipedia(query) },
   ];
 
@@ -279,8 +284,6 @@ async function searchCandidateImages(name, series) {
   let failures = 0;
   const failureNotes = [];
 
-  // Sequential across sources (gentler on unstable data than all-at-once),
-  // parallel only inside the Fandom batching above.
   for (const src of sources) {
     try {
       const found = await src.run();
@@ -293,15 +296,12 @@ async function searchCandidateImages(name, series) {
     }
   }
 
-  // Only a TOTAL outage is an error — repairCardImages.js treats a throw as
-  // "skip this card, keep the batch going" on flaky connections.
   if (failures === sources.length) {
     const wrapped = new Error(`All image sources failed — connection likely down: ${failureNotes.join(' | ')}`);
     wrapped.code = 'WIKI_SEARCH_ERROR';
     throw wrapped;
   }
 
-  // Dedupe (same image can appear on a wiki and Zerochan) and cap the pool.
   const seen = new Set();
   const unique = results.filter(r => {
     const key = String(r.imageUrl || '');
@@ -311,6 +311,39 @@ async function searchCandidateImages(name, series) {
   });
 
   return unique.slice(0, MAX_TOTAL_CANDIDATES);
+}
+
+// ─── Entry point ────────────────────────────────────────────────────────────
+// aliases: optional array (doc.aliases from CardCatalogue) — old
+// nicknames a renamed card used to go by. Only consulted if the primary
+// `name` search comes back with zero candidates; a genuine connectivity
+// failure on the primary search still propagates immediately (retrying
+// aliases against a dead connection would just waste time on an unstable
+// link — repairCardImages.js already retries the whole card on the next
+// --resume pass in that case).
+async function searchCandidateImages(name, series, aliases) {
+  const primary = await searchByTerm(name, series);
+  if (primary.length) return primary;
+
+  const candidates = (aliases || [])
+    .filter(a => a && a.trim() && a.trim().toLowerCase() !== String(name || '').trim().toLowerCase());
+
+  for (const alias of candidates) {
+    try {
+      const found = await searchByTerm(alias, series);
+      if (found.length) {
+        console.log(`[wikiImageSearch] "${name}" found nothing directly — alias "${alias}" succeeded`);
+        return found;
+      }
+    } catch (err) {
+      // A transient full-outage on ONE alias attempt shouldn't take down
+      // the whole card when the primary search already proved the
+      // connection basically works — log it and just try the next alias.
+      console.warn(`[wikiImageSearch] alias "${alias}" attempt failed (${err.message}), trying next`);
+    }
+  }
+
+  return []; // genuinely nothing found under the name or any alias
 }
 
 module.exports = { searchCandidateImages, isConfigured, buildQuery };

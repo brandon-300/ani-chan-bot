@@ -187,15 +187,25 @@ async function _resolveChallengeIfDue(challenge) {
   const gainA = (guildA.reputation || 0) - challenge.startRepChallenger;
   const gainB = (guildB.reputation || 0) - challenge.startRepChallenged;
 
+  const winnerGuildId = gainA > gainB ? guildA._id : gainB > gainA ? guildB._id : null;
   let winner = null;
-  if (gainA > gainB) {
-    winner = guildA;
-    Guild.awardReputation(guildA, CHALLENGE_REWARD_REPUTATION);
-    await guildA.save();
-  } else if (gainB > gainA) {
-    winner = guildB;
-    Guild.awardReputation(guildB, CHALLENGE_REWARD_REPUTATION);
-    await guildB.save();
+
+  // Only the WINNING guild is mutated (a flat +CHALLENGE_REWARD_REPUTATION
+  // bonus) — reloaded fresh inside its own lock rather than reusing the
+  // guildA/guildB pre-fetch above, so this can't silently clobber (or be
+  // clobbered by) some unrelated concurrent change to that same guild
+  // doc (a donate, an upgrade, another challenge resolving at the exact
+  // same moment). Only ever locks ONE guild at a time here — guildA and
+  // guildB are never both winners — so there's no lock-ordering/deadlock
+  // concern to worry about between them.
+  if (winnerGuildId) {
+    winner = await withGuildLock(winnerGuildId, async () => {
+      const fresh = await Guild.findById(winnerGuildId);
+      if (!fresh) return null;
+      Guild.awardReputation(fresh, CHALLENGE_REWARD_REPUTATION);
+      await fresh.save();
+      return fresh;
+    });
   }
   // gainA === gainB -> tie, no reward, no winner.
 
@@ -236,9 +246,14 @@ function _formatChallengeResult(result) {
   if (!result.winner) {
     return `\n\n⚔️ *Guild challenge ended in a tie!* ${result.guildA.name} and ${result.guildB.name} both gained ${result.gainA} reputation.`;
   }
-  const loser = result.winner._id.toString() === result.guildA._id.toString() ? result.guildB : result.guildA;
+  // Compared by id, not object reference — the winner returned by
+  // _resolveChallengeIfDue is now a freshly-reloaded doc (see its
+  // comment), never the same object as guildA/guildB even when it IS
+  // guildA/guildB.
+  const winnerIsA = result.winner._id.toString() === result.guildA._id.toString();
+  const loser = winnerIsA ? result.guildB : result.guildA;
   return `\n\n⚔️ *Guild challenge complete!* 🏆 *${result.winner.emblem} ${result.winner.name}* beat *${loser.name}* ` +
-    `(${result.winner === result.guildA ? result.gainA : result.gainB} vs ${result.winner === result.guildA ? result.gainB : result.gainA} reputation gained) ` +
+    `(${winnerIsA ? result.gainA : result.gainB} vs ${winnerIsA ? result.gainB : result.gainA} reputation gained) ` +
     `and earned +${CHALLENGE_REWARD_REPUTATION} bonus reputation!`;
 }
 
@@ -287,18 +302,32 @@ async function _resolveSeasonIfDue() {
   if (!claimed) return null;
 
   const topGuilds = await Guild.find().sort({ seasonReputation: -1 }).limit(1);
-  const winner = topGuilds[0] && topGuilds[0].seasonReputation > 0 ? topGuilds[0] : null;
+  const topGuild = topGuilds[0] && topGuilds[0].seasonReputation > 0 ? topGuilds[0] : null;
 
-  if (winner) {
-    Guild.awardReputation(winner, SEASON_WIN_REPUTATION_BONUS);
-    winner.bank += SEASON_WIN_COINS;
-    winner.seasonWins = (winner.seasonWins || 0) + 1;
-    Guild.logActivity(winner, {
-      eventType: 'season_won',
-      text: `Season ${claimed.seasonNumber}`,
-      amount: SEASON_WIN_COINS,
+  // Reloaded fresh inside its own lock rather than reusing the ranking
+  // pre-fetch above — protects the payout from clobbering (or being
+  // clobbered by) some unrelated concurrent mutation to this same guild
+  // doc, same reasoning as _resolveChallengeIfDue above. (Which guild IS
+  // the winner is still decided from the pre-fetch ranking — reworking
+  // that into something lock-spanning every guild at once is a much
+  // bigger change than this batch, and isn't a "guild mutation
+  // concurrency" fix so much as a "season ranking" one.)
+  let winner = null;
+  if (topGuild) {
+    winner = await withGuildLock(topGuild._id, async () => {
+      const fresh = await Guild.findById(topGuild._id);
+      if (!fresh) return null;
+      Guild.awardReputation(fresh, SEASON_WIN_REPUTATION_BONUS);
+      fresh.bank += SEASON_WIN_COINS;
+      fresh.seasonWins = (fresh.seasonWins || 0) + 1;
+      Guild.logActivity(fresh, {
+        eventType: 'season_won',
+        text: `Season ${claimed.seasonNumber}`,
+        amount: SEASON_WIN_COINS,
+      });
+      await fresh.save();
+      return fresh;
     });
-    await winner.save();
   }
 
   // Bulk reset — deliberately bypasses Mongoose document middleware (no
@@ -689,39 +718,53 @@ module.exports = {
     const user = await User.findOrCreate(contact.id._serialized);
     if (!user.guildId) return msg.reply('❌ You are not in a guild.');
 
-    const guild = await Guild.findById(user.guildId);
-    if (!guild) return msg.reply('❌ Guild not found.');
+    // Everything from the load through the save happens inside this
+    // guild's lock (utils/guildLock.js) — including the role check and
+    // name resolution, not just the final .save(). Loading the guild
+    // BEFORE the lock and mutating a possibly-stale members[] array would
+    // let this silently overwrite a promotion/demotion/another removal
+    // that landed on the same guild in between.
+    const result = await withGuildLock(user.guildId, async () => {
+      const guild = await Guild.findById(user.guildId);
+      if (!guild) return { error: 'notfound' };
 
-    const actorRole = getRole(guild, contact.id._serialized);
-    if (actorRole !== 'leader' && actorRole !== 'officer') {
-      return msg.reply('❌ Only the guild leader or an officer can remove members.');
+      const actorRole = getRole(guild, contact.id._serialized);
+      if (actorRole !== 'leader' && actorRole !== 'officer') return { error: 'norole' };
+
+      if (guild.members.length <= 1) return { error: 'onlymember' };
+
+      const memberResult = await _resolveMemberByName(client, guild, query);
+      if (!memberResult) return { error: 'nomatch', guildName: guild.name };
+      if (memberResult.ambiguous) return { error: 'ambiguous', names: memberResult.ambiguous };
+
+      const { member: target, name: targetName } = memberResult;
+
+      if (target.userId === contact.id._serialized) return { error: 'self' };
+      if (ROLE_RANK[actorRole] <= ROLE_RANK[target.role]) {
+        return { error: 'outrank', targetName, targetRole: target.role };
+      }
+
+      guild.members = guild.members.filter(m => m.userId !== target.userId);
+      Guild.logActivity(guild, { eventType: 'member_left', userId: target.userId });
+      await guild.save();
+
+      return { guild, targetName, targetUserId: target.userId };
+    });
+
+    if (result.error === 'notfound') return msg.reply('❌ Guild not found.');
+    if (result.error === 'norole') return msg.reply('❌ Only the guild leader or an officer can remove members.');
+    if (result.error === 'onlymember') return msg.reply('❌ There are no other members to remove.');
+    if (result.error === 'nomatch') return msg.reply(`❌ No member named "${query}" found in *${result.guildName}*.`);
+    if (result.error === 'ambiguous') {
+      return msg.reply(`❌ That matches multiple members: ${result.names.join(', ')}. Be more specific.`);
+    }
+    if (result.error === 'self') return msg.reply('❌ You can\'t remove yourself — use .guild leave instead.');
+    if (result.error === 'outrank') {
+      return msg.reply(`❌ You don't outrank ${roleLabel(result.targetRole)} ${result.targetName} enough to remove them.`);
     }
 
-    if (guild.members.length <= 1) {
-      return msg.reply('❌ There are no other members to remove.');
-    }
-
-    const result = await _resolveMemberByName(client, guild, query);
-    if (!result) return msg.reply(`❌ No member named "${query}" found in *${guild.name}*.`);
-    if (result.ambiguous) {
-      return msg.reply(`❌ That matches multiple members: ${result.ambiguous.join(', ')}. Be more specific.`);
-    }
-
-    const { member: target, name: targetName } = result;
-
-    if (target.userId === contact.id._serialized) {
-      return msg.reply('❌ You can\'t remove yourself — use .guild leave instead.');
-    }
-
-    if (ROLE_RANK[actorRole] <= ROLE_RANK[target.role]) {
-      return msg.reply(`❌ You don't outrank ${roleLabel(target.role)} ${targetName} enough to remove them.`);
-    }
-
-    guild.members = guild.members.filter(m => m.userId !== target.userId);
-    Guild.logActivity(guild, { eventType: 'member_left', userId: target.userId });
-    await guild.save();
-
-    await User.findOneAndUpdate({ id: target.userId }, { guildId: null });
+    const { guild, targetName, targetUserId } = result;
+    await User.findOneAndUpdate({ id: targetUserId }, { guildId: null });
 
     msg.reply(`✅ Removed *${targetName}* from *${guild.emblem} ${guild.name}*.`);
   },
@@ -737,30 +780,42 @@ module.exports = {
     const user = await User.findOrCreate(contact.id._serialized);
     if (!user.guildId) return msg.reply('❌ You are not in a guild.');
 
-    const guild = await Guild.findById(user.guildId);
-    if (!guild) return msg.reply('❌ Guild not found.');
-    if (guild.leaderId !== contact.id._serialized) {
-      return msg.reply('❌ Only the guild leader can promote members.');
+    // See .guild remove's comment above for why the whole cycle (load
+    // through save) needs to be inside the lock, not just the save.
+    const result = await withGuildLock(user.guildId, async () => {
+      const guild = await Guild.findById(user.guildId);
+      if (!guild) return { error: 'notfound' };
+      if (guild.leaderId !== contact.id._serialized) return { error: 'norole' };
+
+      const memberResult = await _resolveMemberByName(client, guild, query);
+      if (!memberResult) return { error: 'nomatch', guildName: guild.name };
+      if (memberResult.ambiguous) return { error: 'ambiguous', names: memberResult.ambiguous };
+
+      const { member: target, name: targetName } = memberResult;
+
+      if (target.role === 'leader') return { error: 'isleader' };
+      if (target.role === 'officer') return { error: 'maxrank', targetName };
+
+      const next = target.role === 'member' ? 'veteran' : 'officer';
+      target.role = next;
+      await guild.save();
+
+      return { guildName: guild.name, targetName, next };
+    });
+
+    if (result.error === 'notfound') return msg.reply('❌ Guild not found.');
+    if (result.error === 'norole') return msg.reply('❌ Only the guild leader can promote members.');
+    if (result.error === 'nomatch') return msg.reply(`❌ No member named "${query}" found in *${result.guildName}*.`);
+    if (result.error === 'ambiguous') {
+      return msg.reply(`❌ That matches multiple members: ${result.names.join(', ')}. Be more specific.`);
+    }
+    if (result.error === 'isleader') return msg.reply('❌ That\'s you — the leader can\'t promote themselves.');
+    if (result.error === 'maxrank') {
+      return msg.reply(`❌ ${result.targetName} is already an Officer — the highest rank .guild promote can reach.`);
     }
 
-    const result = await _resolveMemberByName(client, guild, query);
-    if (!result) return msg.reply(`❌ No member named "${query}" found in *${guild.name}*.`);
-    if (result.ambiguous) {
-      return msg.reply(`❌ That matches multiple members: ${result.ambiguous.join(', ')}. Be more specific.`);
-    }
-
-    const { member: target, name: targetName } = result;
-
-    if (target.role === 'leader') return msg.reply('❌ That\'s you — the leader can\'t promote themselves.');
-    if (target.role === 'officer') {
-      return msg.reply(`❌ ${targetName} is already an Officer — the highest rank .guild promote can reach.`);
-    }
-
-    const next = target.role === 'member' ? 'veteran' : 'officer';
-    target.role = next;
-    await guild.save();
-
-    msg.reply(`✅ ${roleIcon(next)} *${targetName}* promoted to ${roleLabel(next)} in *${guild.name}*.`);
+    const { guildName, targetName, next } = result;
+    msg.reply(`✅ ${roleIcon(next)} *${targetName}* promoted to ${roleLabel(next)} in *${guildName}*.`);
   },
 
   // .guild demote [member's name] — leader only. Steps a member down one
@@ -773,32 +828,42 @@ module.exports = {
     const user = await User.findOrCreate(contact.id._serialized);
     if (!user.guildId) return msg.reply('❌ You are not in a guild.');
 
-    const guild = await Guild.findById(user.guildId);
-    if (!guild) return msg.reply('❌ Guild not found.');
-    if (guild.leaderId !== contact.id._serialized) {
-      return msg.reply('❌ Only the guild leader can demote members.');
+    // See .guild remove's comment above for why the whole cycle (load
+    // through save) needs to be inside the lock, not just the save.
+    const result = await withGuildLock(user.guildId, async () => {
+      const guild = await Guild.findById(user.guildId);
+      if (!guild) return { error: 'notfound' };
+      if (guild.leaderId !== contact.id._serialized) return { error: 'norole' };
+
+      const memberResult = await _resolveMemberByName(client, guild, query);
+      if (!memberResult) return { error: 'nomatch', guildName: guild.name };
+      if (memberResult.ambiguous) return { error: 'ambiguous', names: memberResult.ambiguous };
+
+      const { member: target, name: targetName } = memberResult;
+
+      if (target.role === 'leader') return { error: 'isleader' };
+      if (target.role === 'member') return { error: 'minrank', targetName };
+
+      const next = target.role === 'officer' ? 'veteran' : 'member';
+      target.role = next;
+      await guild.save();
+
+      return { guildName: guild.name, targetName, next };
+    });
+
+    if (result.error === 'notfound') return msg.reply('❌ Guild not found.');
+    if (result.error === 'norole') return msg.reply('❌ Only the guild leader can demote members.');
+    if (result.error === 'nomatch') return msg.reply(`❌ No member named "${query}" found in *${result.guildName}*.`);
+    if (result.error === 'ambiguous') {
+      return msg.reply(`❌ That matches multiple members: ${result.names.join(', ')}. Be more specific.`);
     }
-
-    const result = await _resolveMemberByName(client, guild, query);
-    if (!result) return msg.reply(`❌ No member named "${query}" found in *${guild.name}*.`);
-    if (result.ambiguous) {
-      return msg.reply(`❌ That matches multiple members: ${result.ambiguous.join(', ')}. Be more specific.`);
-    }
-
-    const { member: target, name: targetName } = result;
-
-    if (target.role === 'leader') {
+    if (result.error === 'isleader') {
       return msg.reply('❌ The leader can\'t be demoted — leadership transfer isn\'t supported yet.');
     }
-    if (target.role === 'member') {
-      return msg.reply(`❌ ${targetName} is already at the lowest rank (Member).`);
-    }
+    if (result.error === 'minrank') return msg.reply(`❌ ${result.targetName} is already at the lowest rank (Member).`);
 
-    const next = target.role === 'officer' ? 'veteran' : 'member';
-    target.role = next;
-    await guild.save();
-
-    msg.reply(`✅ ${roleIcon(next)} *${targetName}* demoted to ${roleLabel(next)} in *${guild.name}*.`);
+    const { guildName, targetName, next } = result;
+    msg.reply(`✅ ${roleIcon(next)} *${targetName}* demoted to ${roleLabel(next)} in *${guildName}*.`);
   },
 
   // .guild description            — view (anyone in the guild)
@@ -1009,25 +1074,40 @@ module.exports = {
     const user = await User.findOrCreate(contact.id._serialized);
     if (!user.guildId) return msg.reply('❌ You are not in a guild.');
 
-    const guild = await Guild.findById(user.guildId);
-    if (!guild) return msg.reply('❌ Guild not found.');
+    // Everything that touches the guild document — load, leader check,
+    // bank debit, save — happens inside this guild's lock, same as .guild
+    // donate. Restructured so the leader's OWN wallet credit (below,
+    // after this) only happens once the treasury debit is confirmed
+    // saved, instead of the original Promise.all firing both saves at
+    // once regardless of whether the other succeeded — without this, a
+    // failed wallet save after a successful bank debit would make the
+    // withdrawn coins vanish outright.
+    const result = await withGuildLock(user.guildId, async () => {
+      const guild = await Guild.findById(user.guildId);
+      if (!guild) return { error: 'notfound' };
+      if (guild.leaderId !== contact.id._serialized) return { error: 'norole' };
 
-    if (guild.leaderId !== contact.id._serialized) {
-      return msg.reply('❌ Only the guild leader can withdraw from the treasury.');
+      const interestNote = guild._interestCredited > 0
+        ? ` (📈 +${formatNum(guild._interestCredited)} interest just credited)`
+        : '';
+      if (guild.bank < amount) return { error: 'insufficient', bank: guild.bank, interestNote };
+
+      guild.bank -= amount;
+      Guild.logActivity(guild, { eventType: 'withdraw', userId: contact.id._serialized, amount });
+      await guild.save();
+
+      return { guild, interestNote };
+    });
+
+    if (result.error === 'notfound') return msg.reply('❌ Guild not found.');
+    if (result.error === 'norole') return msg.reply('❌ Only the guild leader can withdraw from the treasury.');
+    if (result.error === 'insufficient') {
+      return msg.reply(`❌ Not enough in the treasury. Bank: ${formatNum(result.bank)}${result.interestNote}`);
     }
 
-    const interestNote = guild._interestCredited > 0
-      ? ` (📈 +${formatNum(guild._interestCredited)} interest just credited)`
-      : '';
-    if (guild.bank < amount) {
-      return msg.reply(`❌ Not enough in the treasury. Bank: ${formatNum(guild.bank)}${interestNote}`);
-    }
-
-    guild.bank -= amount;
+    const { guild, interestNote } = result;
     user.coins += amount;
-    Guild.logActivity(guild, { eventType: 'withdraw', userId: contact.id._serialized, amount });
-
-    await Promise.all([guild.save(), user.save()]);
+    await user.save();
 
     msg.reply(
       `🏦 Withdrew 💰 *${formatNum(amount)}* coins from *${guild.emblem} ${guild.name}*'s treasury.${interestNote}\n` +
@@ -1077,37 +1157,50 @@ module.exports = {
     const user = await User.findOrCreate(contact.id._serialized);
     if (!user.guildId) return msg.reply('❌ You are not in a guild.');
 
-    const guild = await Guild.findById(user.guildId);
-    if (!guild) return msg.reply('❌ Guild not found.');
+    // Whole cycle inside the guild's lock — two upgrade purchases (or an
+    // upgrade racing a withdraw/donate) landing on the same guild at once
+    // could otherwise both read the same stale bank/level and one save
+    // would silently overwrite the other's.
+    const result = await withGuildLock(user.guildId, async () => {
+      const guild = await Guild.findById(user.guildId);
+      if (!guild) return { error: 'notfound' };
+      if (guild.leaderId !== contact.id._serialized) return { error: 'norole' };
 
-    if (guild.leaderId !== contact.id._serialized) {
-      return msg.reply('❌ Only the guild leader can purchase upgrades.');
-    }
+      const info = Guild.UPGRADE_NAMES[upgradeKey];
+      const currentLevel = guild.upgrades[upgradeKey] || 0;
+      const cost = Guild.getUpgradeCost(currentLevel);
+      if (cost === null) return { error: 'maxed', label: info.label };
 
-    const info = Guild.UPGRADE_NAMES[upgradeKey];
-    const currentLevel = guild.upgrades[upgradeKey] || 0;
-    const cost = Guild.getUpgradeCost(currentLevel);
-    if (cost === null) return msg.reply(`❌ *${info.label}* is already at max level (${Guild.UPGRADE_MAX_LEVEL}).`);
+      const interestNote = guild._interestCredited > 0
+        ? ` (📈 +${formatNum(guild._interestCredited)} interest just credited)`
+        : '';
+      if (guild.bank < cost) return { error: 'insufficient', cost, bank: guild.bank, interestNote };
 
-    const interestNote = guild._interestCredited > 0
-      ? ` (📈 +${formatNum(guild._interestCredited)} interest just credited)`
-      : '';
-    if (guild.bank < cost) {
-      return msg.reply(`❌ Not enough in the treasury. Need 💰${formatNum(cost)}, have ${formatNum(guild.bank)}${interestNote}.`);
-    }
+      guild.bank -= cost;
+      guild.upgrades[upgradeKey] = currentLevel + 1;
+      Guild.logActivity(guild, {
+        eventType: 'upgrade',
+        userId: contact.id._serialized,
+        amount: cost,
+        text: `${info.label} -> level ${currentLevel + 1}`,
+      });
+      await guild.save();
 
-    guild.bank -= cost;
-    guild.upgrades[upgradeKey] = currentLevel + 1;
-    Guild.logActivity(guild, {
-      eventType: 'upgrade',
-      userId: contact.id._serialized,
-      amount: cost,
-      text: `${info.label} -> level ${currentLevel + 1}`,
+      return { guild, info, newLevel: currentLevel + 1, interestNote };
     });
-    await guild.save();
 
+    if (result.error === 'notfound') return msg.reply('❌ Guild not found.');
+    if (result.error === 'norole') return msg.reply('❌ Only the guild leader can purchase upgrades.');
+    if (result.error === 'maxed') {
+      return msg.reply(`❌ *${result.label}* is already at max level (${Guild.UPGRADE_MAX_LEVEL}).`);
+    }
+    if (result.error === 'insufficient') {
+      return msg.reply(`❌ Not enough in the treasury. Need 💰${formatNum(result.cost)}, have ${formatNum(result.bank)}${result.interestNote}.`);
+    }
+
+    const { guild, info, newLevel, interestNote } = result;
     msg.reply(
-      `✅ *${info.label}* upgraded to level ${currentLevel + 1}! (${info.perLevel} ${info.effect})${interestNote}\n` +
+      `✅ *${info.label}* upgraded to level ${newLevel}! (${info.perLevel} ${info.effect})${interestNote}\n` +
       `Guild bank: ${formatNum(guild.bank)}`
     );
   },
@@ -1144,33 +1237,40 @@ module.exports = {
     const user = await User.findOrCreate(contact.id._serialized);
     if (!user.guildId) return msg.reply('❌ You are not in a guild.');
 
-    const guild = await Guild.findById(user.guildId);
-    if (!guild) return msg.reply('❌ Guild not found.');
+    // Whole cycle inside the guild's lock — same reasoning as .guild
+    // upgrade above.
+    const result = await withGuildLock(user.guildId, async () => {
+      const guild = await Guild.findById(user.guildId);
+      if (!guild) return { error: 'notfound' };
+      if (guild.leaderId !== contact.id._serialized) return { error: 'norole' };
+      if (guild.ownedBanners.includes(key)) return { error: 'owned', guildName: guild.name };
 
-    if (guild.leaderId !== contact.id._serialized) {
-      return msg.reply('❌ Only the guild leader can buy from the shop.');
-    }
-    if (guild.ownedBanners.includes(key)) {
-      return msg.reply(`❌ *${guild.name}* already owns the ${banner.name} banner.`);
-    }
+      const interestNote = guild._interestCredited > 0
+        ? ` (📈 +${formatNum(guild._interestCredited)} interest just credited)`
+        : '';
+      if (guild.bank < banner.cost) return { error: 'insufficient', bank: guild.bank, interestNote };
 
-    const interestNote = guild._interestCredited > 0
-      ? ` (📈 +${formatNum(guild._interestCredited)} interest just credited)`
-      : '';
-    if (guild.bank < banner.cost) {
-      return msg.reply(`❌ Not enough in the treasury. Need 💰${formatNum(banner.cost)}, have ${formatNum(guild.bank)}${interestNote}.`);
-    }
+      guild.bank -= banner.cost;
+      guild.ownedBanners.push(key);
+      Guild.logActivity(guild, {
+        eventType: 'shop_purchase',
+        userId: contact.id._serialized,
+        amount: banner.cost,
+        text: `${banner.name} Banner`,
+      });
+      await guild.save();
 
-    guild.bank -= banner.cost;
-    guild.ownedBanners.push(key);
-    Guild.logActivity(guild, {
-      eventType: 'shop_purchase',
-      userId: contact.id._serialized,
-      amount: banner.cost,
-      text: `${banner.name} Banner`,
+      return { guild, interestNote };
     });
-    await guild.save();
 
+    if (result.error === 'notfound') return msg.reply('❌ Guild not found.');
+    if (result.error === 'norole') return msg.reply('❌ Only the guild leader can buy from the shop.');
+    if (result.error === 'owned') return msg.reply(`❌ *${result.guildName}* already owns the ${banner.name} banner.`);
+    if (result.error === 'insufficient') {
+      return msg.reply(`❌ Not enough in the treasury. Need 💰${formatNum(banner.cost)}, have ${formatNum(result.bank)}${result.interestNote}.`);
+    }
+
+    const { guild, interestNote } = result;
     msg.reply(`✅ Purchased the *${banner.name} Banner*!${interestNote}\nEquip it with *.guild banner ${key}*.\nGuild bank: ${formatNum(guild.bank)}`);
   },
 
@@ -1184,25 +1284,32 @@ module.exports = {
     const user = await User.findOrCreate(contact.id._serialized);
     if (!user.guildId) return msg.reply('❌ You are not in a guild.');
 
-    const guild = await Guild.findById(user.guildId);
-    if (!guild) return msg.reply('❌ Guild not found.');
+    // Whole cycle inside the guild's lock — a banner change racing a shop
+    // purchase (which also touches this guild doc) could otherwise land
+    // on a stale in-memory copy.
+    const result = await withGuildLock(user.guildId, async () => {
+      const guild = await Guild.findById(user.guildId);
+      if (!guild) return { error: 'notfound' };
+      if (guild.leaderId !== contact.id._serialized) return { error: 'norole' };
 
-    if (guild.leaderId !== contact.id._serialized) {
-      return msg.reply('❌ Only the guild leader can change the guild banner.');
-    }
+      if (key === 'none') {
+        guild.activeBanner = null;
+        await guild.save();
+        return { cleared: true };
+      }
 
-    if (key === 'none') {
-      guild.activeBanner = null;
+      if (!guild.ownedBanners.includes(key)) return { error: 'notowned', guildName: guild.name };
+
+      guild.activeBanner = key;
       await guild.save();
-      return msg.reply('✅ Banner cleared — back to the default look.');
-    }
+      return { cleared: false };
+    });
 
-    if (!guild.ownedBanners.includes(key)) {
-      return msg.reply(`❌ *${guild.name}* doesn't own that banner yet. Check *.guild shop*.`);
-    }
+    if (result.error === 'notfound') return msg.reply('❌ Guild not found.');
+    if (result.error === 'norole') return msg.reply('❌ Only the guild leader can change the guild banner.');
+    if (result.error === 'notowned') return msg.reply(`❌ *${result.guildName}* doesn't own that banner yet. Check *.guild shop*.`);
+    if (result.cleared) return msg.reply('✅ Banner cleared — back to the default look.');
 
-    guild.activeBanner = key;
-    await guild.save();
     msg.reply(`✅ Equipped the *${Guild.SHOP_BANNERS[key].name} Banner*!`);
   },
 
@@ -1219,6 +1326,13 @@ module.exports = {
       await user.save();
       return msg.reply('❌ Guild not found.');
     }
+
+    // Pure read, no other mutation in this command — same reasoning as
+    // .guild info/.guild season/.guild leaderboard/bare .guild. Without
+    // this, a quest that just expired gets silently re-rolled (in memory
+    // only) every single time someone checks it instead of the roll
+    // actually sticking.
+    await Guild.ensureGuildState(guild);
 
     const q = guild.activeQuest;
     // Defensive only — the post-find hook in models/Guild.js seeds a fresh
@@ -1278,6 +1392,10 @@ module.exports = {
       await user.save();
       return msg.reply('❌ Guild not found.');
     }
+
+    // Pure read, no other mutation in this command — see .guild quest's
+    // identical comment above.
+    await Guild.ensureGuildState(guild);
 
     const m = guild.activeMission;
     // Defensive only — same reasoning as .guild quest's equivalent check.
@@ -1434,21 +1552,32 @@ module.exports = {
     const user = await User.findOrCreate(contact.id._serialized);
     if (!user.guildId) return msg.reply('❌ You are not in a guild.');
 
-    const guild = await Guild.findById(user.guildId);
-    if (!guild) return msg.reply('❌ Guild not found.');
-
-    const actorRole = getRole(guild, contact.id._serialized);
-    if (actorRole !== 'leader' && actorRole !== 'officer') {
-      return msg.reply('❌ Only the guild leader or an officer can invite.');
-    }
-
     const target = mentioned[0];
-    if (guild.pendingInvites.includes(target.id._serialized)) return msg.reply('❌ Already invited!');
 
-    guild.pendingInvites.push(target.id._serialized);
-    await guild.save();
+    // Whole cycle inside the guild's lock — two invites (or an invite
+    // racing an accept/decline for someone else) landing on the same
+    // guild at once could otherwise both read the same stale
+    // pendingInvites array and one save would drop the other's entry.
+    const result = await withGuildLock(user.guildId, async () => {
+      const guild = await Guild.findById(user.guildId);
+      if (!guild) return { error: 'notfound' };
+
+      const actorRole = getRole(guild, contact.id._serialized);
+      if (actorRole !== 'leader' && actorRole !== 'officer') return { error: 'norole' };
+
+      if (guild.pendingInvites.includes(target.id._serialized)) return { error: 'already' };
+
+      guild.pendingInvites.push(target.id._serialized);
+      await guild.save();
+      return { guildName: guild.name };
+    });
+
+    if (result.error === 'notfound') return msg.reply('❌ Guild not found.');
+    if (result.error === 'norole') return msg.reply('❌ Only the guild leader or an officer can invite.');
+    if (result.error === 'already') return msg.reply('❌ Already invited!');
+
     msg.reply(
-      `📨 Invited @${mentionTag(target)} to *${guild.name}*! They can type *.guild accept* to join.`,
+      `📨 Invited @${mentionTag(target)} to *${result.guildName}*! They can type *.guild accept* to join.`,
       undefined,
       { mentions: [target.id._serialized] }
     );
@@ -1461,26 +1590,58 @@ module.exports = {
 
     if (user.guildId) return msg.reply('❌ Leave your current guild first.');
 
-    const guild = await Guild.findOne({ pendingInvites: contact.id._serialized });
-    if (!guild) return msg.reply('❌ No pending guild invite found.');
+    const invited = await Guild.findOne({ pendingInvites: contact.id._serialized });
+    if (!invited) return msg.reply('❌ No pending guild invite found.');
 
-    guild.pendingInvites = guild.pendingInvites.filter(id => id !== contact.id._serialized);
-    guild.members.push({ userId: contact.id._serialized, role: 'member', joinedAt: new Date(), contribution: 0 });
-    Guild.logActivity(guild, { eventType: 'member_joined', userId: contact.id._serialized });
-    user.guildId = guild._id.toString();
+    // The findOne above only identifies WHICH guild to lock — everything
+    // that actually reads/mutates the guild happens on a fresh load taken
+    // INSIDE that guild's lock, re-checking the invite is still there.
+    // Without the re-check, a stale pre-lock read could let this accept
+    // an invite that was withdrawn or declined a moment earlier.
+    const result = await withGuildLock(invited._id, async () => {
+      const guild = await Guild.findById(invited._id);
+      if (!guild) return { error: 'notfound' };
+      if (!guild.pendingInvites.includes(contact.id._serialized)) return { error: 'gone' };
 
-    await Promise.all([guild.save(), user.save()]);
-    msg.reply(`🏰 You joined *${guild.emblem} ${guild.name}*!`);
+      guild.pendingInvites = guild.pendingInvites.filter(id => id !== contact.id._serialized);
+      guild.members.push({ userId: contact.id._serialized, role: 'member', joinedAt: new Date(), contribution: 0 });
+      Guild.logActivity(guild, { eventType: 'member_joined', userId: contact.id._serialized });
+      await guild.save();
+
+      return { guild };
+    });
+
+    if (result.error === 'notfound' || result.error === 'gone') {
+      return msg.reply('❌ No pending guild invite found.');
+    }
+
+    // Guild side confirmed saved first — only then does the new member's
+    // own user doc get updated, same pattern as .guild donate/.guild
+    // withdraw above.
+    user.guildId = result.guild._id.toString();
+    await user.save();
+
+    msg.reply(`🏰 You joined *${result.guild.emblem} ${result.guild.name}*!`);
   },
 
   // .guild decline
   async guild_decline(client, msg, args) {
     const contact = await msg.getContact();
-    const guild = await Guild.findOne({ pendingInvites: contact.id._serialized });
-    if (!guild) return msg.reply('❌ No pending invite.');
+    const invited = await Guild.findOne({ pendingInvites: contact.id._serialized });
+    if (!invited) return msg.reply('❌ No pending invite.');
 
-    guild.pendingInvites = guild.pendingInvites.filter(id => id !== contact.id._serialized);
-    await guild.save();
+    // Same identify-outside/re-verify-inside-the-lock pattern as .guild
+    // accept above.
+    const result = await withGuildLock(invited._id, async () => {
+      const guild = await Guild.findById(invited._id);
+      if (!guild || !guild.pendingInvites.includes(contact.id._serialized)) return { error: 'gone' };
+
+      guild.pendingInvites = guild.pendingInvites.filter(id => id !== contact.id._serialized);
+      await guild.save();
+      return {};
+    });
+
+    if (result.error === 'gone') return msg.reply('❌ No pending invite.');
     msg.reply('✅ Invite declined.');
   },
 
@@ -1496,24 +1657,46 @@ module.exports = {
     const user = await User.findOrCreate(contact.id._serialized);
     if (user.guildId) return msg.reply('❌ You are already in a guild. Leave first!');
 
-    const guild = await _resolveGuildForJoin(query);
-    if (!guild) return msg.reply(`❌ No guild found matching "${query}". Use *.guild* to browse guilds looking for members.`);
+    const found = await _resolveGuildForJoin(query);
+    if (!found) return msg.reply(`❌ No guild found matching "${query}". Use *.guild* to browse guilds looking for members.`);
 
-    if (guild.recruitment === 'closed') {
-      return msg.reply(`❌ *${guild.name}* isn't accepting new members right now.`);
+    // The resolve above only identifies WHICH guild to lock — recruitment
+    // setting, capacity, and "already applied" are all re-checked on a
+    // fresh load taken INSIDE that guild's lock, since any of them could
+    // have changed (a slot filling up, recruitment closing) between the
+    // resolve and the lock actually being acquired.
+    const result = await withGuildLock(found._id, async () => {
+      const guild = await Guild.findById(found._id);
+      if (!guild) return { error: 'notfound' };
+
+      if (guild.recruitment === 'closed') return { error: 'closed', guildName: guild.name };
+      if (guild.recruitment === 'invite') return { error: 'inviteonly', guildName: guild.name };
+      const maxMembers = Guild.effectiveMaxMembers(guild);
+      if (guild.members.length >= maxMembers) {
+        return { error: 'full', guildName: guild.name, count: guild.members.length, max: maxMembers };
+      }
+      if (guild.pendingApplications.includes(contact.id._serialized)) {
+        return { error: 'already', guildName: guild.name };
+      }
+
+      guild.pendingApplications.push(contact.id._serialized);
+      await guild.save();
+      return { guild };
+    });
+
+    if (result.error === 'notfound') {
+      return msg.reply(`❌ No guild found matching "${query}". Use *.guild* to browse guilds looking for members.`);
     }
-    if (guild.recruitment === 'invite') {
-      return msg.reply(`❌ *${guild.name}* is invite-only — ask the leader or an officer to invite you.`);
+    if (result.error === 'closed') return msg.reply(`❌ *${result.guildName}* isn't accepting new members right now.`);
+    if (result.error === 'inviteonly') {
+      return msg.reply(`❌ *${result.guildName}* is invite-only — ask the leader or an officer to invite you.`);
     }
-    if (guild.members.length >= Guild.effectiveMaxMembers(guild)) {
-      return msg.reply(`❌ *${guild.name}* is full (${guild.members.length}/${Guild.effectiveMaxMembers(guild)}).`);
-    }
-    if (guild.pendingApplications.includes(contact.id._serialized)) {
-      return msg.reply(`❌ You've already applied to *${guild.name}* — wait for a leader or officer to review it.`);
+    if (result.error === 'full') return msg.reply(`❌ *${result.guildName}* is full (${result.count}/${result.max}).`);
+    if (result.error === 'already') {
+      return msg.reply(`❌ You've already applied to *${result.guildName}* — wait for a leader or officer to review it.`);
     }
 
-    guild.pendingApplications.push(contact.id._serialized);
-    await guild.save();
+    const { guild } = result;
     msg.reply(`📨 Application sent to *${guild.emblem} ${guild.name}*! A leader or officer needs to approve it with *.guild acceptapp*.`);
   },
 
@@ -1600,41 +1783,66 @@ module.exports = {
     const user = await User.findOrCreate(contact.id._serialized);
     if (!user.guildId) return msg.reply('❌ You are not in a guild.');
 
-    const guild = await Guild.findById(user.guildId);
-    if (!guild) return msg.reply('❌ Guild not found.');
+    // Whole cycle — including applicant-name resolution and the "did
+    // they already join elsewhere" check — happens inside this guild's
+    // lock. See .guild remove's comment above for why.
+    const result = await withGuildLock(user.guildId, async () => {
+      const guild = await Guild.findById(user.guildId);
+      if (!guild) return { error: 'notfound' };
 
-    const actorRole = getRole(guild, contact.id._serialized);
-    if (actorRole !== 'leader' && actorRole !== 'officer') {
-      return msg.reply('❌ Only the guild leader or an officer can approve applications.');
-    }
-    if (!guild.pendingApplications.length) return msg.reply('📭 No pending applications.');
+      const actorRole = getRole(guild, contact.id._serialized);
+      if (actorRole !== 'leader' && actorRole !== 'officer') return { error: 'norole' };
+      if (!guild.pendingApplications.length) return { error: 'none' };
 
-    const result = await _resolveUserIdByName(client, guild.pendingApplications, query);
-    if (!result) return msg.reply(`❌ No applicant named "${query}" found.`);
-    if (result.ambiguous) return msg.reply(`❌ That matches multiple applicants: ${result.ambiguous.join(', ')}. Be more specific.`);
+      const appResult = await _resolveUserIdByName(client, guild.pendingApplications, query);
+      if (!appResult) return { error: 'nomatch' };
+      if (appResult.ambiguous) return { error: 'ambiguous', names: appResult.ambiguous };
 
-    const { userId: applicantId, name: applicantName } = result;
+      const { userId: applicantId, name: applicantName } = appResult;
 
-    if (guild.members.length >= Guild.effectiveMaxMembers(guild)) {
-      return msg.reply(`❌ *${guild.name}* is full (${guild.members.length}/${Guild.effectiveMaxMembers(guild)}) — remove someone first.`);
-    }
+      const maxMembers = Guild.effectiveMaxMembers(guild);
+      if (guild.members.length >= maxMembers) {
+        return { error: 'full', guildName: guild.name, count: guild.members.length, max: maxMembers };
+      }
 
-    // The applicant might have joined a different guild while waiting on
-    // this one — double-check rather than silently creating an
-    // inconsistent double-membership.
-    const applicantUser = await User.findOne({ id: applicantId });
-    if (!applicantUser || applicantUser.guildId) {
+      // The applicant might have joined a different guild while waiting
+      // on this one — double-check rather than silently creating an
+      // inconsistent double-membership.
+      const applicantUser = await User.findOne({ id: applicantId });
+      if (!applicantUser || applicantUser.guildId) {
+        guild.pendingApplications = guild.pendingApplications.filter(id => id !== applicantId);
+        await guild.save();
+        return { error: 'unavailable', applicantName };
+      }
+
       guild.pendingApplications = guild.pendingApplications.filter(id => id !== applicantId);
+      guild.members.push({ userId: applicantId, role: 'member', joinedAt: new Date(), contribution: 0 });
+      Guild.logActivity(guild, { eventType: 'member_joined', userId: applicantId });
       await guild.save();
-      return msg.reply(`❌ ${applicantName} is no longer available to join — application removed.`);
+
+      return { guild, applicantUser, applicantName };
+    });
+
+    if (result.error === 'notfound') return msg.reply('❌ Guild not found.');
+    if (result.error === 'norole') return msg.reply('❌ Only the guild leader or an officer can approve applications.');
+    if (result.error === 'none') return msg.reply('📭 No pending applications.');
+    if (result.error === 'nomatch') return msg.reply(`❌ No applicant named "${query}" found.`);
+    if (result.error === 'ambiguous') {
+      return msg.reply(`❌ That matches multiple applicants: ${result.names.join(', ')}. Be more specific.`);
+    }
+    if (result.error === 'full') {
+      return msg.reply(`❌ *${result.guildName}* is full (${result.count}/${result.max}) — remove someone first.`);
+    }
+    if (result.error === 'unavailable') {
+      return msg.reply(`❌ ${result.applicantName} is no longer available to join — application removed.`);
     }
 
-    guild.pendingApplications = guild.pendingApplications.filter(id => id !== applicantId);
-    guild.members.push({ userId: applicantId, role: 'member', joinedAt: new Date(), contribution: 0 });
-    Guild.logActivity(guild, { eventType: 'member_joined', userId: applicantId });
+    // Guild side confirmed saved first — only then does the applicant's
+    // own user doc get updated, same pattern as .guild accept above.
+    const { guild, applicantUser, applicantName } = result;
     applicantUser.guildId = guild._id.toString();
+    await applicantUser.save();
 
-    await Promise.all([guild.save(), applicantUser.save()]);
     msg.reply(`✅ ${applicantName} has been accepted into *${guild.emblem} ${guild.name}*!`);
   },
 
@@ -1647,22 +1855,34 @@ module.exports = {
     const user = await User.findOrCreate(contact.id._serialized);
     if (!user.guildId) return msg.reply('❌ You are not in a guild.');
 
-    const guild = await Guild.findById(user.guildId);
-    if (!guild) return msg.reply('❌ Guild not found.');
+    // Whole cycle inside the guild's lock — see .guild remove's comment
+    // above for why.
+    const result = await withGuildLock(user.guildId, async () => {
+      const guild = await Guild.findById(user.guildId);
+      if (!guild) return { error: 'notfound' };
 
-    const actorRole = getRole(guild, contact.id._serialized);
-    if (actorRole !== 'leader' && actorRole !== 'officer') {
-      return msg.reply('❌ Only the guild leader or an officer can decline applications.');
+      const actorRole = getRole(guild, contact.id._serialized);
+      if (actorRole !== 'leader' && actorRole !== 'officer') return { error: 'norole' };
+      if (!guild.pendingApplications.length) return { error: 'none' };
+
+      const appResult = await _resolveUserIdByName(client, guild.pendingApplications, query);
+      if (!appResult) return { error: 'nomatch' };
+      if (appResult.ambiguous) return { error: 'ambiguous', names: appResult.ambiguous };
+
+      guild.pendingApplications = guild.pendingApplications.filter(id => id !== appResult.userId);
+      await guild.save();
+      return { applicantName: appResult.name };
+    });
+
+    if (result.error === 'notfound') return msg.reply('❌ Guild not found.');
+    if (result.error === 'norole') return msg.reply('❌ Only the guild leader or an officer can decline applications.');
+    if (result.error === 'none') return msg.reply('📭 No pending applications.');
+    if (result.error === 'nomatch') return msg.reply(`❌ No applicant named "${query}" found.`);
+    if (result.error === 'ambiguous') {
+      return msg.reply(`❌ That matches multiple applicants: ${result.names.join(', ')}. Be more specific.`);
     }
-    if (!guild.pendingApplications.length) return msg.reply('📭 No pending applications.');
 
-    const result = await _resolveUserIdByName(client, guild.pendingApplications, query);
-    if (!result) return msg.reply(`❌ No applicant named "${query}" found.`);
-    if (result.ambiguous) return msg.reply(`❌ That matches multiple applicants: ${result.ambiguous.join(', ')}. Be more specific.`);
-
-    guild.pendingApplications = guild.pendingApplications.filter(id => id !== result.userId);
-    await guild.save();
-    msg.reply(`✅ Declined ${result.name}'s application.`);
+    msg.reply(`✅ Declined ${result.applicantName}'s application.`);
   },
 
   // .guild recruitment                       — view current setting
@@ -1672,22 +1892,33 @@ module.exports = {
     const user = await User.findOrCreate(contact.id._serialized);
     if (!user.guildId) return msg.reply('❌ You are not in a guild.');
 
-    const guild = await Guild.findById(user.guildId);
-    if (!guild) return msg.reply('❌ Guild not found.');
-
     const setting = args[0]?.toLowerCase();
     if (!setting) {
+      // View mode — pure read, no lock needed (same as the other bare
+      // read commands).
+      const guild = await Guild.findById(user.guildId);
+      if (!guild) return msg.reply('❌ Guild not found.');
       return msg.reply(`🔧 Recruitment is currently *${guild.recruitment}*.\nUsage: .guild recruitment [open|invite|closed]`);
-    }
-    if (guild.leaderId !== contact.id._serialized) {
-      return msg.reply('❌ Only the guild leader can change the recruitment setting.');
     }
     if (!['open', 'invite', 'closed'].includes(setting)) {
       return msg.reply('❌ Usage: .guild recruitment [open|invite|closed]');
     }
 
-    guild.recruitment = setting;
-    await guild.save();
+    // Set mode — whole cycle inside the guild's lock, same reasoning as
+    // every other guild-doc mutation above.
+    const result = await withGuildLock(user.guildId, async () => {
+      const guild = await Guild.findById(user.guildId);
+      if (!guild) return { error: 'notfound' };
+      if (guild.leaderId !== contact.id._serialized) return { error: 'norole' };
+
+      guild.recruitment = setting;
+      await guild.save();
+      return {};
+    });
+
+    if (result.error === 'notfound') return msg.reply('❌ Guild not found.');
+    if (result.error === 'norole') return msg.reply('❌ Only the guild leader can change the recruitment setting.');
+
     msg.reply(`✅ Recruitment set to *${setting}*.`);
   },
 
@@ -1715,19 +1946,34 @@ module.exports = {
     const user = await User.findOrCreate(contact.id._serialized);
     if (!user.guildId) return msg.reply('❌ You are not in a guild.');
 
-    const guild = await Guild.findById(user.guildId);
-    if (!guild) {
+    // Whole cycle inside the guild's lock — see .guild remove's comment
+    // above for why. Restructured so the user's own guildId is only
+    // cleared once the guild's own membership save is confirmed, instead
+    // of the original Promise.all firing both at once — without this, a
+    // failed guild save could leave someone stuck in a guild their own
+    // user doc no longer points at.
+    const result = await withGuildLock(user.guildId, async () => {
+      const guild = await Guild.findById(user.guildId);
+      if (!guild) return { error: 'notfound' };
+      if (guild.leaderId === contact.id._serialized) return { error: 'isleader' };
+
+      guild.members = guild.members.filter(m => m.userId !== contact.id._serialized);
+      Guild.logActivity(guild, { eventType: 'member_left', userId: contact.id._serialized });
+      await guild.save();
+
+      return { guildName: guild.name };
+    });
+
+    if (result.error === 'notfound') {
       user.guildId = null;
       await user.save();
       return msg.reply('❌ Guild not found.');
     }
-    if (guild.leaderId === contact.id._serialized) return msg.reply('❌ Leaders cannot leave. Disband the guild instead.');
+    if (result.error === 'isleader') return msg.reply('❌ Leaders cannot leave. Disband the guild instead.');
 
-    guild.members = guild.members.filter(m => m.userId !== contact.id._serialized);
-    Guild.logActivity(guild, { eventType: 'member_left', userId: contact.id._serialized });
     user.guildId = null;
-    await Promise.all([guild.save(), user.save()]);
-    msg.reply(`✅ You left *${guild.name}*.`);
+    await user.save();
+    msg.reply(`✅ You left *${result.guildName}*.`);
   },
 
   // .guild disband — leader only
@@ -1736,18 +1982,31 @@ module.exports = {
     const user = await User.findOrCreate(contact.id._serialized);
     if (!user.guildId) return msg.reply('❌ You are not in a guild.');
 
-    const guild = await Guild.findById(user.guildId);
-    if (!guild) {
+    // Locked so a disband can't run in the middle of some OTHER command's
+    // load-then-save for this same guild (e.g. a donate mid-flight) —
+    // without this, that other command's later save could silently
+    // debit/credit against a guild that no longer exists. Any command
+    // queued behind this one re-fetches fresh once it's their turn and
+    // correctly finds the guild gone.
+    const result = await withGuildLock(user.guildId, async () => {
+      const guild = await Guild.findById(user.guildId);
+      if (!guild) return { error: 'notfound' };
+      if (guild.leaderId !== contact.id._serialized) return { error: 'norole' };
+
+      // Remove guild from all members
+      await User.updateMany({ guildId: guild._id.toString() }, { guildId: null });
+      await Guild.findByIdAndDelete(guild._id);
+      return { guildName: guild.name };
+    });
+
+    if (result.error === 'notfound') {
       user.guildId = null;
       await user.save();
       return msg.reply('❌ Guild not found.');
     }
-    if (guild.leaderId !== contact.id._serialized) return msg.reply('❌ Only the leader can disband.');
+    if (result.error === 'norole') return msg.reply('❌ Only the leader can disband.');
 
-    // Remove guild from all members
-    await User.updateMany({ guildId: guild._id.toString() }, { guildId: null });
-    await Guild.findByIdAndDelete(guild._id);
-    msg.reply(`🏰 Guild *${guild.name}* has been disbanded.`);
+    msg.reply(`🏰 Guild *${result.guildName}* has been disbanded.`);
   },
 
   // .guild challenge                — view this guild's current challenge

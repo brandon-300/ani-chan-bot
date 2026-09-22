@@ -1,0 +1,185 @@
+[
+  {
+    "cardId": "5Z5DXD",
+    "name": "Rem",
+    "series": "Re:Zero",
+    "oldImageUrl": "https://cdn.donmai.us/original/9d/f1/9df1993d5975d6ea8ceee76c396069c5.jpg",
+    "oldImageSource": "danbooru",
+    "chosenImageUrl": "https://static.wikia.nocookie.net/rezero/images/0/02/Rem_Anime.png/revision/latest?cb=20210916151323",
+    "chosenSourcePageUrl": "https://rezero.fandom.com/wiki/Rem",
+    "chosenTitle": "Rem",
+    "score": 80,
+    "confidence": 1,
+    "reasons": [
+      "acceptable domain (+10)",
+      "search result text mentions both name and series (+15)",
+      "high resolution 1920x1080 (+15)",
+      "Gemini Vision confirms character match at 100% confidence (+15)",
+      "Gemini Vision detected a screenshot/manga panel (-15)"
+    ],
+    "candidatesTried": 3,
+    "status": "proposed"
+  },
+  {
+    "cardId": "WRY79P",
+    "name": "Emilia",
+    "series": "Re:Zero",
+    "oldImageUrl": "https://cdn.donmai.us/sample/43/53/sample-43538ae46d221a6e6dee37711561c604.jpg",
+    "oldImageSource": "danbooru",
+    "chosenImageUrl": "https://static.wikia.nocookie.net/rezero/images/2/29/Emilia_Camp_in_Priestella_S3_anime_PV2.png/revision/latest?cb=20240718064344",
+    "chosenSourcePageUrl": "https://rezero.fandom.com/wiki/Emilia_Camp",
+    "chosenTitle": "Emilia Camp",
+    "score": 65,
+    "confidence": 1,
+    "reasons": [
+      "acceptable domain (+10)",
+      "search result text mentions both name and series (+15)",
+      "high resolution 1920x1080 (+15)",
+      "Gemini Vision confirms character match at 100% confidence (+15)",
+      "Gemini Vision detected a group image, not a solo portrait (-15)",
+      "Gemini Vision detected a screenshot/manga panel (-15)"
+    ],
+    "candidatesTried": 2,
+    "status": "proposed"
+  },
+  {
+    "cardId": "YBZM8Y",
+    "name": "Beatrice",
+    "series": "Re:Zero",
+    "oldImageUrl": "https://cdn.donmai.us/sample/64/2a/sample-642ac0f638366042cc633cc7931337bc.jpg",
+    "oldImageSource": "danbooru",
+    "chosenImageUrl": "https://static.wikia.nocookie.net/rezero/images/0/02/Episode_70_Beatrice_No1.png/revision/latest?cb=20260429232924",
+    "chosenSourcePageUrl": "https://rezero.fandom.com/wiki/Beatrice",
+    "chosenTitle": "Beatrice",
+    "score": 80,
+    "confidence": 1,
+    "reasons": [
+      "acceptable domain (+10)",
+      "search result text mentions both name and series (+15)",
+      "high resolution 1920x1080 (+15)",
+      "Gemini Vision confirms character match at 100% confidence (+15)",
+      "Gemini Vision detected a screenshot/manga panel (-15)"
+    ],
+    "candidatesTried": 3,
+    "status": "proposed"
+  },
+  {
+    "cardId": "CBRR8S",
+    "name": "Asuna Yuuki",
+    "series": "Sword Art Online",
+    "status": "needs_review",
+    "reason": "no search results found"
+  },
+  {
+    "cardId": "Y5RU4A",
+    "name": "Kazuto Kirigaya",
+    "series": "Sword Art Online",
+    "status": "needs_review",
+    "reason": "no search results found"
+  },
+  {
+    "cardId": "9FR8JN",
+    "name": "Levi Ackerman",
+    "series": "Attack on Titan",
+    "oldImageUrl": "https://cdn.donmai.us/sample/be/d2/sample-bed208f6dc3c2909ccbea86b7c53e10f.jpg",
+    "oldImageSource": "danbooru",
+    "chosenImageUrl": "https://static.wikia.nocookie.net/shingekinokyojin/images/b/b1/Levi_Ackermann_%28Anime%29_character_image.png/revision/latest?cb=20231105181307",
+    "chosenSourcePageUrl": "https://attackontitan.fandom.com/wiki/Levi_Ackermann_(Anime)",
+    "chosenTitle": "Levi Ackermann (Anime)",
+    "score": 80,
+    "confidence": 1,
+    "reasons": [
+      "acceptable domain (+10)",
+      "search result text mentions both name and series (+15)",
+      "high resolution 1080x1080 (+15)",
+      "Gemini Vision confirms character match at 100% confidence (+15)",
+      "Gemini Vision detected a screenshot/manga panel (-15)"
+    ],
+    "candidatesTried": 3,
+    "status": "proposed"
+  },
+  {
+    "cardId": "18X66U",
+    "name": "Mikasa Ackerman",
+    "series": "Attack on Titan",
+    "oldImageUrl": "https://cdn.donmai.us/sample/25/02/sample-2502b15f6ac852b07571a1ed79b76ad6.jpg",
+    "oldImageSource": "danbooru",
+    "chosenImageUrl": "https://static.wikia.nocookie.net/shingekinokyojin/images/4/4f/Mikasa_Ackermann_%28Anime%29_character_image.png/revision/latest?cb=20231105175401",
+    "chosenSourcePageUrl": "https://attackontitan.fandom.com/wiki/Mikasa_Ackermann_(Anime)",
+    "chosenTitle": "Mikasa Ackermann (Anime)",
+    "score": 80,
+    "confidence": 1,
+    "reasons": [
+      "acceptable domain (+10)",
+      "search result text mentions both name and series (+15)",
+      "high resolution 1000x1000 (+15)",
+      "Gemini Vision confirms character match at 100% confidence (+15)",
+      "Gemini Vision detected a screenshot/manga panel (-15)"
+    ],
+    "candidatesTried": 3,
+    "status": "proposed"
+  },
+  {
+    "cardId": "3XKPYZ",
+    "name": "Eren Yeager",
+    "series": "Attack on Titan",
+    "oldImageUrl": "https://cdn.donmai.us/sample/a6/fd/sample-a6fdacccf09af7894527d421901957fd.jpg",
+    "oldImageSource": "danbooru",
+    "chosenImageUrl": "https://static.wikia.nocookie.net/shingekinokyojin/images/6/69/Eren_Yeager_character_image.png/revision/latest?cb=20200910221354",
+    "chosenSourcePageUrl": "https://attackontitan.fandom.com/wiki/Eren_Yeager",
+    "chosenTitle": "Eren Yeager",
+    "score": 71,
+    "confidence": 1,
+    "reasons": [
+      "acceptable domain (+10)",
+      "search result text mentions both name and series (+15)",
+      "acceptable resolution 577x577 (+6)",
+      "Gemini Vision confirms character match at 100% confidence (+15)",
+      "Gemini Vision detected a screenshot/manga panel (-15)"
+    ],
+    "candidatesTried": 2,
+    "status": "proposed"
+  },
+  {
+    "cardId": "LYK9XA",
+    "name": "Naruto Uzumaki",
+    "series": "Naruto",
+    "oldImageUrl": "https://cdn.donmai.us/sample/8b/47/sample-8b4753dddbb28b49a280ca3ec72a9a14.jpg",
+    "oldImageSource": "danbooru",
+    "chosenImageUrl": "https://static.wikia.nocookie.net/naruto/images/d/d6/Naruto_Part_I.png/revision/latest?cb=20251228135525",
+    "chosenSourcePageUrl": "https://naruto.fandom.com/wiki/Naruto_Uzumaki",
+    "chosenTitle": "Naruto Uzumaki",
+    "score": 80,
+    "confidence": 1,
+    "reasons": [
+      "acceptable domain (+10)",
+      "search result text mentions both name and series (+15)",
+      "high resolution 1440x1076 (+15)",
+      "Gemini Vision confirms character match at 100% confidence (+15)",
+      "Gemini Vision detected a screenshot/manga panel (-15)"
+    ],
+    "candidatesTried": 4,
+    "status": "proposed"
+  },
+  {
+    "cardId": "H94DY6",
+    "name": "Sasuke Uchiha",
+    "series": "Naruto",
+    "oldImageUrl": "https://cdn.donmai.us/sample/fb/4b/sample-fb4be206955805226708d80cc794c7d9.jpg",
+    "oldImageSource": "danbooru",
+    "chosenImageUrl": "https://static.wikia.nocookie.net/naruto/images/2/21/Sasuke_Part_1.png/revision/latest?cb=20170716092103",
+    "chosenSourcePageUrl": "https://naruto.fandom.com/wiki/Sasuke_Uchiha",
+    "chosenTitle": "Sasuke Uchiha",
+    "score": 80,
+    "confidence": 1,
+    "reasons": [
+      "acceptable domain (+10)",
+      "search result text mentions both name and series (+15)",
+      "high resolution 1350x1000 (+15)",
+      "Gemini Vision confirms character match at 100% confidence (+15)",
+      "Gemini Vision detected a screenshot/manga panel (-15)"
+    ],
+    "candidatesTried": 2,
+    "status": "proposed"
+  }
+]

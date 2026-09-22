@@ -1,0 +1,43 @@
+[
+  {
+    "cardId": "5Z5DXD",
+    "name": "Rem",
+    "series": "Re:Zero",
+    "oldImageUrl": "https://cdn.donmai.us/original/9d/f1/9df1993d5975d6ea8ceee76c396069c5.jpg",
+    "oldImageSource": "danbooru",
+    "chosenImageUrl": "https://static.wikia.nocookie.net/rezero/images/0/02/Rem_Anime.png/revision/latest?cb=20210916151323",
+    "chosenSourcePageUrl": "https://rezero.fandom.com/wiki/Rem",
+    "chosenTitle": "Rem",
+    "score": 80,
+    "confidence": 1,
+    "reasons": [
+      "acceptable domain (+10)",
+      "search result text mentions both name and series (+15)",
+      "high resolution 1920x1080 (+15)",
+      "Gemini Vision confirms character match at 100% confidence (+15)",
+      "Gemini Vision detected a screenshot/manga panel (-15)"
+    ],
+    "candidatesTried": 3,
+    "status": "proposed"
+  },
+  {
+    "cardId": "WRY79P",
+    "name": "Emilia",
+    "series": "Re:Zero",
+    "oldImageUrl": "https://cdn.donmai.us/sample/43/53/sample-43538ae46d221a6e6dee37711561c604.jpg",
+    "oldImageSource": "danbooru",
+    "chosenImageUrl": "https://static.wikia.nocookie.net/rezero/images/2/29/Emilia_Camp_in_Priestella_S3_anime_PV2.png/revision/latest?cb=20240718064344",
+    "chosenSourcePageUrl": "https://rezero.fandom.com/wiki/Emilia_Camp",
+    "chosenTitle": "Emilia Camp",
+    "score": 80,
+    "confidence": null,
+    "reasons": [
+      "acceptable domain (+10)",
+      "search result text mentions both name and series (+15)",
+      "high resolution 1920x1080 (+15)",
+      "no Gemini Vision check performed for this candidate (scored on domain/resolution/text only)"
+    ],
+    "candidatesTried": 2,
+    "status": "proposed"
+  }
+]

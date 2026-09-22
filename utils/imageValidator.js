@@ -1,6 +1,6 @@
 // ─── Image candidate validation & scoring ──────────────────────────────────
-// Everything repairCardImages.js needs to turn a raw Google Custom Search
-// result into a decision: is this actually a usable, on-character image?
+// Everything repairCardImages.js needs to turn a raw search result into a
+// decision: is this actually a usable, on-character image?
 //
 // Deliberately does NOT trust any single signal on its own — not the
 // search result's claimed size, not its domain, not even Gemini Vision's
@@ -16,6 +16,13 @@
 // sniffer for PNG/JPEG/GIF/WEBP instead, verified against real generated
 // test files (all four formats, plus a progressive JPEG and a lossless
 // VP8L WEBP) before this was written into the project.
+//
+// FIX IN THIS VERSION — hotlink 403s: Fandom's CDN (static.wikia.nocookie.net)
+// returns 403 to requests without a browser-like header set INCLUDING a
+// same-site Referer (verified with curl: the exact same URL that 403'd from
+// this script returned 200 with UA + Accept + Referer). downloadImageBuffer()
+// now derives a Referer per URL (Fandom wiki subdomain, Zerochan, Wikipedia)
+// and retries once with an even fuller browser header set on 403/429.
 const axios = require('axios');
 const crypto = require('crypto');
 const { generateVision } = require('./gemini');
@@ -26,15 +33,78 @@ const DOWNLOAD_TIMEOUT_MS = 15000;
 // from stalling a long batch run.
 const MAX_IMAGE_BYTES = 12 * 1024 * 1024; // 12MB
 
-// Most sites don't block a plain axios request, but several do (Pinterest,
-// some CDNs, some official studio sites with basic bot protection) —
-// they return a 403 to anything that doesn't look like a browser. A
-// realistic desktop User-Agent avoids that for the sites where it's just a
-// blunt "no scripts" rule rather than deliberate hotlink protection.
+// Base browser-like headers. Most sites don't block a plain axios request,
+// but several do (Fandom's CDN, Pinterest, some CDNs) — they return a 403
+// to anything that doesn't look like a browser.
+const BROWSER_UA =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+
 const DOWNLOAD_HEADERS = {
-  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  'User-Agent': BROWSER_UA,
   'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
 };
+
+// Even fuller browser header set, used for the single retry when the first
+// attempt is refused with 403/429 (some CDN edges want these too).
+const RETRY_HEADERS = {
+  'User-Agent': BROWSER_UA,
+  'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+  'Accept-Language': 'en-US,en;q=0.9',
+  'Sec-Fetch-Dest': 'image',
+  'Sec-Fetch-Mode': 'no-cors',
+  'Sec-Fetch-Site': 'cross-site',
+  'Upgrade-Insecure-Requests': '1',
+};
+
+// Derive a Referer that makes the request look like it came from the page
+// hosting the image. static.wikia.nocookie.net URLs carry the wiki identity
+// either in a subdirectory of the path (…/onepiece/images/…) or, for some
+// legacy wikis, in a ?path-prefix=<wiki> query param. Zerochan and
+// Wikipedia get their own same-site referers. Everything else gets the
+// image host's root as a harmless default.
+function buildReferer(imageUrl) {
+  try {
+    const u = new URL(imageUrl);
+    const host = u.hostname.toLowerCase();
+
+    if (host === 'static.wikia.nocookie.net' || host.endsWith('.wikia.nocookie.net')) {
+      // Prefer the ?path-prefix=<wiki> param (legacy p__/ URLs), else the
+      // first path segment after /images/.
+      const pathPrefix = u.searchParams.get('path-prefix');
+      if (pathPrefix) return `https://${pathPrefix}.fandom.com/`;
+      const m = u.pathname.match(/^\/([^/]+)\/images\//);
+      if (m && m[1] && m[1] !== 'p__') return `https://${m[1]}.fandom.com/`;
+      return 'https://www.fandom.com/';
+    }
+
+    if (host.endsWith('.zerochan.net') || host === 'zerochan.net' || host.endsWith('.static.zerochan.net')) {
+      return 'https://www.zerochan.net/';
+    }
+
+    if (host.endsWith('.wikipedia.org') || host.endsWith('.wikimedia.org') || host === 'upload.wikimedia.org') {
+      return 'https://en.wikipedia.org/';
+    }
+
+    // Neutral default: same-origin root referer.
+    return `https://${u.hostname}/`;
+  } catch (_e) {
+    return null;
+  }
+}
+
+function downloadHeadersFor(url) {
+  const referer = buildReferer(url);
+  return referer ? { ...DOWNLOAD_HEADERS, 'Referer': referer } : { ...DOWNLOAD_HEADERS };
+}
+
+function retryHeadersFor(url) {
+  const referer = buildReferer(url);
+  const base = { ...RETRY_HEADERS };
+  // Retry keeps the SAME referer that the first attempt derived — a wrong
+  // referer would look more suspicious, not less.
+  if (referer) base['Referer'] = referer;
+  return base;
+}
 
 // ─── Format sniffing + dimensions (no external library) ───────────────────
 function detectFormat(buf) {
@@ -123,15 +193,34 @@ function sha256Hex(buf) {
 // ─── Download ───────────────────────────────────────────────────────────────
 // Throws on any failure (network error, non-2xx, oversized) — the caller
 // treats a thrown error as "this candidate is unusable", not a hard stop.
+//
+// FIX IN THIS VERSION: per-URL Referer (see buildReferer above) + one retry
+// with a fuller browser header set on 403/429. Fandom's CDN hotlink
+// protection was 403ing the plain-UA request that used to be sent here.
 async function downloadImageBuffer(url) {
-  const res = await axios.get(url, {
+  const axiosOpts = (headers) => ({
     responseType: 'arraybuffer',
     timeout: DOWNLOAD_TIMEOUT_MS,
-    headers: DOWNLOAD_HEADERS,
+    headers,
     maxContentLength: MAX_IMAGE_BYTES,
     maxBodyLength: MAX_IMAGE_BYTES,
     validateStatus: (s) => s >= 200 && s < 300,
   });
+
+  let res;
+  try {
+    res = await axios.get(url, axiosOpts(downloadHeadersFor(url)));
+  } catch (err) {
+    const status = err && err.response && err.response.status;
+    if (status === 403 || status === 429) {
+      // One polite retry with the fuller browser header set before giving
+      // up on this candidate.
+      res = await axios.get(url, axiosOpts(retryHeadersFor(url)));
+    } else {
+      throw err;
+    }
+  }
+
   const buffer = Buffer.from(res.data);
   if (buffer.length > MAX_IMAGE_BYTES) {
     const err = new Error(`Image is ${(buffer.length / 1024 / 1024).toFixed(1)}MB, over the ${MAX_IMAGE_BYTES / 1024 / 1024}MB cap`);
@@ -186,9 +275,14 @@ function textMentions(haystackNorm, needle) {
   const n = normalizeForMatch(needle);
   return n.length >= 3 && haystackNorm.includes(n);
 }
-function matchTextSignal(name, series, title, snippet) {
+function matchTextSignal(name, series, title, snippet, aliases) {
   const haystack = normalizeForMatch(`${title || ''} ${snippet || ''}`);
-  const nameHit = textMentions(haystack, name);
+  // Same alias reasoning as wikiImageSearch.js's fallback: a candidate
+  // found via an old nickname (e.g. "Kirito") won't mention the
+  // renamed-to full name ("Kazuto Kirigaya") anywhere in its title/
+  // snippet, so without checking aliases too, a perfectly correct match
+  // would wrongly lose the "mentions both name and series" bonus.
+  const nameHit = textMentions(haystack, name) || (aliases || []).some(a => textMentions(haystack, a));
   const seriesHit = textMentions(haystack, series);
   if (nameHit && seriesHit) return 'both';
   if (nameHit) return 'name';

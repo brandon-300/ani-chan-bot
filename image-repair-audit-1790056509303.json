@@ -1,0 +1,80 @@
+[
+  {
+    "cardId": "5Z5DXD",
+    "name": "Rem",
+    "series": "Re:Zero",
+    "status": "needs_review",
+    "reason": "every candidate was hard-rejected",
+    "attempted": [
+      {
+        "imageUrl": "https://cdn.donmai.us/original/29/4b/294b2a297796d7bdc725e9e41b574f73.png",
+        "error": "download failed: Request failed with status code 403",
+        "score": null,
+        "reasons": null
+      },
+      {
+        "imageUrl": "https://cdn.donmai.us/original/d1/c9/d1c9e9e2e8117b305cc029efb4745e98.jpg",
+        "error": "download failed: Request failed with status code 403",
+        "score": null,
+        "reasons": null
+      },
+      {
+        "imageUrl": "https://cdn.donmai.us/original/0e/f0/0ef07ac60b13770465ee029b6f69ddb9.jpg",
+        "error": "download failed: Request failed with status code 403",
+        "score": null,
+        "reasons": null
+      },
+      {
+        "imageUrl": "https://cdn.donmai.us/original/e9/1a/e91a473ed8c88feb12b7a2e88b14d5d5.jpg",
+        "error": "download failed: Request failed with status code 403",
+        "score": null,
+        "reasons": null
+      },
+      {
+        "imageUrl": "https://cdn.donmai.us/original/3e/28/3e28c5b4f47594e412b87d968aceb319.jpg",
+        "error": "download failed: Request failed with status code 403",
+        "score": null,
+        "reasons": null
+      }
+    ]
+  },
+  {
+    "cardId": "WRY79P",
+    "name": "Emilia",
+    "series": "Re:Zero",
+    "status": "needs_review",
+    "reason": "every candidate was hard-rejected",
+    "attempted": [
+      {
+        "imageUrl": "https://cdn.donmai.us/original/a3/1b/a31bf0f306ce3313ece9713c6c65637c.jpg",
+        "error": "download failed: Request failed with status code 403",
+        "score": null,
+        "reasons": null
+      },
+      {
+        "imageUrl": "https://cdn.donmai.us/original/ce/13/ce1334b8d49cd86e2d9a190f186a9cb7.jpg",
+        "error": "download failed: Request failed with status code 403",
+        "score": null,
+        "reasons": null
+      },
+      {
+        "imageUrl": "https://cdn.donmai.us/original/34/05/3405614fb8799dbef934c7db02e5eeec.jpg",
+        "error": "download failed: Request failed with status code 403",
+        "score": null,
+        "reasons": null
+      },
+      {
+        "imageUrl": "https://cdn.donmai.us/original/cf/14/cf147488960412276bd710b386426a3e.jpg",
+        "error": "download failed: Request failed with status code 403",
+        "score": null,
+        "reasons": null
+      },
+      {
+        "imageUrl": "https://cdn.donmai.us/original/57/b8/57b8a9c73685795264634d070ef8670c.jpg",
+        "error": "download failed: Request failed with status code 403",
+        "score": null,
+        "reasons": null
+      }
+    ]
+  }
+]
