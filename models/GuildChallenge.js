@@ -9,7 +9,12 @@ const mongoose = require('mongoose');
 const GuildChallengeSchema = new mongoose.Schema({
   challengerGuildId: { type: String, required: true },
   challengedGuildId: { type: String, required: true },
-  status: { type: String, enum: ['pending', 'active', 'completed', 'declined', 'cancelled'], default: 'pending' },
+  // 'resolving' is a brief, atomically-claimed transit state between
+  // 'active' and 'completed' — see _resolveChallengeIfDue in
+  // commands/guilds.js. It exists purely so two people viewing the same
+  // just-expired challenge at once can't both compute the outcome and
+  // both award the winner's reputation bonus.
+  status: { type: String, enum: ['pending', 'active', 'resolving', 'completed', 'declined', 'cancelled'], default: 'pending' },
   // Reputation snapshots taken the moment the challenge is ACCEPTED, not
   // when it's proposed — so the racing window is exactly the same length
   // for both guilds regardless of how long the challenged guild took to

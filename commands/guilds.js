@@ -170,6 +170,25 @@ const CHALLENGE_REWARD_REPUTATION = 100;
 async function _resolveChallengeIfDue(challenge) {
   if (challenge.status !== 'active' || Date.now() < challenge.endsAt) return null;
 
+  // Atomic claim: findOneAndUpdate's filter+update happens as one
+  // indivisible operation in MongoDB, so if two people view this same
+  // just-expired challenge at the same instant, only one of these calls
+  // can move it from 'active' to 'resolving' — the other gets null back
+  // and does nothing, rather than both computing gains and both awarding
+  // the winner's reputation bonus. Same technique _resolveSeasonIfDue
+  // already uses for seasons. The `challenge` param passed in may now be
+  // stale (its in-memory status still says 'active') — that's fine, since
+  // everything below either reads fields that don't change after accept
+  // (startRepChallenger/startRepChallenged/endsAt/the guild ids) or
+  // unconditionally overwrites status/winnerGuildId at the end rather
+  // than depending on their current in-memory value.
+  const claimed = await GuildChallenge.findOneAndUpdate(
+    { _id: challenge._id, status: 'active', endsAt: { $lte: Date.now() } },
+    { $set: { status: 'resolving' } },
+    { new: true }
+  );
+  if (!claimed) return null;
+
   const [guildA, guildB] = await Promise.all([
     Guild.findById(challenge.challengerGuildId),
     Guild.findById(challenge.challengedGuildId),
@@ -276,7 +295,7 @@ async function _getCurrentSeason() {
   let season = await Season.findOne().sort({ seasonNumber: -1 });
   if (!season) {
     const now = Date.now();
-    season = await Season.create({ seasonNumber: 1, startedAt: now, endsAt: now + SEASON_DURATION_MS });
+    season = await Season.create({ seasonNumber: 1, startedAt: now, endsAt: now + SEASON_DURATION_MS, status: 'active' });
   }
   return season;
 }
@@ -284,62 +303,137 @@ async function _getCurrentSeason() {
 // Atomically resolves the current season if its window has passed, pays
 // out the winner, resets every guild's seasonReputation, and starts the
 // next season. Returns { endedSeason, winner, nextSeason }, or null if
-// nothing was due (including "someone else's check just resolved it a
-// moment ago" — the findOneAndUpdate below can only succeed for ONE
-// caller for a given season, by design).
+// nothing was due and nothing needed resuming.
+//
+// Structured as a small resumable state machine rather than one
+// straight-line sequence of awaits, specifically so a crash/restart
+// partway through (bot dies after paying the winner but before resetting
+// every guild, say) doesn't leave a season permanently stuck "ended, but
+// the next one never started". Each step below persists a flag the
+// moment it's confirmed done, and is skipped on a later call if that flag
+// is already set — so resuming an interrupted resolution redoes only
+// whatever didn't finish, never something that already happened.
 async function _resolveSeasonIfDue() {
   const now = Date.now();
-  // The atomic claim: findOneAndUpdate's filter+update happens as one
-  // indivisible operation in MongoDB, so if two people run .guild season
-  // in the same second right as a season ends, only one of these calls
-  // can match a still-unresolved, past-due season — the other gets null
-  // back and does nothing, rather than both paying out the same season.
-  const claimed = await Season.findOneAndUpdate(
-    { resolved: false, endsAt: { $lte: now } },
-    { $set: { resolved: true } },
-    { sort: { seasonNumber: -1 } }
-  );
-  if (!claimed) return null;
 
-  const topGuilds = await Guild.find().sort({ seasonReputation: -1 }).limit(1);
-  const topGuild = topGuilds[0] && topGuilds[0].seasonReputation > 0 ? topGuilds[0] : null;
+  // First: is there a season stuck mid-resolution from an earlier
+  // interrupted attempt? Check this BEFORE looking for a newly-due one —
+  // an interrupted season already has status 'resolving' (not 'active'),
+  // so it wouldn't be found by the claim query below anyway, and finishing
+  // it takes priority over starting a new resolution.
+  let claimed = await Season.findOne({ status: 'resolving' }).sort({ seasonNumber: -1 });
 
-  // Reloaded fresh inside its own lock rather than reusing the ranking
-  // pre-fetch above — protects the payout from clobbering (or being
-  // clobbered by) some unrelated concurrent mutation to this same guild
-  // doc, same reasoning as _resolveChallengeIfDue above. (Which guild IS
-  // the winner is still decided from the pre-fetch ranking — reworking
-  // that into something lock-spanning every guild at once is a much
-  // bigger change than this batch, and isn't a "guild mutation
-  // concurrency" fix so much as a "season ranking" one.)
-  let winner = null;
-  if (topGuild) {
-    winner = await withGuildLock(topGuild._id, async () => {
-      const fresh = await Guild.findById(topGuild._id);
-      if (!fresh) return null;
-      Guild.awardReputation(fresh, SEASON_WIN_REPUTATION_BONUS);
-      fresh.bank += SEASON_WIN_COINS;
-      fresh.seasonWins = (fresh.seasonWins || 0) + 1;
-      Guild.logActivity(fresh, {
-        eventType: 'season_won',
-        text: `Season ${claimed.seasonNumber}`,
-        amount: SEASON_WIN_COINS,
-      });
-      await fresh.save();
-      return fresh;
-    });
+  if (!claimed) {
+    // Nothing stuck — normal path. Atomic claim: findOneAndUpdate's
+    // filter+update happens as one indivisible operation in MongoDB, so
+    // if two people run .guild season in the same second right as a
+    // season ends, only one of these calls can match a still-active,
+    // past-due season — the other gets null back and does nothing.
+    //
+    // The `$or` also matches a pre-migration document from before this
+    // state machine existed (no `status` field yet, old `resolved: false`
+    // field instead) — self-healing rather than needing a manual DB
+    // migration: the first time this runs after deploy, an old-style
+    // document gets claimed via the fallback branch and written back out
+    // in the new shape from here on.
+    claimed = await Season.findOneAndUpdate(
+      {
+        endsAt: { $lte: now },
+        $or: [{ status: 'active' }, { status: { $exists: false }, resolved: false }],
+      },
+      { $set: { status: 'resolving' }, $unset: { resolved: '' } },
+      { sort: { seasonNumber: -1 }, new: true }
+    );
+    if (!claimed) return null;
   }
 
-  // Bulk reset — deliberately bypasses Mongoose document middleware (no
+  // Step 1: decide (and immediately persist) the winner, exactly once.
+  // Must happen before anything below touches a guild — resuming after a
+  // crash needs to reuse this SAME decision rather than re-ranking guilds
+  // that may already be partially reset to 0 by a later step.
+  if (claimed.winnerGuildId === null) {
+    const topGuilds = await Guild.find().sort({ seasonReputation: -1 }).limit(1);
+    const topGuild = topGuilds[0] && topGuilds[0].seasonReputation > 0 ? topGuilds[0] : null;
+    claimed.winnerGuildId = topGuild ? topGuild._id.toString() : 'none';
+    await claimed.save();
+  }
+
+  // Step 2: pay the winner, exactly once.
+  let winner = null;
+  if (claimed.winnerGuildId !== 'none') {
+    if (!claimed.payoutComplete) {
+      // Reloaded fresh inside its own lock rather than reusing any
+      // pre-fetch — protects the payout from clobbering (or being
+      // clobbered by) some unrelated concurrent mutation to this same
+      // guild doc, same reasoning as _resolveChallengeIfDue.
+      winner = await withGuildLock(claimed.winnerGuildId, async () => {
+        const fresh = await Guild.findById(claimed.winnerGuildId);
+        if (!fresh) return null;
+        Guild.awardReputation(fresh, SEASON_WIN_REPUTATION_BONUS);
+        fresh.bank += SEASON_WIN_COINS;
+        fresh.seasonWins = (fresh.seasonWins || 0) + 1;
+        Guild.logActivity(fresh, {
+          eventType: 'season_won',
+          text: `Season ${claimed.seasonNumber}`,
+          amount: SEASON_WIN_COINS,
+        });
+        await fresh.save();
+        return fresh;
+      });
+      claimed.payoutComplete = true;
+      await claimed.save();
+    } else {
+      // Resuming after the payout already completed on a previous,
+      // interrupted attempt — reload for the result/message, don't pay
+      // again. (The guild having since been disbanded is the one gap
+      // this can't paper over — winner just comes back null then.)
+      winner = await Guild.findById(claimed.winnerGuildId);
+    }
+  }
+
+  // Step 3: reset every guild's seasonReputation, exactly once. Bulk
+  // update deliberately bypasses Mongoose document middleware (no
   // per-guild side effects belong here, this is just a field wipe), and
   // touches every guild regardless of whether they participated at all.
-  await Guild.updateMany({}, { $set: { seasonReputation: 0 } });
+  // Running it twice would actually be harmless on its own ($set to 0 is
+  // idempotent) — the flag is really just to avoid the redundant write.
+  if (!claimed.guildsResetComplete) {
+    await Guild.updateMany({}, { $set: { seasonReputation: 0 } });
+    claimed.guildsResetComplete = true;
+    await claimed.save();
+  }
 
-  const nextSeason = await Season.create({
-    seasonNumber: claimed.seasonNumber + 1,
-    startedAt: now,
-    endsAt: now + SEASON_DURATION_MS,
-  });
+  // Step 4: create the next season, exactly once. The unique index on
+  // seasonNumber (models/Season.js) makes a duplicate create fail with a
+  // Mongo E11000 error instead of silently creating two Season #6
+  // documents — caught below and treated as "already created on a
+  // previous, interrupted attempt" rather than a real error.
+  let nextSeason = await Season.findOne({ seasonNumber: claimed.seasonNumber + 1 });
+  if (!nextSeason) {
+    try {
+      nextSeason = await Season.create({
+        seasonNumber: claimed.seasonNumber + 1,
+        startedAt: now,
+        endsAt: now + SEASON_DURATION_MS,
+        status: 'active',
+      });
+    } catch (err) {
+      if (err.code === 11000) {
+        nextSeason = await Season.findOne({ seasonNumber: claimed.seasonNumber + 1 });
+      } else {
+        throw err;
+      }
+    }
+  }
+
+  // Every step above is now confirmed done — only at this point does this
+  // season's own record flip to 'completed'. If the process dies before
+  // this line, the next call to _resolveSeasonIfDue finds status
+  // 'resolving' again at the top of this function and redoes only
+  // whatever's still unmarked — nothing above gets paid, reset, or
+  // created twice.
+  claimed.status = 'completed';
+  await claimed.save();
 
   return { endedSeason: claimed, winner, nextSeason };
 }
@@ -2027,7 +2121,11 @@ module.exports = {
     const guildIdStr = guild._id.toString();
     const existing = await GuildChallenge.findOne({
       $or: [{ challengerGuildId: guildIdStr }, { challengedGuildId: guildIdStr }],
-      status: { $in: ['pending', 'active'] },
+      // Includes 'resolving' — a challenge mid-atomic-claim (see
+      // _resolveChallengeIfDue) is still effectively in progress for the
+      // handful of milliseconds that state exists; without this, a new
+      // challenge could theoretically be started in that gap.
+      status: { $in: ['pending', 'active', 'resolving'] },
     });
 
     const query = args.join(' ').trim();
@@ -2073,7 +2171,7 @@ module.exports = {
     const targetIdStr = target._id.toString();
     const targetBusy = await GuildChallenge.findOne({
       $or: [{ challengerGuildId: targetIdStr }, { challengedGuildId: targetIdStr }],
-      status: { $in: ['pending', 'active'] },
+      status: { $in: ['pending', 'active', 'resolving'] },
     });
     if (targetBusy) return msg.reply(`❌ *${target.name}* already has a pending or active challenge.`);
 

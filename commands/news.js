@@ -2,167 +2,262 @@ const axios = require('axios');
 const BotState = require('../models/BotState');
 const SentNews = require('../models/SentNews');
 const { isOwner, isAdmin, safeGetChat } = require('../utils/helpers');
-const { NEWS_RSS_QUERY } = require('../utils/config');
-
-const GOOGLE_NEWS_RSS_URL =
-  `https://news.google.com/rss/search?q=${encodeURIComponent(NEWS_RSS_QUERY)}&hl=en-US&gl=US&ceid=US:en`;
-
-// A normal browser User-Agent tends to get a cleaner response from Google
-// News than an identifying bot UA (unlike Danbooru in utils/danbooru.js,
-// which requires a unique identifying UA per its API terms — Google News
-// has no such requirement here, it's just being scraped as a public RSS
-// feed).
-const NEWS_USER_AGENT =
-  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
-
-const SEND_DELAY_MS = 2000; // gap between groups in the daily broadcast — see _maybeSendDailyNews
+const {
+  NEWS_USER_AGENT,
+  NEWS_FETCH_TIMEOUT_MS,
+  NEWS_SEND_DELAY_MS,
+  NEWS_MAX_ARTICLE_AGE_DAYS,
+} = require('../utils/config');
+const {
+  NEWS_SOURCES,
+  HIGH_PRIORITY_TERMS,
+  LOW_PRIORITY_TERMS,
+} = require('../utils/newsConfig');
 
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-// ─── Content relevance ranking ──────────────────────────────────────────────
-// Brandon flagged a real example that slipped through the plain keyword
-// search: a "Anime Dice codes (September 2026) for Lucky Spins" article from
-// GamesRadar+ — a gacha-game code roundup that only matched because the
-// word "Anime" is in its title, not actual anime/manga news. Google News'
-// own ordering is recency-based, not relevance-to-what-Brandon-means-by
-// "anime news" based, so a second pass here re-ranks by content signal
-// before picking an article — HIGH_PRIORITY_TERMS score up (episodes,
-// seasons, movies, studio/voice-actor news, anime-based games/events —
-// exactly the categories Brandon named), LOW_PRIORITY_TERMS score down hard
-// (game-code/guide-site patterns). This is a heuristic, not a classifier —
-// no per-article AI call, to keep this fast, free, and not dependent on
-// another API being up on Brandon's unstable connection for every single
-// .news call.
-//
-// Recency is still respected: Array.prototype.sort is stable in Node (ES2019+),
-// so articles with an equal score keep the feed's own freshest-first order —
-// this only reorders when content signal actually disagrees with plain
-// recency, it doesn't discard recency otherwise.
-const HIGH_PRIORITY_TERMS = [
-  'episode', 'season', 'anime film', 'movie', 'studio', 'voice actor', 'seiyuu',
-  'cast', 'trailer', 'premiere', 'release date', 'adaptation', 'light novel',
-  'opening theme', 'ending theme', 'dub', 'simulcast', 'ova', 'director',
-  'crunchyroll', 'myanimelist', 'manga', 'manhwa', 'donghua', 'chapter',
-  'volume', 'story arc', 'protagonist', 'anime expo', 'anime convention',
-  'video game', 'game adaptation', 'collab',
+// ─── URL normalization + dedup ─────────────────────────────────────────────
+// SentNews uses the article link as its identity (models/SentNews.js), so
+// the SAME story arriving from two feeds with cosmetically different URLs
+// (e.g. one with ?utm_source=google attached) would otherwise count as two
+// different articles and get sent twice. normalizeUrl collapses those
+// cosmetic differences into one canonical string:
+//   • lowercases the protocol/host
+//   • drops 'www.'
+//   • strips the fragment (#...)
+//   • strips common tracking query params (utm_*, fbclid, gclid, etc.)
+//   • strips any trailing slash on the path
+// Path case and remaining params are preserved — they can be meaningful.
+const TRACKING_PARAMS = [
+  'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content',
+  'fbclid', 'gclid', 'mc_cid', 'mc_eid', 'ref', 'source', 'igshid',
 ];
 
-const LOW_PRIORITY_TERMS = [
-  'codes', 'redeem code', 'promo code', 'coupon code', 'tier list',
-  'walkthrough', 'cheat', 'how to get', 'beginner guide', 'gift code',
-  'lucky spin', 'lucky spins',
-];
+function normalizeUrl(rawUrl) {
+  try {
+    const url = new URL(rawUrl.trim());
+    url.hash = '';
+    url.username = '';
+    url.password = '';
+    url.hostname = url.hostname.toLowerCase().replace(/^www\./, '');
+    url.protocol = url.protocol.toLowerCase();
+
+    const params = new URLSearchParams(url.search);
+    for (const param of TRACKING_PARAMS) params.delete(param);
+    params.sort();
+    url.search = params.toString();
+
+    if (url.pathname.length > 1 && url.pathname.endsWith('/')) {
+      url.pathname = url.pathname.slice(0, -1);
+    }
+    return url.toString();
+  } catch {
+    // Not parseable as a URL — fall back to the raw string so dedup still
+    // does no worse than exact-match.
+    return rawUrl.trim();
+  }
+}
+
+// ─── Content relevance ranking ─────────────────────────────────────────────
+// Scoring looks at BOTH the title and the description/summary the feed
+// provides (parsed below) — title hits signal intent ("New Anime Project
+// Announced..."), description hits confirm what the article is actually
+// about. A pure-title scorer would rank an unrelated article high just for
+// having "announced" in the headline. Title hits outweigh description hits
+// (3:1 high, 5:2 low) because the title is the strongest single signal but
+// the description is where guide-site/codes roundups actually give
+// themselves away. No per-article AI call — fast, free, and not dependent
+// on another API being up on an unstable mobile connection.
 
 function scoreArticle(article) {
-  const text = article.title.toLowerCase();
+  const title = (article.title || '').toLowerCase();
+  const description = (article.description || '').toLowerCase();
+
   let score = 0;
-  for (const term of HIGH_PRIORITY_TERMS) if (text.includes(term)) score += 2;
-  for (const term of LOW_PRIORITY_TERMS) if (text.includes(term)) score -= 5;
+  for (const term of HIGH_PRIORITY_TERMS) {
+    if (title.includes(term)) score += 3;
+    if (description.includes(term)) score += 1;
+  }
+  for (const term of LOW_PRIORITY_TERMS) {
+    if (title.includes(term)) score -= 5;
+    if (description.includes(term)) score -= 2;
+  }
+  // Gentle recency bonus — newer items edge out equally-scored older ones.
+  if (article.publishedAt) {
+    const ageDays = (Date.now() - article.publishedAt) / 86400000;
+    if (ageDays >= 0 && ageDays <= NEWS_MAX_ARTICLE_AGE_DAYS) {
+      score += Math.max(0, 3 - ageDays); // up to +3, decaying daily
+    }
+  }
   return score;
 }
 
-// Re-ranks by content relevance (see above) — a plain copy+sort, so the
-// input array (whatever filterUnseen returned) is left untouched.
 function rankByRelevance(articles) {
   return [...articles].sort((a, b) => scoreArticle(b) - scoreArticle(a));
 }
 
-// ─── Google News RSS parsing ────────────────────────────────────────────────
-// Hand-rolled with regex instead of pulling in an XML/RSS parser package —
-// this bot deliberately avoids adding npm dependencies where a small amount
-// of string handling can do the job instead, since `npm install` on
-// Brandon's unstable mobile data is something to avoid (same reasoning as
-// the Gemini calls going through raw axios instead of an SDK). Google News
-// RSS's <item> shape is simple and stable enough for this:
-//
-//   <item>
-//     <title>Article Title - Source Name</title>
-//     <link>https://news.google.com/rss/articles/...</link>
-//     <pubDate>...</pubDate>
-//     <source url="https://source-site.com">Source Name</source>
-//   </item>
-//
-// UNCERTAINTY FLAGGED: this sandbox has no network access, so none of this
-// could be test-fetched against the real feed — the shape above is from
-// Google News RSS's well-documented, long-stable format, but if `.news`
-// comes back empty or garbled after deploying, that's the first place to
-// look (paste me the raw output of `curl -A "<UA above>" "<RSS URL
-// above>"` from Termux and I'll adjust the parsing to match).
-function decodeXmlEntities(str) {
-  if (!str) return str;
-  return str
+// ─── Feed fetching + parsing ───────────────────────────────────────────────
+
+function stripCdata(text) {
+  return text
+    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
+    .replace(/<!\[CDATA\[(?<inner>[\s\S]*)$/i, '$<inner>'); // tolerate unterminated CDATA
+}
+
+function decodeEntities(text) {
+  return text
+    .replace(/&amp;/g, '&')
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
     .replace(/&apos;/g, "'")
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&'); // must run LAST, or "&amp;lt;" etc. would double-decode
+    .replace(/&#39;/g, "'")
+    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)))
+    .replace(/&nbsp;/g, ' ');
 }
 
-function stripHtmlTags(str) {
-  return str ? str.replace(/<[^>]*>/g, '').trim() : str;
+function cleanText(raw) {
+  if (!raw) return '';
+  // Strip basic HTML tags — RSS descriptions routinely contain markup.
+  const noTags = stripCdata(raw).replace(/<[^>]+>/g, ' ');
+  return decodeEntities(noTags).replace(/\s+/g, ' ').trim();
 }
 
-// Handles both `<tag>text</tag>` and `<tag><![CDATA[text]]></tag>` — Google
-// News RSS doesn't currently CDATA-wrap these fields, but being tolerant of
-// both costs nothing and avoids silently breaking if that ever changes.
-function extractTag(itemXml, tagName) {
-  const cdata = new RegExp(`<${tagName}[^>]*><!\\[CDATA\\[([\\s\\S]*?)\\]\\]></${tagName}>`, 'i').exec(itemXml);
-  if (cdata) return cdata[1].trim();
-  const plain = new RegExp(`<${tagName}[^>]*>([\\s\\S]*?)</${tagName}>`, 'i').exec(itemXml);
-  return plain ? plain[1].trim() : null;
+function extractTag(block, tag) {
+  const match = block.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)</${tag}>`, 'i'));
+  return match ? cleanText(match[1]) : '';
 }
 
-function parseGoogleNewsRss(xml) {
-  const itemBlocks = xml.match(/<item>[\s\S]*?<\/item>/g) || [];
+function extractLink(block) {
+  // Atom-style: <link rel="..." href="https://..." /> — prefer the alternate link
+  const atomAlt = block.match(/<link[^>]*rel=["']alternate["'][^>]*href=["']([^"']+)["']/i)
+    || block.match(/<link[^>]*href=["']([^"']+)["']/i);
+  if (atomAlt) return decodeEntities(atomAlt[1].trim());
+  // RSS-style: <link>https://...</link>
+  const rssLink = block.match(/<link[^>]*>([\s\S]*?)<\/link>/i);
+  if (rssLink) {
+    const url = cleanText(rssLink[1]);
+    if (url.startsWith('http')) return url;
+  }
+  return '';
+}
+
+function extractDate(block) {
+  const raw = extractTag(block, 'pubDate')
+    || extractTag(block, 'published')
+    || extractTag(block, 'updated')
+    || extractTag(block, 'dc:date');
+  if (!raw) return null;
+  const ts = Date.parse(raw);
+  return Number.isNaN(ts) ? null : ts;
+}
+
+// Hand-rolled regex parser (no XML library) — handles both RSS 2.0 <item>
+// and Atom <entry> blocks, which covers every source in NEWS_SOURCES.
+// Parses title, link, description/summary (for scoring), and pubDate.
+function parseFeed(xml, sourceName) {
+  const blocks = [
+    ...(xml.match(/<item[\s\S]*?<\/item>/gi) || []),
+    ...(xml.match(/<entry[\s\S]*?<\/entry>/gi) || []),
+  ];
+
   const articles = [];
-
-  for (const block of itemBlocks) {
-    const link = extractTag(block, 'link');
-    let title = decodeXmlEntities(stripHtmlTags(extractTag(block, 'title') || ''));
+  for (const block of blocks) {
+    const title = extractTag(block, 'title');
+    const link = extractLink(block);
     if (!title || !link) continue;
 
-    const sourceRaw = extractTag(block, 'source');
-    const source = sourceRaw ? decodeXmlEntities(stripHtmlTags(sourceRaw)) : null;
+    const description =
+      extractTag(block, 'description')
+      || extractTag(block, 'summary')
+      || extractTag(block, 'content:encoded')
+      || extractTag(block, 'content');
 
-    // Google News titles arrive as "Article Title - Source Name" — trim the
-    // redundant "- Source Name" suffix since the source is shown on its
-    // own line below (avoids the title/source repetition Miyabi's own
-    // output shows in Brandon's screenshots).
-    if (source && title.endsWith(` - ${source}`)) {
-      title = title.slice(0, title.length - (` - ${source}`).length).trim();
-    }
+    const publishedAt = extractDate(block);
+    // Skip stale backlog items so a first run can't flood groups with old news.
+    if (publishedAt && Date.now() - publishedAt > NEWS_MAX_ARTICLE_AGE_DAYS * 86400000) continue;
 
-    articles.push({ title, link: decodeXmlEntities(link), source: source || 'Google News' });
+    const normalizedLink = normalizeUrl(link);
+
+    articles.push({
+      title,
+      link,
+      normalizedLink,
+      description,
+      source: sourceName,
+      publishedAt,
+    });
   }
 
-  return articles;
+  // Dedupe by normalized link — same story syndicated on two feeds, or the
+  // same story with/without tracking params, counts once. First occurrence
+  // (earlier in its own feed = newer) wins.
+  const seen = new Set();
+  return articles.filter(a => (seen.has(a.normalizedLink) ? false : (seen.add(a.normalizedLink), true)));
 }
 
-// Fetches and parses the full feed, freshest-first (whatever order Google
-// News itself returns) — no slicing here. Callers filter out what a chat's
-// already seen (filterUnseen) and re-rank by content relevance
-// (rankByRelevance) before picking anything.
-async function fetchAllArticles() {
-  const { data } = await axios.get(GOOGLE_NEWS_RSS_URL, {
+async function fetchSource(source) {
+  const { data } = await axios.get(source.url, {
     headers: { 'User-Agent': NEWS_USER_AGENT },
-    timeout: 15000,
+    timeout: NEWS_FETCH_TIMEOUT_MS,
+    responseType: 'text',
   });
-  return parseGoogleNewsRss(data);
+  return parseFeed(typeof data === 'string' ? data : String(data), source.name);
+}
+
+// Fisher–Yates shuffle — randomizes the source order each run.
+function shuffle(array) {
+  const out = [...array];
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [out[i], out[j]] = [out[j], out[i]];
+  }
+  return out;
+}
+
+// Fetches ALL sources in parallel, then MERGES every successful source's
+// results into one pool; relevance ranking (scoreArticle) decides what gets
+// sent, not source order. Because all sources are fetched, the randomized
+// order is NOT "which site the news comes from" — it only (a) breaks ties
+// in equal-score situations more variedly across runs, and (b) varies which
+// story tops the merged pool among equally-scored candidates. Any source
+// that fails (bad internet, feed down, etc.) is skipped rather than failing
+// the whole run — the news goes out from whichever sources actually
+// respond. If every source fails, an empty array is returned.
+async function fetchAllArticles() {
+  const randomizedSources = shuffle(NEWS_SOURCES);
+  const results = await Promise.allSettled(
+    randomizedSources.map(source => fetchSource(source))
+  );
+
+  const articles = [];
+  for (let i = 0; i < results.length; i++) {
+    const result = results[i];
+    if (result.status === 'fulfilled') {
+      articles.push(...result.value);
+    } else {
+      const sourceName = randomizedSources[i].name;
+      console.error(`⚠️ News source "${sourceName}" failed:`, result.reason?.message || result.reason);
+    }
+  }
+
+  // Re-dedupe across sources by normalized link (same story syndicated on
+  // multiple feeds, with or without tracking params, counts once).
+  const seen = new Set();
+  return articles.filter(a => (seen.has(a.normalizedLink) ? false : (seen.add(a.normalizedLink), true)));
 }
 
 // Same seen/unseen tracking pattern as .pinterest (models/SentPin.js) and
 // .wallpaper (models/SentWallpaper.js) — dedup is per-chat, using the
-// article's link as its identity (see models/SentNews.js).
+// article's NORMALIZED link as its identity (see models/SentNews.js).
 async function filterUnseen(chatId, articles) {
   if (!articles.length) return [];
   const seenDocs = await SentNews.find({
     chatId,
-    articleId: { $in: articles.map(a => a.link) },
+    articleId: { $in: articles.map(a => a.normalizedLink) },
   }).select('articleId -_id');
   const seenIds = new Set(seenDocs.map(d => d.articleId));
-  return articles.filter(a => !seenIds.has(a.link));
+  return articles.filter(a => !seenIds.has(a.normalizedLink));
 }
 
 // Combines both steps above into "the one article this chat should get
@@ -182,8 +277,21 @@ function formatArticle(article) {
   );
 }
 
+// NOTE: markSent stores the NORMALIZED link (article.normalizedLink), while
+// formatArticle shows the original link (article.link) — the message
+// displays the URL exactly as the feed published it, but dedup stays
+// tracking-param-proof.
+
 async function markSent(chatId, article) {
-  await SentNews.create({ chatId, articleId: article.link }).catch(() => {});
+  await SentNews.create({ chatId, articleId: article.normalizedLink }).catch(() => {});
+}
+
+// Sends the article with a WhatsApp link preview (the website card with
+// title/description/thumbnail) by passing linkPreview: true explicitly.
+// whatsapp-web.js fetches the page's preview metadata itself; on a bad
+// connection it may fall back to a plain-text link, which is harmless.
+async function sendArticle(chat, article) {
+  await chat.sendMessage(formatArticle(article), { linkPreview: true });
 }
 
 // Same admin-or-owner gate as commands/admin.js's requireAdmin — duplicated
@@ -201,12 +309,15 @@ async function requireAdmin(msg) {
 module.exports = {
   // .news — admin-only (WhatsApp group admin, or the bot owner). Takes no
   // arguments — always sends exactly the next anime/manga/manhwa/donghua
-  // article this chat hasn't already been sent, ranked by content
-  // relevance (see rankByRelevance above) so genuine anime news outranks
-  // things that just happen to mention "anime". No acknowledgement text:
-  // a 📰 reaction on the command itself, then the article AS A REPLY to
-  // that command (msg.reply, not chat.sendMessage — this is what makes it
-  // show up as a reply bubble in WhatsApp) — nothing else on the happy path.
+  // article this chat hasn't already been sent, ranked by content relevance
+  // (see scoreArticle above — title + description scoring) so genuine anime
+  // news outranks things that just happen to mention "anime". If every
+  // source is caught up, tells the user so instead of sending nothing —
+  // this is a COMMAND, so silence would just look like the bot ignoring
+  // them. No acknowledgement text: a 📰 reaction on the command itself,
+  // then the article AS A REPLY to that command (msg.reply, not
+  // chat.sendMessage — this is what makes it show up as a reply bubble in
+  // WhatsApp) — nothing else on the happy path.
   async news(client, msg, args) {
     if (!await requireAdmin(msg)) return;
 
@@ -225,7 +336,7 @@ module.exports = {
     }
 
     if (!article) {
-      return msg.reply(`📭 You're all caught up — no new anime/manga news right now. Check back later!`);
+      return msg.reply(`📭 You're all caught up — no new anime news right now. Check back later!`);
     }
 
     await markSent(chat.id._serialized, article);
@@ -235,65 +346,82 @@ module.exports = {
   },
 
   // Internal — called every minute by index.js's scheduler (same shape as
-  // _maybeSendDailyStats in commands/general.js). Sends exactly 1
-  // NOT-yet-seen article, unprompted, to every group the bot is CURRENTLY
-  // in — live via client.getChats(), not a stored list, so a group the bot
-  // was removed from simply isn't in it anymore. The feed itself is only
-  // fetched ONCE per run (not once per group) — each group's own
-  // seen/unseen set and relevance ranking is then computed locally against
-  // that same fetch. Once a day, right after 8:00 AM WAT (= 07:00 UTC —
-  // Nigeria has used WAT year-round with no DST since 1919, so this fixed
-  // offset never needs adjusting). BotState remembers the last date this
-  // actually ran, so a PM2 restart landing in that exact minute can't
-  // cause a duplicate broadcast.
+  // _maybeSendDailyStats in commands/general.js). Runs ONCE PER HOUR (on the
+  // hour, WAT — Nigeria is fixed UTC+1 with no DST, so "on the hour" is the
+  // same instant in WAT and UTC). Sends exactly 1 NOT-yet-seen article, with
+  // a link preview, to every group the bot is CURRENTLY in — live via
+  // client.getChats(), not a stored list, so a group the bot was removed
+  // from simply isn't in it anymore. All sources are fetched in parallel
+  // once per run and merged (see fetchAllArticles). The feeds are fetched
+  // ONCE per run (not once per group) — each group's own seen/unseen set
+  // and relevance ranking is then computed locally against that same fetch.
+  //
+  // If no group has any unseen article (everything's been seen / all feeds
+  // empty), NOTHING is sent — this is an unprompted broadcast, so silence is
+  // the correct "all caught up" behavior here (the .news command above is
+  // the one that talks back).
+  //
+  // BotState remembers the last hour-key this actually ran for, so a PM2
+  // restart landing in the same hour can't cause a duplicate broadcast.
   //
   // This has no triggering message to reply to (it's unprompted, not a
   // response to a command) — chat.sendMessage() is correct here, unlike
   // .news above.
   async _maybeSendDailyNews(client) {
     const now = new Date();
-    if (now.getUTCHours() !== 7 || now.getUTCMinutes() !== 0) return;
+    // Fire on the hour, every hour (minute 0). UTC hour === WAT hour − 1,
+    // and since both clocks tick hourly, "minute === 0" is hourly in WAT.
+    if (now.getUTCMinutes() !== 0) return;
 
-    const todayKey = now.toISOString().slice(0, 10);
-    const state = await BotState.findOne({ key: 'dailyNewsLastSent' }).catch(() => null);
-    if (state?.value === todayKey) return;
+    // Hour key — e.g. "2026-09-23T14". One run per wall-clock hour.
+    const hourKey = now.toISOString().slice(0, 13);
+    const state = await BotState.findOne({ key: 'hourlyNewsLastRun' }).catch(() => null);
+    if (state?.value === hourKey) return;
 
     let articles;
     try {
       articles = await fetchAllArticles();
     } catch (err) {
-      console.error('❌ Daily anime news fetch failed:', err.message);
+      console.error('❌ Hourly anime news fetch failed:', err.message);
       return;
     }
-    if (!articles.length) return;
+    if (!articles.length) {
+      // All sources failed or all items were stale — stay quiet, and only
+      // record the hour AFTER a successful path so a failed hour retries.
+      return;
+    }
 
     let groupChats = [];
     try {
       groupChats = (await client.getChats()).filter(c => c.isGroup);
     } catch (err) {
-      console.error('❌ Daily anime news: getChats failed:', err.message);
+      console.error('❌ Hourly anime news: getChats failed:', err.message);
       return;
     }
 
+    let sentCount = 0;
     for (const chat of groupChats) {
       try {
         const chatId = chat.id._serialized;
         const article = await pickNextArticle(chatId, articles);
         if (article) {
+          await sendArticle(chat, article);
+          // Mark as sent ONLY after the message actually went out, so a
+          // failed send is retried next hour instead of being skipped.
           await markSent(chatId, article);
-          await chat.sendMessage(formatArticle(article));
+          sentCount++;
         }
       } catch (err) {
-        console.error(`❌ Daily anime news: failed for ${chat.id._serialized}:`, err.message);
+        console.error(`❌ Hourly anime news: failed for ${chat.id._serialized}:`, err.message);
       }
-      await sleep(SEND_DELAY_MS); // gap between groups
+      await sleep(NEWS_SEND_DELAY_MS); // gap between groups
     }
 
     await BotState.findOneAndUpdate(
-      { key: 'dailyNewsLastSent' },
-      { value: todayKey },
+      { key: 'hourlyNewsLastRun' },
+      { value: hourKey },
       { upsert: true }
     );
-    console.log(`✅ Daily anime news checked for ${groupChats.length} group(s) at ${now.toLocaleString()}`);
+    console.log(`✅ Hourly anime news: ${sentCount} article(s) sent across ${groupChats.length} group(s) at ${now.toLocaleString()}`);
   },
 };
