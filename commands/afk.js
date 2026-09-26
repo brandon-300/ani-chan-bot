@@ -69,7 +69,7 @@ module.exports = {
     user.afk = { active: true, reason, since: new Date(since) };
     await user.save().catch(err => console.error('afk: persist failed:', err.message));
 
-    msg.reply(`🛑 You are now AFK: ${reason}`);
+    return msg.reply(`🛑 You are now AFK: ${reason}`);
   },
 
   // Called from a standalone client.on('message') listener in index.js

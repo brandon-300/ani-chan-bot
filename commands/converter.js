@@ -162,7 +162,7 @@ module.exports = {
       return msg.reply('❌ Send or reply to an image/gif/video with .sticker');
     }
 
-    msg.reply('🎨 Creating sticker...');
+    await msg.reply('🎨 Creating sticker...');
 
     const media = await targetMsg.downloadMedia().catch(() => null);
     if (!media) return msg.reply('❌ Failed to download media.');
@@ -210,7 +210,7 @@ module.exports = {
         stickerAuthor: 'Brandon',
       });
     } catch (err) {
-      msg.reply('❌ Sticker creation failed: ' + err.message);
+      return msg.reply('❌ Sticker creation failed: ' + err.message);
     } finally {
       cleanup(inputPath, outputPath);
     }
@@ -237,9 +237,9 @@ module.exports = {
         stickerAuthor: authorName,
       });
 
-      msg.reply(`✅ Sticker saved!\nPack: ${packName}\nAuthor: ${authorName}`);
+      return msg.reply(`✅ Sticker saved!\nPack: ${packName}\nAuthor: ${authorName}`);
     } catch (err) {
-      msg.reply('❌ Failed to take sticker.');
+      return msg.reply('❌ Failed to take sticker.');
     }
   },
 
@@ -267,7 +267,7 @@ module.exports = {
 
       await msg.reply(imgMedia, undefined, { caption: '✅ Converted to image!' });
     } catch (err) {
-      msg.reply('❌ Conversion failed: ' + err.message);
+      return msg.reply('❌ Conversion failed: ' + err.message);
     } finally {
       cleanup(inputPath, outputPath);
     }
@@ -279,7 +279,7 @@ module.exports = {
     if (targetMsg === 'ERROR') return msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment.");
     if (!targetMsg.hasMedia) return msg.reply('❌ Reply to a gif/image/video with .tovid');
 
-    msg.reply('🎬 Converting to video...');
+    await msg.reply('🎬 Converting to video...');
 
     const media = await targetMsg.downloadMedia().catch(() => null);
     if (!media) return msg.reply('❌ Failed to download media.');
@@ -310,7 +310,7 @@ module.exports = {
       const videoMedia = new MessageMedia('video/mp4', videoData);
       await msg.reply(videoMedia, undefined, { caption: '✅ Converted to video!' });
     } catch (err) {
-      msg.reply('❌ Conversion failed: ' + err.message);
+      return msg.reply('❌ Conversion failed: ' + err.message);
     } finally {
       cleanup(inputPath, outputPath);
     }
@@ -349,7 +349,7 @@ module.exports = {
 
       await msg.reply(rotatedMedia, undefined, { caption: `🔄 Rotated ${degrees}°` });
     } catch (err) {
-      msg.reply('❌ Rotation failed: ' + err.message);
+      return msg.reply('❌ Rotation failed: ' + err.message);
     } finally {
       cleanup(inputPath, outputPath);
     }
@@ -380,7 +380,7 @@ module.exports = {
       const audioMedia = new MessageMedia('audio/mpeg', audioData);
       await msg.reply(audioMedia, undefined, { sendAudioAsVoice: false });
     } catch (err) {
-      msg.reply('❌ MP3 conversion failed: ' + err.message);
+      return msg.reply('❌ MP3 conversion failed: ' + err.message);
     } finally {
       cleanup(inputPath, outputPath);
     }
@@ -413,7 +413,7 @@ module.exports = {
       const voiceMedia = new MessageMedia('audio/ogg', voiceData);
       await msg.reply(voiceMedia, undefined, { sendAudioAsVoice: true });
     } catch (err) {
-      msg.reply('❌ Voice note conversion failed: ' + err.message);
+      return msg.reply('❌ Voice note conversion failed: ' + err.message);
     } finally {
       cleanup(inputPath, outputPath);
     }
@@ -443,7 +443,7 @@ module.exports = {
       const outMedia = new MessageMedia('image/png', out.toString('base64'));
       await msg.reply(outMedia, undefined, { caption: '✅ Flipped image!' });
     } catch (err) {
-      msg.reply('❌ Flip failed: ' + err.message);
+      return msg.reply('❌ Flip failed: ' + err.message);
     } finally {
       cleanup(inputPath, outputPath);
     }
@@ -529,7 +529,7 @@ module.exports = {
       const outMedia = new MessageMedia('image/png', out.toString('base64'));
       await msg.reply(outMedia, undefined, { caption: `✅ Resized to ${width}${height > 0 ? `x${height}` : ''}` });
     } catch (err) {
-      msg.reply('❌ Resize failed: ' + err.message);
+      return msg.reply('❌ Resize failed: ' + err.message);
     } finally {
       cleanup(inputPath, outputPath);
     }
@@ -564,7 +564,7 @@ module.exports = {
 
       await msg.reply(`✅ Uploaded:\n${url}`);
     } catch (err) {
-      msg.reply('❌ Upload failed: ' + err.message);
+      return msg.reply('❌ Upload failed: ' + err.message);
     }
   },
 };

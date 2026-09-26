@@ -471,7 +471,12 @@ async lottery(client, msg, args) {
       `╭━━━★彡 ${doubleStruck('PROFILE')} 彡★━━━╮`,
       '',
       line('Name', user.name),
-      line('Age', user.age || 'Not set'),
+      // Once a DOB is verified, it's the only thing allowed to say how old
+      // someone is — recalculated live (not read from user.age) so this
+      // can't be stale from years-old registration OR overridden after
+      // the fact by .setage. See commands/economy.js's .setage for the
+      // other half of this.
+      line('Age', user.registration?.dobSet && user.dob ? calculateAge(user.dob) : (user.age || 'Not set')),
       line('Bio', user.bio),
       line('Registered', registered),
       line('Role', role),
@@ -528,12 +533,17 @@ async lottery(client, msg, args) {
     let dobLine;
     if (!dobStep.done) {
       dobLine = `🎂 Date of birth: ❌ Not set — ${dobStep.cmd}`;
-    } else if (inGroup) {
-      dobLine = `🎂 Age: ${user.age}  _(DOB hidden in groups — DM me to see it)_`;
     } else {
-      const d = user.dob;
-      const dobText = `${String(d.getUTCDate()).padStart(2, '0')}/${String(d.getUTCMonth() + 1).padStart(2, '0')}/${d.getUTCFullYear()}`;
-      dobLine = `🎂 Date of birth: ${dobText}  (Age: ${user.age})`;
+      // See .profile's identical comment — recalculated live, not read
+      // from user.age.
+      const currentAge = calculateAge(user.dob);
+      if (inGroup) {
+        dobLine = `🎂 Age: ${currentAge}  _(DOB hidden in groups — DM me to see it)_`;
+      } else {
+        const d = user.dob;
+        const dobText = `${String(d.getUTCDate()).padStart(2, '0')}/${String(d.getUTCMonth() + 1).padStart(2, '0')}/${d.getUTCFullYear()}`;
+        dobLine = `🎂 Date of birth: ${dobText}  (Age: ${currentAge})`;
+      }
     }
 
     const bioLine = bioStep.done
@@ -676,17 +686,37 @@ async lottery(client, msg, args) {
     await announceRegistrationProgress(user, msg);
   },
 
-  // .setage [age] — LEGACY. Registration now uses .setdob (calculates age
-  // automatically and enforces the minimum-age check); this command is kept
-  // only for backward compatibility with accounts that already had an `age`
-  // set before .setdob existed, or for manual admin correction. Left
-  // functionally unchanged and does not touch `registration.dobSet` — it's
-  // not part of the registration flow.
+  // .setage [age] — LEGACY. Once an account has a verified date of birth
+  // (registration.dobSet), .setdob is the only thing allowed to change its
+  // age — .profile/.edit both now calculate age from the DOB directly
+  // rather than trusting this field, so a .setage call against a
+  // DOB-verified account wouldn't even change what anyone sees, but it's
+  // refused outright anyway (including for owner/mod) rather than leave a
+  // second, overridable "source of truth" lying around for some future
+  // reader to trust by mistake. For accounts that never went through
+  // .setdob (pre-DOB-era, or simply not registered), this is now
+  // owner/mod-only manual correction — an ordinary user wanting their age
+  // set should register a real date of birth with .setdob instead.
   async setage(client, msg, args) {
     const contact = await msg.getContact();
+    const senderId = contact.id._serialized;
+    const user = await User.findOrCreate(senderId);
+
+    if (user.registration?.dobSet) {
+      return msg.reply(
+        '❌ Your age is verified from your date of birth and can\'t be overridden.\n' +
+        'If it needs correcting, use *.setdob [DD/MM/YYYY]* instead.'
+      );
+    }
+    if (!isOwner(senderId) && !isMod(senderId)) {
+      return msg.reply(
+        '❌ .setage is owner/mod-only for accounts without a verified date of birth.\n' +
+        'Set your real date of birth with *.setdob [DD/MM/YYYY]* instead.'
+      );
+    }
+
     const age = parseInt(args[0]);
     if (!age || age < 1 || age > 120) return msg.reply('❌ Invalid age.');
-    const user = await User.findOrCreate(contact.id._serialized);
     user.age = age;
     await user.save();
     msg.reply('✅ Age updated!');

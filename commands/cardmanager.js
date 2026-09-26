@@ -387,7 +387,7 @@ module.exports = {
         code: err.code || null,
         message: err.message || null
       }));
-      msg.reply('❌ Failed to fetch data from AniList. Try again in a moment.');
+      return msg.reply('❌ Failed to fetch data from AniList. Try again in a moment.');
     }
   },
 
@@ -444,7 +444,7 @@ module.exports = {
     if (added.length) reply += `\n*Added:*\n${added.join('\n')}`;
     if (skipped.length) reply += `\n\n*Skipped:*\n${skipped.join('\n')}`;
 
-    msg.reply(reply.slice(0, 4000));
+    return msg.reply(reply.slice(0, 4000));
   },
 
   // .delcard <card id>
@@ -476,7 +476,7 @@ module.exports = {
     if (ownedCount > 0) await OwnedCard.deleteMany({ catalogueId: id });
     await CardCatalogue.deleteOne({ cardId: id });
 
-    msg.reply(`🗑 Deleted card:\n${target.name} [${id}]${ownedCount > 0 ? `\n📦 Also removed ${ownedCount} claimed copy/copies.` : ''}`);
+    return msg.reply(`🗑 Deleted card:\n${target.name} [${id}]${ownedCount > 0 ? `\n📦 Also removed ${ownedCount} claimed copy/copies.` : ''}`);
   },
 
   // .editcard <card id> <field> <value>
@@ -523,7 +523,7 @@ module.exports = {
 
     if (!card) return msg.reply('❌ Card not found.');
 
-    msg.reply(`✅ Updated *${field}* for ${card.name} [\`${card.cardId}\`]\n${field}: ${card[field]}`);
+    return msg.reply(`✅ Updated *${field}* for ${card.name} [\`${card.cardId}\`]\n${field}: ${card[field]}`);
   },
 
   // .reloadcards — there's no in-memory cache anywhere in the bot; every
@@ -534,12 +534,12 @@ module.exports = {
 
     try {
       const total = await CardCatalogue.countDocuments();
-      msg.reply(
+      return msg.reply(
         `✅ Catalogue is live: *${total}* card(s) in MongoDB.\n` +
         `ℹ️ No caching layer exists, so changes always apply instantly — nothing to reload.`
       );
     } catch (err) {
-      msg.reply('❌ Could not reach the database.');
+      return msg.reply('❌ Could not reach the database.');
     }
   },
 
@@ -562,7 +562,7 @@ module.exports = {
       text += `${tierEmoji(tier)} ${tier}: ${count}\n`;
     }
 
-    msg.reply(text);
+    return msg.reply(text);
   },
 
   // .backfillimages — fixes catalogue entries that predate the AniList
@@ -672,7 +672,7 @@ module.exports = {
     if (skipped.length) reply += `\n\n*Needs manual review:*\n${skipped.join('\n')}`;
     if (remaining > 0) reply += `\n\n📦 ${remaining} more still missing AniList data — run *.backfillimages* again to keep going.`;
 
-    msg.reply(reply.slice(0, 4000));
+    return msg.reply(reply.slice(0, 4000));
   },
 
   // .upgradeimages — replaces AniList art (utils/cardRenderer.js already
@@ -866,7 +866,7 @@ module.exports = {
 
     upgradeReply += `\n\nSpot-check with *.ci [code]* or *.ci [name]* — each upgraded card's source tag is listed above if something looks off. Found a wrong one? *.upgradeimages retry [code]* forces a fresh lookup excluding the current pick. Still wrong after that (e.g. an ambiguous shared name)? *.upgradeimages settag [code] [tag]* sets one manually.`;
 
-    msg.reply(upgradeReply.slice(0, 4000));
+    return msg.reply(upgradeReply.slice(0, 4000));
   },
 
   // .mergecards <keepId> <duplicateId> — for genuine duplicate catalogue
@@ -908,7 +908,7 @@ module.exports = {
     await Group.updateMany({ activeCardId: dupId }, { $set: { activeCardId: keepId } });
     await CardCatalogue.deleteOne({ cardId: dupId });
 
-    msg.reply(
+    return msg.reply(
       `✅ Merged *${dup.name}* [${dupId}] into *${keep.name}* [${keepId}].\n` +
       `📦 Reassigned ${moved.modifiedCount} claimed copy/copies.\n` +
       `🗑 Deleted the duplicate catalogue entry.`
@@ -966,7 +966,7 @@ module.exports = {
       return msg.reply(`❌ Failed to move data onto ${toId}: ${err.message}. Rolled back — ${fromId} still has it.`);
     }
 
-    msg.reply(
+    return msg.reply(
       `✅ Moved AniList data from *${from.name}* [${fromId}] to *${to.name}* [${toId}].\n` +
       `${fromId} is now clear for a fresh .backfillimages or manual .editcard.`
     );
@@ -1060,7 +1060,7 @@ module.exports = {
       reply += `• [\`${c.cardId}\`] anilistId:${c.anilistId ?? 'none'} image:${c.imageUrl ? 'yes' : 'no'}${marker}\n`;
     });
 
-    msg.reply(reply.slice(0, 4000));
+    return msg.reply(reply.slice(0, 4000));
   },
 
   // .repairlinks — bulk repair for OwnedCard.catalogueId values that don't
@@ -1119,7 +1119,7 @@ module.exports = {
     if (skipped.length) reply += `\n\n*Needs manual review:*\n${skipped.join('\n')}`;
     if (owned.length === REPAIR_LIMIT) reply += `\n\n📦 Checked the first ${REPAIR_LIMIT} owned cards — run *.repairlinks* again if you have more.`;
 
-    msg.reply(reply.slice(0, 4000));
+    return msg.reply(reply.slice(0, 4000));
   },
 
   // .purgeorphans [confirm] — removes OwnedCard copies whose catalogue entry
@@ -1156,6 +1156,6 @@ module.exports = {
     }
 
     await OwnedCard.deleteMany({ _id: { $in: orphans.map(c => c._id) } });
-    msg.reply(`🗑 Removed ${orphans.length} orphaned owned card(s).`);
+    return msg.reply(`🗑 Removed ${orphans.length} orphaned owned card(s).`);
   },
 };

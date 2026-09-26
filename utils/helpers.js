@@ -1,4 +1,5 @@
 const User = require('../models/User');
+const { MIN_REGISTRATION_AGE } = require('./config');
 
 // ─── Format Numbers ───────────────────────────────────────────────────────────
 // ─── Fancy Unicode text (used by .profile, .feedback, etc.) ──────────────────
@@ -163,6 +164,21 @@ function registrationSteps(user) {
 
 function isRegistrationComplete(user) {
   return registrationSteps(user).every(s => s.done);
+}
+
+// The authoritative "is this a verified adult" check — for anything gating
+// content by age (currently: commands/nsfw.js), not just registration
+// completeness. Deliberately does NOT read user.age: that field is
+// user-settable via the legacy .setage command and isn't proof of
+// anything. registration.dobSet only ever gets set to true by .setdob
+// after it already confirmed age >= MIN_REGISTRATION_AGE at the time
+// (see commands/economy.js), and re-deriving the age from user.dob here
+// (rather than trusting that one-time historical check forever) means
+// raising MIN_REGISTRATION_AGE later automatically re-applies to
+// everyone already registered, not just new signups.
+function isVerifiedAdult(user) {
+  if (!user || !user.registration || !user.registration.dobSet || !user.dob) return false;
+  return calculateAge(user.dob) >= MIN_REGISTRATION_AGE;
 }
 
 function buildRegistrationProgressText(user) {
@@ -556,6 +572,7 @@ module.exports = {
   calculateAge,
   registrationSteps,
   isRegistrationComplete,
+  isVerifiedAdult,
   buildRegistrationProgressText,
   buildRegistrationIntroText,
   rand,

@@ -41,7 +41,7 @@ function cleanup(...files) {
   }
 }
 
-// ─── Conversation memory (per chat, clears after 30 min idle) ─────────────────
+// ─── Conversation memory (per chat AND per sender, clears after 30 min idle) ──
 // Persisted in Mongo (models/AiConversation.js) with a native TTL index
 // doing the 30-minute idle cleanup — see that file's comment for why this
 // replaced the old in-memory Map (it didn't survive PM2 restarts, and its
@@ -49,36 +49,57 @@ function cleanup(...files) {
 // out a chat's newer history mid-conversation).
 const AiConversation = require('../models/AiConversation');
 
-const HISTORY_LIMIT = 20; // messages kept per chat
+const HISTORY_LIMIT = 20; // messages kept per conversation
 const HISTORY_TTL_MS = 30 * 60 * 1000; // idle window before Mongo auto-expires it
 
-// Returns this chat's recent conversation as a plain { role, content }[]
-// array for gemini.js — empty for a fresh chat, or one Mongo's TTL index
-// already expired. Reading never touches expiresAt itself — only
-// addToHistory extends the idle window, so a history can't be kept alive
-// just by being read.
-async function getHistory(chatId) {
-  const convo = await AiConversation.findOne({ chatId }).catch(err => {
+// Returns this (chat, sender) pair's recent conversation as a plain
+// { role, content }[] array for gemini.js — empty for a fresh conversation,
+// or one Mongo's TTL index already expired. Reading never touches
+// expiresAt itself — only addTurnToHistory extends the idle window, so a
+// history can't be kept alive just by being read.
+//
+// senderId matters here: in a DM, chatId alone is already unique per
+// person, but in a GROUP chatId is the same for every member — without
+// senderId, everyone in a group would read and write the SAME
+// conversation, which is exactly the "only one conversation, shared by
+// whoever uses the AI commands" behavior this replaces. Pass msg.author in
+// a group (the actual sender) and msg.from in a DM (there is no
+// msg.author there) — see the call sites below.
+async function getHistory(chatId, senderId) {
+  const convo = await AiConversation.findOne({ chatId, senderId }).catch(err => {
     console.error('getHistory: lookup failed:', err.message);
     return null;
   });
   return convo ? convo.messages.map(m => ({ role: m.role, content: m.content })) : [];
 }
 
-// Appends one turn and pushes expiresAt another 30 minutes out, so the
-// window is always "30 minutes since the LAST message" rather than a fixed
-// timer from when the conversation started. $push+$slice caps it to the
-// most recent HISTORY_LIMIT messages atomically, in the same update —
-// replacing the old manual push-then-shift-if-too-long logic.
-async function addToHistory(chatId, role, content) {
+// Appends BOTH sides of one exchange — the user's message and the
+// assistant's reply — in a single $push, so they land in Mongo as one
+// atomic write instead of the two independent, unawaited writes this used
+// to be. That distinction matters two ways: a process crash between the
+// old pair of writes could leave a user message permanently stored with no
+// reply ever recorded next to it, and two overlapping requests for the
+// SAME conversation could have their four separate writes land in the
+// wrong order relative to each other. One $push means both messages of a
+// given exchange succeed together or neither does, and nothing else can
+// land in between them.
+async function addTurnToHistory(chatId, senderId, userContent, assistantContent) {
   await AiConversation.findOneAndUpdate(
-    { chatId },
+    { chatId, senderId },
     {
-      $push: { messages: { $each: [{ role, content }], $slice: -HISTORY_LIMIT } },
+      $push: {
+        messages: {
+          $each: [
+            { role: 'user', content: userContent },
+            { role: 'assistant', content: assistantContent },
+          ],
+          $slice: -HISTORY_LIMIT,
+        },
+      },
       $set: { expiresAt: new Date(Date.now() + HISTORY_TTL_MS) },
     },
     { upsert: true }
-  ).catch(err => console.error('addToHistory: save failed:', err.message));
+  ).catch(err => console.error('addTurnToHistory: save failed:', err.message));
 }
 
 // ─── Marin Kitagawa persona ─────────────────────────────────────────────────
@@ -283,10 +304,14 @@ module.exports = {
       return msg.reply('❌ Usage: .copilot [your message]\nOr reply to a voice note with .copilot, or reply to an image with .copilot [what to do with it]');
     }
 
-    msg.reply('🤖 Thinking...');
+    await msg.reply('🤖 Thinking...');
 
     try {
-      const history = await getHistory(chat.id._serialized);
+      // msg.author is the actual sender inside a group; it's undefined in a
+      // DM, where msg.from IS the sender (and already unique per person)
+      // — see models/AiConversation.js's comment for why this matters.
+      const senderId = msg.author || msg.from;
+      const history = await getHistory(chat.id._serialized, senderId);
       const senderName = await resolveSenderName(msg, client);
       const systemPrompt = buildMarinSystemPrompt(senderName);
 
@@ -306,11 +331,10 @@ module.exports = {
             maxOutputTokens: 2048,
           });
 
-      addToHistory(chat.id._serialized, 'user', resolved.prompt);
-      addToHistory(chat.id._serialized, 'assistant', reply);
-      msg.reply(reply);
+      addTurnToHistory(chat.id._serialized, senderId, resolved.prompt, reply);
+      return msg.reply(reply);
     } catch (err) {
-      msg.reply(friendlyAiError(err, 'Copilot'));
+      return msg.reply(friendlyAiError(err, 'Copilot'));
     }
   },
 
@@ -323,7 +347,7 @@ module.exports = {
       return msg.reply('❌ Usage: .gpt [your question]\nOr reply to a voice note with .gpt, or reply to an image with .gpt [what to do with it]');
     }
 
-    msg.reply('💭 Processing...');
+    await msg.reply('💭 Processing...');
     try {
       const senderName = await resolveSenderName(msg, client);
       const systemPrompt = buildMarinSystemPrompt(senderName);
@@ -342,9 +366,9 @@ module.exports = {
             maxOutputTokens: 2048,
           });
 
-      msg.reply(reply);
+      return msg.reply(reply);
     } catch (err) {
-      msg.reply(friendlyAiError(err, 'GPT'));
+      return msg.reply(friendlyAiError(err, 'GPT'));
     }
   },
 
@@ -369,11 +393,13 @@ module.exports = {
       return msg.reply('❌ Usage: .voice [your message]\nOr reply to a voice note with .voice, or reply to an image with .voice [what to do with it]');
     }
 
-    msg.reply('🎙️ Thinking...');
+    await msg.reply('🎙️ Thinking...');
 
     let mp3Path, oggPath;
     try {
-      const history = await getHistory(chat.id._serialized);
+      // See .copilot's identical comment above.
+      const senderId = msg.author || msg.from;
+      const history = await getHistory(chat.id._serialized, senderId);
       const senderName = await resolveSenderName(msg, client);
       const systemPrompt = buildMarinVoiceSystemPrompt(senderName);
 
@@ -398,8 +424,7 @@ module.exports = {
       // never gets spoken AND never lingers in context for the next turn.
       const reply = stripSpeechFormatting(rawReply);
 
-      addToHistory(chat.id._serialized, 'user', resolved.prompt);
-      addToHistory(chat.id._serialized, 'assistant', reply);
+      addTurnToHistory(chat.id._serialized, senderId, resolved.prompt, reply);
 
       const mp3Buffer = await fishAudio.synthesizeSpeech(reply);
 
@@ -425,13 +450,13 @@ module.exports = {
       // .tts); anything else (Gemini transcription/text errors) goes
       // through the shared friendlyAiError() handling.
       if (err.code === 'NO_FISH_KEY' || err.code === 'NO_FISH_VOICE') {
-        msg.reply(`❌ ${err.message}`);
+        return msg.reply(`❌ ${err.message}`);
       } else if (err.status === 402) {
-        msg.reply('❌ Fish Audio TTS failed: out of credits/quota on your Fish Audio account.');
+        return msg.reply('❌ Fish Audio TTS failed: out of credits/quota on your Fish Audio account.');
       } else if (err.status === 401) {
-        msg.reply('❌ Fish Audio TTS failed: invalid FISH_API_KEY.');
+        return msg.reply('❌ Fish Audio TTS failed: invalid FISH_API_KEY.');
       } else {
-        msg.reply(friendlyAiError(err, 'Voice'));
+        return msg.reply(friendlyAiError(err, 'Voice'));
       }
     } finally {
       cleanup(mp3Path, oggPath);
@@ -443,7 +468,7 @@ module.exports = {
     const prompt = args.join(' ');
     if (!prompt) return msg.reply('❌ Usage: .imagine [image description]');
 
-    msg.reply('🎨 Generating image...');
+    await msg.reply('🎨 Generating image...');
     try {
       const { base64, mimeType } = await gemini.generateImage(prompt);
       const ext = mimeType.includes('png') ? 'png' : 'jpg';
@@ -451,7 +476,7 @@ module.exports = {
 
       await msg.reply(media, undefined, { caption: `🎨 *Imagine:* ${prompt}` });
     } catch (err) {
-      msg.reply(friendlyAiError(err, 'Image generation'));
+      return msg.reply(friendlyAiError(err, 'Image generation'));
     }
   },
 
@@ -463,7 +488,7 @@ module.exports = {
 
     if (!targetMsg.hasMedia) return msg.reply('❌ Reply to an image with .upscale');
 
-    msg.reply('⬆️ Upscaling image...');
+    await msg.reply('⬆️ Upscaling image...');
     try {
       const media = await targetMsg.downloadMedia();
       // media.data is already base64-encoded
@@ -493,7 +518,7 @@ module.exports = {
       await msg.reply(upscaledMedia, undefined, { caption: '✅ Image upscaled 2x!' });
     } catch (err) {
       console.error('Upscale error:', err.response?.status, JSON.stringify(err.response?.data)?.slice(0, 300) || err.message);
-      msg.reply('❌ Upscale failed. Make sure you replied to an image and your RapidAPI key is valid.');
+      return msg.reply('❌ Upscale failed. Make sure you replied to an image and your RapidAPI key is valid.');
     }
   },
 
@@ -510,16 +535,16 @@ module.exports = {
       return msg.reply('❌ Usage: .translate [language] [text]\nOr reply to a message with .translate [language]');
     }
 
-    msg.reply('🌍 Translating...');
+    await msg.reply('🌍 Translating...');
     try {
       const translated = await gemini.generateText({
         systemPrompt: `Translate the following text to ${lang}. Return ONLY the translated text, nothing else.`,
         prompt: toTranslate,
         maxOutputTokens: 1500,
       });
-      msg.reply(`🌍 *Translation (${lang})*\n\n${translated}`);
+      return msg.reply(`🌍 *Translation (${lang})*\n\n${translated}`);
     } catch (err) {
-      msg.reply(friendlyAiError(err, 'Translation'));
+      return msg.reply(friendlyAiError(err, 'Translation'));
     }
   },
 
@@ -530,7 +555,7 @@ module.exports = {
 
     if (!targetMsg.hasMedia) return msg.reply('❌ Reply to a voice note with .transcribe');
 
-    msg.reply('🎙️ Transcribing...');
+    await msg.reply('🎙️ Transcribing...');
     try {
       const media = await targetMsg.downloadMedia();
       if (!media.mimetype.includes('audio') && !media.mimetype.includes('ogg')) {
@@ -542,9 +567,9 @@ module.exports = {
         mimeType: media.mimetype,
       });
 
-      msg.reply(`🎙️ *Transcription*\n\n${text}`);
+      return msg.reply(`🎙️ *Transcription*\n\n${text}`);
     } catch (err) {
-      msg.reply(friendlyAiError(err, 'Transcription'));
+      return msg.reply(friendlyAiError(err, 'Transcription'));
     }
   },
 
@@ -569,7 +594,7 @@ module.exports = {
     if (!text) return msg.reply('❌ Nothing left to speak after stripping formatting from that text.');
     if (text.length > 800) return msg.reply('❌ Keep it under 800 characters for now — long TTS jobs are slow on Fish Audio\'s free tier.');
 
-    msg.reply('🔊 Generating speech...');
+    await msg.reply('🔊 Generating speech...');
 
     let mp3Path, oggPath;
     try {
@@ -596,14 +621,14 @@ module.exports = {
       await msg.reply(voiceMedia, undefined, { sendAudioAsVoice: true });
     } catch (err) {
       if (err.code === 'NO_FISH_KEY' || err.code === 'NO_FISH_VOICE') {
-        msg.reply(`❌ ${err.message}`);
+        return msg.reply(`❌ ${err.message}`);
       } else if (err.status === 402) {
-        msg.reply('❌ Fish Audio TTS failed: out of credits/quota on your Fish Audio account.');
+        return msg.reply('❌ Fish Audio TTS failed: out of credits/quota on your Fish Audio account.');
       } else if (err.status === 401) {
-        msg.reply('❌ Fish Audio TTS failed: invalid FISH_API_KEY.');
+        return msg.reply('❌ Fish Audio TTS failed: invalid FISH_API_KEY.');
       } else {
         console.error('TTS error:', err.message);
-        msg.reply(`❌ TTS failed: ${err.message}`);
+        return msg.reply(`❌ TTS failed: ${err.message}`);
       }
     } finally {
       cleanup(mp3Path, oggPath);

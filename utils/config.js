@@ -11,6 +11,18 @@
 // Falls back to the hardcoded defaults below only if the corresponding
 // variable is missing from .env.
 
+// ─── Numeric env parser ────────────────────────────────────────────────────
+// parseInt(x, 10) || fallback treats an EXPLICIT 0 in .env as "unset" (0 is
+// falsy), silently substituting the default. envInt distinguishes the two
+// cases: a missing/empty variable falls back, but an explicitly configured
+// value — including 0 — is used as-is.
+function envInt(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const n = parseInt(raw, 10);
+  return Number.isNaN(n) ? fallback : n;
+}
+
 // ─── Bot Identity ──────────────────────────────────────────────────────────
 // Used by: startup banner, .help/.stats/.ping text, sticker pack names, the
 // AI persona's system prompt, shop titles, etc.
@@ -48,8 +60,8 @@ const PUPPETEER_EXECUTABLE_PATH =
 // cron/interval needed (same reasoning as models/User.js's lazy daily
 // interest check: this bot can't rely on an always-on scheduler firing at
 // an exact time on Termux).
-const MIN_REGISTRATION_AGE = parseInt(process.env.MIN_REGISTRATION_AGE, 10) || 18;
-const AGE_VERIFICATION_LOCKOUT_DAYS = parseInt(process.env.AGE_VERIFICATION_LOCKOUT_DAYS, 10) || 30;
+const MIN_REGISTRATION_AGE = envInt('MIN_REGISTRATION_AGE', 18);
+const AGE_VERIFICATION_LOCKOUT_DAYS = envInt('AGE_VERIFICATION_LOCKOUT_DAYS', 30);
 
 // ─── Anime News (.news + hourly auto-broadcast) ────────────────────────────
 // Operational settings for commands/news.js. Source definitions and the
@@ -83,9 +95,22 @@ const NEWS_RSS_QUERY = process.env.NEWS_RSS_QUERY || 'anime OR manga OR manhwa O
 const NEWS_USER_AGENT =
   process.env.NEWS_USER_AGENT ||
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
-const NEWS_FETCH_TIMEOUT_MS = parseInt(process.env.NEWS_FETCH_TIMEOUT_MS, 10) || 20000;
-const NEWS_SEND_DELAY_MS = parseInt(process.env.NEWS_SEND_DELAY_MS, 10) || 2000;
-const NEWS_MAX_ARTICLE_AGE_DAYS = parseInt(process.env.NEWS_MAX_ARTICLE_AGE_DAYS, 10) || 7;
+const NEWS_FETCH_TIMEOUT_MS = envInt('NEWS_FETCH_TIMEOUT_MS', 20000);
+const NEWS_SEND_DELAY_MS = envInt('NEWS_SEND_DELAY_MS', 2000);
+const NEWS_MAX_ARTICLE_AGE_DAYS = envInt('NEWS_MAX_ARTICLE_AGE_DAYS', 7);
+
+// ─── AI wake-word ("call by name") ─────────────────────────────────────────
+// Plain-text names that count as directly addressing the AI persona in a
+// group — see isCallingBotByName() in index.js. Deliberately separate from
+// BOT_NAME above: BOT_NAME is the app/account identity ("this WhatsApp
+// bot"), while this is the PERSONA's own name (hardcoded as Marin Kitagawa
+// in commands/ai.js's system prompt) — people naturally call out to the
+// character, not the app, and the two names don't have to match. Comma-
+// separated; each entry can be multiple words (e.g. "Marin Kitagawa").
+const AI_CALL_NAMES = (process.env.AI_CALL_NAMES || 'Marin,Kitagawa,Marin Kitagawa')
+  .split(',')
+  .map(s => s.trim())
+  .filter(Boolean);
 
 module.exports = {
   BOT_NAME,
@@ -99,4 +124,5 @@ module.exports = {
   NEWS_FETCH_TIMEOUT_MS,
   NEWS_SEND_DELAY_MS,
   NEWS_MAX_ARTICLE_AGE_DAYS,
+  AI_CALL_NAMES,
 };

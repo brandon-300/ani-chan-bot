@@ -347,7 +347,7 @@ module.exports = {
     const mentioned = await msg.getMentions();
     const target = mentioned.length ? mentioned[0].pushname : contact.pushname;
     const percent = rand(0, 100);
-    msg.reply(`🏳️‍🌈 *Gay Meter*\n\n${target} is *${percent}%* gay!\n${'🟪'.repeat(Math.floor(percent / 10))}${'⬛'.repeat(10 - Math.floor(percent / 10))}`);
+    return msg.reply(`🏳️‍🌈 *Gay Meter*\n\n${target} is *${percent}%* gay!\n${'🟪'.repeat(Math.floor(percent / 10))}${'⬛'.repeat(10 - Math.floor(percent / 10))}`);
   },
 
   // .lesbian
@@ -356,7 +356,7 @@ module.exports = {
     const mentioned = await msg.getMentions();
     const target = mentioned.length ? mentioned[0].pushname : contact.pushname;
     const percent = rand(0, 100);
-    msg.reply(`🏳️‍🌈 *Lesbian Meter*\n\n${target} is *${percent}%* lesbian!\n${'🌸'.repeat(Math.floor(percent / 10))}${'⬛'.repeat(10 - Math.floor(percent / 10))}`);
+    return msg.reply(`🏳️‍🌈 *Lesbian Meter*\n\n${target} is *${percent}%* lesbian!\n${'🌸'.repeat(Math.floor(percent / 10))}${'⬛'.repeat(10 - Math.floor(percent / 10))}`);
   },
 
   // .simp
@@ -365,7 +365,7 @@ module.exports = {
     const mentioned = await msg.getMentions();
     const target = mentioned.length ? mentioned[0].pushname : contact.pushname;
     const percent = rand(0, 100);
-    msg.reply(`🥺 *Simp Meter*\n\n${target} is *${percent}%* a simp!\n${'💗'.repeat(Math.floor(percent / 10))}${'⬛'.repeat(10 - Math.floor(percent / 10))}`);
+    return msg.reply(`🥺 *Simp Meter*\n\n${target} is *${percent}%* a simp!\n${'💗'.repeat(Math.floor(percent / 10))}${'⬛'.repeat(10 - Math.floor(percent / 10))}`);
   },
 
   // .ship [@user1] [@user2]
@@ -378,7 +378,7 @@ module.exports = {
     const percent = rand(0, 100);
     const heart = percent >= 70 ? '❤️' : percent >= 40 ? '🧡' : '💔';
 
-    msg.reply(
+    return msg.reply(
       `💘 *Shipping*\n\n${p1.pushname} + ${p2.pushname}\n\n${heart} Compatibility: *${percent}%*\n${'❤️'.repeat(Math.floor(percent / 10))}${'🖤'.repeat(10 - Math.floor(percent / 10))}`
     );
   },
@@ -391,7 +391,7 @@ module.exports = {
     const target = mentioned.length ? mentioned[0].pushname : contact.pushname;
     const skill = pick(skills);
     const level = rand(1, 100);
-    msg.reply(`🎯 *Skill Check*\n\n${target}'s hidden skill: *${skill}*\nLevel: *${level}/100*`);
+    return msg.reply(`🎯 *Skill Check*\n\n${target}'s hidden skill: *${skill}*\nLevel: *${level}/100*`);
   },
 
   // .duality
@@ -400,9 +400,9 @@ module.exports = {
     const mentioned = await msg.getMentions();
     const pair = pick(DUALITY_PAIRS);
     if (mentioned.length >= 2) {
-      msg.reply(`☯️ *Duality*\n\n${mentioned[0].pushname}: *${pair[0]}*\n${mentioned[1].pushname}: *${pair[1]}*`);
+      return msg.reply(`☯️ *Duality*\n\n${mentioned[0].pushname}: *${pair[0]}*\n${mentioned[1].pushname}: *${pair[1]}*`);
     } else {
-      msg.reply(`☯️ *Your Duality*\n\n*${pair[0]}* vs *${pair[1]}*\n\nWhich side are you on? 👀`);
+      return msg.reply(`☯️ *Your Duality*\n\n*${pair[0]}* vs *${pair[1]}*\n\nWhich side are you on? 👀`);
     }
   },
 
@@ -411,17 +411,17 @@ module.exports = {
     const gens = ['Gen Z', 'Millennial', 'Boomer', 'Alpha', 'Gen X'];
     const contact = await msg.getContact();
     const g = pick(gens);
-    msg.reply(`🧬 *Generation Check*\n\n${contact.pushname}, you have the energy of a *${g}*!`);
+    return msg.reply(`🧬 *Generation Check*\n\n${contact.pushname}, you have the energy of a *${g}*!`);
   },
 
   // .pov
   async pov(client, msg, args) {
-    msg.reply(`📽️ *POV*\n\n${pick(POV)}`);
+    return msg.reply(`📽️ *POV*\n\n${pick(POV)}`);
   },
 
   // .social
   async social(client, msg, args) {
-    msg.reply(`💬 *Social Game*\n\n${pick(SOCIAL)}`);
+    return msg.reply(`💬 *Social Game*\n\n${pick(SOCIAL)}`);
   },
 
   // .relation
@@ -429,7 +429,7 @@ module.exports = {
     const mentioned = await msg.getMentions();
     if (mentioned.length < 2) return msg.reply('❌ Tag two people! .relation @user1 @user2');
     const rel = pick(RELATION_TYPES);
-    msg.reply(`🔗 *Relationship*\n\n${mentioned[0].pushname} & ${mentioned[1].pushname} are...\n\n*${rel}* 🌟`);
+    return msg.reply(`🔗 *Relationship*\n\n${mentioned[0].pushname} & ${mentioned[1].pushname} are...\n\n*${rel}* 🌟`);
   },
 
   // .pp
@@ -439,32 +439,32 @@ module.exports = {
     const target = mentioned.length ? mentioned[0].pushname : contact.pushname;
     const size = rand(1, 25);
     const bar = '8' + '='.repeat(size) + 'D';
-    msg.reply(`📏 *PP Meter*\n\n${target}'s pp:\n${bar}\nSize: *${size} cm* 😂`);
+    return msg.reply(`📏 *PP Meter*\n\n${target}'s pp:\n${bar}\nSize: *${size} cm* 😂`);
   },
 
   // .wouldyourather
   async wouldyourather(client, msg, args) {
     const q = pick(WYR);
-    msg.reply(`🤔 *Would You Rather?*\n\n🅰️ ${q.a}\n\nor\n\n🅱️ ${q.b}\n\nVote A or B!`);
+    return msg.reply(`🤔 *Would You Rather?*\n\n🅰️ ${q.a}\n\nor\n\n🅱️ ${q.b}\n\nVote A or B!`);
   },
 
   // .joke
   async joke(client, msg, args) {
-    msg.reply(`😂 *Joke*\n\n${pick(JOKES)}`);
+    return msg.reply(`😂 *Joke*\n\n${pick(JOKES)}`);
   },
 
   // .truth
   async truth(client, msg, args) {
     const mentioned = await msg.getMentions();
     const target = mentioned.length ? `@${mentioned[0].number}` : 'someone';
-    msg.reply(`🔍 *Truth for ${target}*\n\n${pick(TRUTHS)}`);
+    return msg.reply(`🔍 *Truth for ${target}*\n\n${pick(TRUTHS)}`);
   },
 
   // .dare
   async dare(client, msg, args) {
     const mentioned = await msg.getMentions();
     const target = mentioned.length ? `@${mentioned[0].number}` : 'someone';
-    msg.reply(`🎯 *Dare for ${target}*\n\n${pick(DARES)}`);
+    return msg.reply(`🎯 *Dare for ${target}*\n\n${pick(DARES)}`);
   },
 
   // .td — random truth or dare
@@ -474,9 +474,9 @@ module.exports = {
     const target = mentioned.length ? `@${mentioned[0].number}` : 'you';
 
     if (isTruth) {
-      msg.reply(`🎲 *Truth for ${target}*\n\n🔍 ${pick(TRUTHS)}`);
+      return msg.reply(`🎲 *Truth for ${target}*\n\n🔍 ${pick(TRUTHS)}`);
     } else {
-      msg.reply(`🎲 *Dare for ${target}*\n\n🎯 ${pick(DARES)}`);
+      return msg.reply(`🎲 *Dare for ${target}*\n\n🎯 ${pick(DARES)}`);
     }
   },
 
@@ -487,7 +487,7 @@ module.exports = {
     const card = `${pick(colors)} ${pick(values)}`;
     const special = Math.random() > 0.8 ? ' 🃏 *+4 Wild!*' : '';
     const contact = await msg.getContact();
-    msg.reply(`🎴 *UNO!*\n\n${contact.pushname} plays: *${card}*${special}\n\nNext player's turn!`);
+    return msg.reply(`🎴 *UNO!*\n\n${contact.pushname} plays: *${card}*${special}\n\nNext player's turn!`);
   },
 
   // .meme <text>  |  .meme <top text> | <bottom text>
@@ -516,7 +516,7 @@ module.exports = {
       bottomText = parts.slice(1).join('|').trim();
     }
 
-    msg.reply('🎨 Captioning...');
+    await msg.reply('🎨 Captioning...');
 
     // Download with retry — see fetchMemeSource()'s comment above.
     let source;
@@ -551,7 +551,9 @@ module.exports = {
           err.message,
           err.ffmpegStderr ? `\nffmpeg stderr:\n${err.ffmpegStderr}` : ''
         );
-        msg.reply('⚠️ Could not keep this one animated — sending a static version instead...');
+        // Intentionally awaited, not returned — the static-sticker
+        // fallback below still needs to run after this notice goes out.
+        await msg.reply('⚠️ Could not keep this one animated — sending a static version instead...');
       }
     }
 
@@ -587,7 +589,7 @@ module.exports = {
         err.message,
         err.ffmpegStderr ? `\nffmpeg stderr:\n${err.ffmpegStderr}` : ''
       );
-      msg.reply('❌ Failed to create meme: ' + err.message);
+      return msg.reply('❌ Failed to create meme: ' + err.message);
     } finally {
       cleanupFiles(pngPath, webpPath);
     }

@@ -5,10 +5,12 @@ const mongoose = require('mongoose');
 const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
-const { safeGetQuotedMessage, safeGetChat, safeGetContact, resolveSenderName, withRetry, encodeIdKey, isOwner, isMod, buildRegistrationIntroText, buildRegistrationProgressText } = require('./utils/helpers');
-const { BOT_NAME, MENU_IMAGE_URL } = require('./utils/config');
+const { safeGetQuotedMessage, safeGetChat, safeGetContact, resolveSenderName, withRetry, decodeIdKey, isOwner, isMod, buildRegistrationIntroText, buildRegistrationProgressText } = require('./utils/helpers');
+const { BOT_NAME, MENU_IMAGE_URL, AI_CALL_NAMES } = require('./utils/config');
 const { instrumentHttpClients, wrapWithUsageTracking } = require('./utils/usageTracking');
 const { tryHandleQuizAnswer } = require('./commands/games/quiz');
+const AiConversation = require('./models/AiConversation');
+const GroupActivity = require('./models/GroupActivity');
 
 // Installed as early as possible, before any command file's axios/fetch
 // calls could ever fire — see utils/usageTracking.js for what this
@@ -47,10 +49,61 @@ const mongoOptions = {
   connectTimeoutMS: 10000,
 };
 
+// One-time, idempotent migration: seeds GroupActivity (models/GroupActivity.js)
+// from whatever's already in each Group's old activityLog Map, so switching
+// the per-user message counter over to the new collection doesn't silently
+// reset everyone's existing activity stats back to zero.
+//
+// Uses $setOnInsert — never $inc or a plain $set on count — specifically so
+// this is safe to run on every single restart, not just the first one: a
+// GroupActivity row that already exists (because real activity has landed
+// there since this first ran) is left completely alone. Only a row that's
+// never been created at all gets seeded from the old Map's frozen snapshot.
+// Nothing writes to activityLog anymore as of this change (see index.js's
+// message handler), so that snapshot only ever needs seeding once per
+// (group, user) pair, no matter how many times this function itself runs.
+async function migrateGroupActivityLog() {
+  const Group = require('./models/Group');
+  const groups = await Group.find({ activityLog: { $exists: true, $ne: {} } })
+    .select('id activityLog updatedAt');
+
+  for (const group of groups) {
+    for (const [encodedKey, count] of group.activityLog) {
+      if (!count) continue;
+      await GroupActivity.findOneAndUpdate(
+        { groupId: group.id, userId: decodeIdKey(encodedKey) },
+        { $setOnInsert: { count, lastAt: group.updatedAt || new Date() } },
+        { upsert: true }
+      ).catch(err => {
+        console.error(`⚠️  GroupActivity migration failed for ${group.id}:`, err.message);
+      });
+    }
+  }
+}
+
 async function connectMongo() {
   try {
     await mongoose.connect(process.env.MONGO_URI, mongoOptions);
     console.log('✅ MongoDB connected');
+
+    // One-time self-healing schema migration: AiConversation used to be
+    // keyed by chatId alone (unique), which meant every member of a group
+    // shared one AI conversation. It's now keyed by (chatId, senderId).
+    // syncIndexes() drops the stale chatId-only unique index (if it's
+    // still there from before this change) and creates the new compound
+    // one declared in models/AiConversation.js — no manual mongosh/Atlas
+    // step required. Failure here isn't fatal to startup (the old index
+    // just means a second user in a chat would fail to get their own
+    // conversation document until this succeeds on a later restart).
+    AiConversation.syncIndexes().catch(err => {
+      console.error('⚠️  AiConversation.syncIndexes() failed:', err.message);
+    });
+
+    // See migrateGroupActivityLog()'s own comment — safe to run on every
+    // restart, not fatal to startup if it fails.
+    migrateGroupActivityLog().catch(err => {
+      console.error('⚠️  GroupActivity migration failed:', err.message);
+    });
   } catch (err) {
     console.error('❌ MongoDB error:', err.message);
     setTimeout(connectMongo, 15000);
@@ -793,6 +846,67 @@ function isVoiceNoteMessage(msg) {
   return !!msg && msg.hasMedia && (msg.type === 'ptt' || msg.type === 'audio');
 }
 
+// ─── AI wake-word: "called by name" in plain text ──────────────────────────
+// Lets someone address the AI persona directly by name (no command prefix,
+// no @mention) — "Marin, what anime should I watch", "Hi Kitagawa" — while
+// leaving ordinary conversation ABOUT the persona's name alone, e.g. "I just
+// finished My Dress-Up Darling and I think Marin is cute" should NOT trigger
+// a reply. This is inherently a judgment call heuristics can't get perfect
+// (natural language is ambiguous even for humans without more context) —
+// biased deliberately toward NOT triggering on anything but a fairly clear
+// direct address, since the bot butting into an unrelated conversation is a
+// worse experience than occasionally staying quiet when it could have
+// answered.
+//
+// Recognized as a direct address:
+//   - The message IS the name, alone (± a leading greeting / trailing
+//     punctuation): "Marin", "Hi Marin", "kitagawa!"
+//   - The message STARTS with the name, followed by end-of-message, a
+//     comma, or a word that isn't a common third-person predicate:
+//     "Marin what anime should I watch", "Marin, can you help"
+//     (but NOT "Marin is cute", "Marin looks great today" — see
+//     THIRD_PERSON_PREDICATES below)
+//   - The message ENDS with a comma then the name: "what anime should I
+//     watch, Marin?"
+// Everything else — including the name appearing mid-sentence — is ordinary
+// conversation, not a direct address.
+const GREETING_PREFIX_RE = /^(hi|hey|hello|hiya|yo|sup|oi|ay|aye)[\s,]+/i;
+const THIRD_PERSON_PREDICATES = new Set([
+  'is', 'was', 'are', 'were', 'has', 'have', 'had', 'looks', 'looked',
+  'seems', 'seemed', 'does', 'did', 'would', 'said', 'says', 'thinks',
+  'thought', 'likes', 'liked', 'loves', 'loved', 'hates', 'hated',
+  'wants', 'wanted', 'needs', 'needed', 'being',
+]);
+
+function isCallingBotByName(rawBody) {
+  const body = (rawBody || '').trim();
+  if (!body) return false;
+
+  const stripped = body.replace(GREETING_PREFIX_RE, '');
+
+  for (const name of AI_CALL_NAMES) {
+    const escaped = name.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+');
+    if (!escaped) continue;
+
+    // Bare name, alone (± trailing punctuation like "?"/"!"/"."/"~")
+    if (new RegExp(`^${escaped}[?!.~\\s]*$`, 'i').test(stripped)) return true;
+
+    // Starts with the name, followed by end-of-message, a comma, or a word
+    // that isn't a common third-person predicate.
+    const startMatch = stripped.match(new RegExp(`^${escaped}\\b`, 'i'));
+    if (startMatch) {
+      const rest = stripped.slice(startMatch[0].length).trim();
+      const nextWord = rest.replace(/^,\s*/, '').split(/\s+/)[0]?.toLowerCase().replace(/[^a-z']/g, '');
+      if (!nextWord || rest.startsWith(',') || !THIRD_PERSON_PREDICATES.has(nextWord)) return true;
+    }
+
+    // Ends with ", name" (± trailing punctuation)
+    if (new RegExp(`,\\s*${escaped}[?!.~\\s]*$`, 'i').test(stripped)) return true;
+  }
+
+  return false;
+}
+
 // Per-chat command queue
 const commandQueues = new Map();
 
@@ -853,14 +967,6 @@ client.on('message', (msg) => {
     try {
       const body = msg.body || '';
 
-    const stable = await waitForStableConnection();
-    if (!stable) {
-      if (body.startsWith(PREFIX)) {
-        await msg.reply('⚠️ WhatsApp connection is unstable right now — please try again in a moment.');
-      }
-      return;
-    }
-
     let command;
     let args;
 
@@ -870,41 +976,86 @@ client.on('message', (msg) => {
       const mentionsBot = msg.mentionedIds &&
         msg.mentionedIds.includes(client.info.wid._serialized);
       if (mentionsBot) {
+        // This is its own early return (not routed through `command`
+        // below), so it needs its own stability check — everything else
+        // in this function gets one lower down, only once we know a
+        // response is actually needed at all. See that comment for why.
+        const stable = await waitForStableConnection();
+        if (!stable) return;
         return await sendQuickMenu(msg);
       }
 
-      if (!msg.hasQuotedMsg) return;
+      const quoted = msg.hasQuotedMsg ? await safeGetQuotedMessage(msg).catch(() => null) : null;
 
-      const quoted = await safeGetQuotedMessage(msg).catch(() => null);
-      if (!quoted || !quoted.fromMe) return;
+      if (quoted && quoted.fromMe) {
+        // ── Auto .copilot / .voice on replies to the bot ──────────────────
+        // Replying directly to a message the bot sent — with text, an
+        // image, or a voice note/audio file — is now treated as an implicit
+        // AI command, no ".copilot"/".gpt" typing required:
+        //   - Reply to a VOICE NOTE or AUDIO FILE the bot sent -> .voice (stays spoken)
+        //   - Reply to anything else the bot sent -> .copilot
+        // Any other reply type (sticker, video, document, etc.) is ignored —
+        // no auto-command, no menu.
+        const replyKind = classifyReplyKind(msg);
+        if (replyKind === 'other') return;
 
-      // ── Auto .copilot / .voice on replies to the bot ──────────────────
-      // Replying directly to a message the bot sent — with text, an
-      // image, or a voice note/audio file — is now treated as an implicit
-      // AI command, no ".copilot"/".gpt" typing required:
-      //   - Reply to a VOICE NOTE or AUDIO FILE the bot sent -> .voice (stays spoken)
-      //   - Reply to anything else the bot sent -> .copilot
-      // Any other reply type (sticker, video, document, etc.) is ignored —
-      // no auto-command, no menu.
-      const replyKind = classifyReplyKind(msg);
-      if (replyKind === 'other') return;
+        const typed = (msg.body || '').trim();
+        // A voice-note reply has no caption/body — resolveMultimodalInput()
+        // in ai.js handles an empty typed value fine there (it just uses the
+        // transcript as the whole prompt). An image reply DOES need some
+        // text ("what should I do with this image"), so give it a generic
+        // default instead of erroring out when the person sent it uncaptioned.
+        args = typed
+          ? typed.split(/\s+/)
+          : (replyKind === 'image' ? ['Take', 'a', 'look', 'and', 'respond', 'naturally.'] : []);
 
-      const typed = (msg.body || '').trim();
-      // A voice-note reply has no caption/body — resolveMultimodalInput()
-      // in ai.js handles an empty typed value fine there (it just uses the
-      // transcript as the whole prompt). An image reply DOES need some
-      // text ("what should I do with this image"), so give it a generic
-      // default instead of erroring out when the person sent it uncaptioned.
-      args = typed
-        ? typed.split(/\s+/)
-        : (replyKind === 'image' ? ['Take', 'a', 'look', 'and', 'respond', 'naturally.'] : []);
+        command = isVoiceNoteMessage(quoted) ? 'voice' : 'copilot';
+      } else {
+        // ── AI wake-word: called by name in plain text ────────────────────
+        // Two shapes, both routed to .copilot so they share the same
+        // conversation memory as every other way of talking to the AI:
+        //   - No quoted message: the message body itself is the prompt
+        //     ("Marin, what anime should I watch").
+        //   - Replying to someone ELSE's message (quoted exists but isn't
+        //     from the bot — the quoted.fromMe case above already claimed
+        //     that branch) while calling the bot's name: fold the quoted
+        //     message's text in as context ("Hi Marin, see what this guy
+        //     is saying" while replying to someone's message).
+        // Media-only replies with no caption text are deliberately excluded
+        // here (isCallingBotByName requires actual text to detect a name
+        // in) — that's what the reply-to-bot branch above is for.
+        if (!isCallingBotByName(body)) return;
 
-      command = isVoiceNoteMessage(quoted) ? 'voice' : 'copilot';
+        const quotedText = quoted ? (quoted.body || '').trim() : '';
+        const prompt = quotedText
+          ? `${body}\n\n(They're replying to this message: "${quotedText}")`
+          : body;
+        // A single-element array rather than a whitespace split — this can
+        // contain the quoted-message context above with its own line
+        // breaks, which ai.js's `args.join(' ')` would otherwise collapse.
+        args = [prompt];
+        command = 'copilot';
+      }
     } else {
       args = body.slice(PREFIX.length).trim().split(/\s+/);
       command = args.shift().toLowerCase();
 
       if (aliases[command]) command = aliases[command];
+    }
+
+    // Only reached once we know this message actually needs a response —
+    // an explicit command, a wake-word call, or a reply to the bot all set
+    // `command` above before falling through to here; anything else
+    // returned already. An ordinary group message nobody's addressing the
+    // bot with never reaches this, so it costs nothing during a shaky
+    // connection — previously this ran for every single non-command
+    // message before we'd even looked at what it was.
+    const stable = await waitForStableConnection();
+    if (!stable) {
+      if (body.startsWith(PREFIX)) {
+        await msg.reply('⚠️ WhatsApp connection is unstable right now — please try again in a moment.');
+      }
+      return;
     }
 
     // ── Registration gate ──────────────────────────────────────────────────
@@ -1133,45 +1284,25 @@ client.on('message', async (msg) => {
 
     const Group = require('./models/Group');
 
-    // messageCount is a plain top-level Number, so it's always safe to bump
-    // atomically with $inc.
-    //
-    // activityLog is NOT safe to touch the same way. WhatsApp ids like
-    // "234801234567@c.us" contain a literal ".", and Mongo's update-operator
-    // dot-path syntax splits on every "." to address nested fields. Building
-    // the update path as a string — `activityLog.${senderId}` — silently
-    // turned "activityLog.234801234567@c.us" into the nested path
-    // activityLog -> "234801234567@c" -> "us", writing an object like
-    // { us: 19 } instead of a plain number. That corrupts the Map (schema is
-    // `Map of Number`) and made every later .save() on that Group document —
-    // .setrules, antilink toggles, welcome/leave messages, anything — fail
-    // with a "Cast to Number failed ... at path activityLog.$*" validation
-    // error, since Mongoose validates the whole Map on every save.
-    //
-    // Fix: bump messageCount atomically, then update activityLog through
-    // Mongoose's own Map API (group.activityLog.set(...)) and save() the
-    // document instead of a dot-delimited update-path string.
-    //
-    // One more wrinkle: Mongoose's Map type hard-rejects ANY key containing
-    // "." the moment it's fully cast (.set() on a document, or a $set
-    // update) — it throws 'Mongoose maps do not support keys that contain
-    // "."'. That's stricter than what let the original bug's raw $inc path
-    // slip a corrupted entry in, so a real WhatsApp id can never be stored
-    // as a literal Map key at all. encodeIdKey() swaps "." for "~" (which
-    // never appears in a WhatsApp id) before it touches the Map; decode it
-    // back with decodeIdKey() anywhere a key needs to be treated as a real
-    // id again (see .activity/.inactive in commands/admin.js).
-    const group = await withRetry(() => Group.findOneAndUpdate(
+    // messageCount is a plain top-level Number, so $inc alone is always
+    // safe and atomic for it.
+    await withRetry(() => Group.findOneAndUpdate(
       { id: chat.id._serialized },
       { $inc: { messageCount: 1 } },
-      { upsert: true, new: true }
+      { upsert: true }
     ));
 
-    const key = encodeIdKey(senderId);
-    const currentCount = group.activityLog.get(key) || 0;
-    group.activityLog.set(key, currentCount + 1);
-    group.markModified('activityLog');
-    await withRetry(() => group.save());
+    // Per-user breakdown — a separate atomic upsert into GroupActivity
+    // rather than Group's old activityLog Map (load -> read count ->
+    // increment -> save the whole Group document). See
+    // models/GroupActivity.js for why that was a lost-update race AND had
+    // a WhatsApp-id-contains-"." corruption bug neither of which apply
+    // here.
+    await withRetry(() => GroupActivity.findOneAndUpdate(
+      { groupId: chat.id._serialized, userId: senderId },
+      { $inc: { count: 1 }, $set: { lastAt: new Date() } },
+      { upsert: true }
+    ));
   } catch (err) {
     console.error('Activity tracking error:', err.message);
   }

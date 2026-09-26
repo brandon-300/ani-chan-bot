@@ -521,7 +521,7 @@ module.exports = {
       `#${g.guildId ?? '?'} ${g.emblem} *${g.name}*\nLevel ${g.level} | ${g.members.length}/${Guild.effectiveMaxMembers(g)} members | Recruiting`
     );
 
-    msg.reply(`🏰 *GUILDS LOOKING FOR MEMBERS*\n\n${lines.join('\n\n')}\n\nUse *.guild join [name or ID]* to apply.`);
+    return msg.reply(`🏰 *GUILDS LOOKING FOR MEMBERS*\n\n${lines.join('\n\n')}\n\nUse *.guild join [name or ID]* to apply.`);
   },
 
   // .guildevent [amount] [message] — owner-only, DM-only. Instantly
@@ -557,7 +557,9 @@ module.exports = {
     await Guild.updateMany({}, { $inc: { bank: amount } });
     await GuildEvent.create({ message, coinsPerGuild: amount, guildsAffected: guilds.length, triggeredBy: senderId });
 
-    msg.reply(`🎉 Event triggered! Every guild (${guilds.length}) just received 💰${formatNum(amount)} in their treasury.\n\nMessage: "${message}"`);
+    // Intentionally await, not return — the background member-notification
+    // IIFE below still needs to run after this confirmation goes out.
+    await msg.reply(`🎉 Event triggered! Every guild (${guilds.length}) just received 💰${formatNum(amount)} in their treasury.\n\nMessage: "${message}"`);
 
     // Notify every member of every affected guild in the background — the
     // owner's confirmation above doesn't wait on this, so triggering an
@@ -586,7 +588,7 @@ module.exports = {
       const when = daysAgo === 0 ? 'today' : `${daysAgo}d ago`;
       return `🎉 "${e.message}" — +💰${formatNum(e.coinsPerGuild)} to ${e.guildsAffected} guild${e.guildsAffected === 1 ? '' : 's'} (${when})`;
     });
-    msg.reply(`🎊 *RECENT GUILD EVENTS*\n\n${lines.join('\n\n')}`);
+    return msg.reply(`🎊 *RECENT GUILD EVENTS*\n\n${lines.join('\n\n')}`);
   },
 
   // Public holidays that trigger a global 1M-coin celebration for every
@@ -764,7 +766,7 @@ module.exports = {
       + (rewardBonusPct > 0 ? `\n\n⭐ Perks: +${rewardBonusPct}% quest/mission rewards, ${maxMembers} member cap` : '')
       + announcementTeaser + questTeaser + missionTeaser;
 
-    msg.reply(card + formatGuildUnlockNotice(unlockedNow) + challengeResultNote);
+    return msg.reply(card + formatGuildUnlockNotice(unlockedNow) + challengeResultNote);
   },
 
   // .guild members — open to any guild member (previously leader-only;
@@ -796,7 +798,7 @@ module.exports = {
       `${roleIcon(m.role)} ${names[i]} — ${roleLabel(m.role)} — ${formatNum(m.contribution)} contribution, ${formatNum(m.xp || 0)} XP${m.streak > 1 ? ` — 🔥 ${m.streak}d streak` : ''}`
     );
 
-    msg.reply(
+    return msg.reply(
       `🏰 *${guild.emblem} ${guild.name}* — Members (${guild.members.length})\n\n${lines.join('\n')}`
     );
   },
@@ -860,7 +862,7 @@ module.exports = {
     const { guild, targetName, targetUserId } = result;
     await User.findOneAndUpdate({ id: targetUserId }, { guildId: null });
 
-    msg.reply(`✅ Removed *${targetName}* from *${guild.emblem} ${guild.name}*.`);
+    return msg.reply(`✅ Removed *${targetName}* from *${guild.emblem} ${guild.name}*.`);
   },
 
   // .guild promote [member's name] — leader only. Steps a member up one
@@ -909,7 +911,7 @@ module.exports = {
     }
 
     const { guildName, targetName, next } = result;
-    msg.reply(`✅ ${roleIcon(next)} *${targetName}* promoted to ${roleLabel(next)} in *${guildName}*.`);
+    return msg.reply(`✅ ${roleIcon(next)} *${targetName}* promoted to ${roleLabel(next)} in *${guildName}*.`);
   },
 
   // .guild demote [member's name] — leader only. Steps a member down one
@@ -957,7 +959,7 @@ module.exports = {
     if (result.error === 'minrank') return msg.reply(`❌ ${result.targetName} is already at the lowest rank (Member).`);
 
     const { guildName, targetName, next } = result;
-    msg.reply(`✅ ${roleIcon(next)} *${targetName}* demoted to ${roleLabel(next)} in *${guildName}*.`);
+    return msg.reply(`✅ ${roleIcon(next)} *${targetName}* demoted to ${roleLabel(next)} in *${guildName}*.`);
   },
 
   // .guild description            — view (anyone in the guild)
@@ -989,7 +991,7 @@ module.exports = {
 
     guild.description = text;
     await guild.save();
-    msg.reply('✅ Guild description updated.');
+    return msg.reply('✅ Guild description updated.');
   },
 
   // .guild announce                — view the current announcement (anyone
@@ -1047,7 +1049,7 @@ module.exports = {
     Guild.logActivity(guild, { eventType: 'announcement', userId: contact.id._serialized, text });
     await guild.save();
 
-    msg.reply(`📢 *GUILD ANNOUNCEMENT*\n\n${text}\n\nAll members are encouraged to check .guild info.`);
+    return msg.reply(`📢 *GUILD ANNOUNCEMENT*\n\n${text}\n\nAll members are encouraged to check .guild info.`);
   },
 
   // .guildannounce — shorthand for .guild announce.
@@ -1140,7 +1142,7 @@ module.exports = {
     // than waiting for the guild to next be viewed.
     const unlockedNow = await checkGuildAchievements(guild._id);
 
-    msg.reply(
+    return msg.reply(
       `💰 Donated *${formatNum(amount)}* coins to *${guild.emblem} ${guild.name}*!${interestNote}\n` +
       `Guild bank: ${formatNum(guild.bank)} | Your contribution: ${formatNum(member.contribution)}` +
       questNote + formatGuildUnlockNotice(unlockedNow)
@@ -1203,7 +1205,7 @@ module.exports = {
     user.coins += amount;
     await user.save();
 
-    msg.reply(
+    return msg.reply(
       `🏦 Withdrew 💰 *${formatNum(amount)}* coins from *${guild.emblem} ${guild.name}*'s treasury.${interestNote}\n` +
       `Your wallet: ${formatNum(user.coins)} | Guild bank: ${formatNum(guild.bank)}`
     );
@@ -1231,7 +1233,7 @@ module.exports = {
         ? `Next level: 💰 ${formatNum(cost)} — *.guild upgrade ${key === 'questBoard' ? 'board' : key}*\n\n`
         : `✅ Maxed out\n\n`;
     }
-    msg.reply(text.trim());
+    return msg.reply(text.trim());
   },
 
   // .guildupgrades — shorthand for .guild upgrades.
@@ -1293,7 +1295,7 @@ module.exports = {
     }
 
     const { guild, info, newLevel, interestNote } = result;
-    msg.reply(
+    return msg.reply(
       `✅ *${info.label}* upgraded to level ${newLevel}! (${info.perLevel} ${info.effect})${interestNote}\n` +
       `Guild bank: ${formatNum(guild.bank)}`
     );
@@ -1318,7 +1320,7 @@ module.exports = {
       text += '\n';
     }
     text += `Owned banners can be equipped with *.guild banner [name]*.`;
-    msg.reply(text);
+    return msg.reply(text);
   },
 
   // .guild buy [banner key] — leader only.
@@ -1365,7 +1367,7 @@ module.exports = {
     }
 
     const { guild, interestNote } = result;
-    msg.reply(`✅ Purchased the *${banner.name} Banner*!${interestNote}\nEquip it with *.guild banner ${key}*.\nGuild bank: ${formatNum(guild.bank)}`);
+    return msg.reply(`✅ Purchased the *${banner.name} Banner*!${interestNote}\nEquip it with *.guild banner ${key}*.\nGuild bank: ${formatNum(guild.bank)}`);
   },
 
   // .guild banner [name|none] — leader only. Equips an already-owned
@@ -1404,7 +1406,7 @@ module.exports = {
     if (result.error === 'notowned') return msg.reply(`❌ *${result.guildName}* doesn't own that banner yet. Check *.guild shop*.`);
     if (result.cleared) return msg.reply('✅ Banner cleared — back to the default look.');
 
-    msg.reply(`✅ Equipped the *${Guild.SHOP_BANNERS[key].name} Banner*!`);
+    return msg.reply(`✅ Equipped the *${Guild.SHOP_BANNERS[key].name} Banner*!`);
   },
 
   // .guild quest — full status of the guild's current daily quest: progress
@@ -1469,7 +1471,7 @@ module.exports = {
     text += `Reward:\n+${formatNum(q.rewardCoins)} guild coins\n+${formatNum(q.rewardXp)} guild XP\n\n`;
     text += `⏳ Resets in ${formatCooldown(remaining)}`;
 
-    msg.reply(text + formatGuildUnlockNotice(unlockedNow));
+    return msg.reply(text + formatGuildUnlockNotice(unlockedNow));
   },
 
   // .guild mission — same display as .guild quest, for the parallel
@@ -1527,7 +1529,7 @@ module.exports = {
     text += `Reward:\n+${formatNum(m.rewardCoins)} guild coins\n+${formatNum(m.rewardXp)} guild XP\n\n`;
     text += `⏳ Resets in ${formatCooldown(remaining)}`;
 
-    msg.reply(text + formatGuildUnlockNotice(unlockedNow));
+    return msg.reply(text + formatGuildUnlockNotice(unlockedNow));
   },
 
   // .guildmission — shorthand for .guild mission.
@@ -1570,7 +1572,7 @@ module.exports = {
       const done = unlockedIds.has(a.id);
       text += `${done ? '✅' : '🔒'} ${a.emoji} *${a.name}* — ${a.desc}\n`;
     }
-    msg.reply(text);
+    return msg.reply(text);
   },
 
   // .guildach — shorthand for .guild achievements.
@@ -1600,7 +1602,7 @@ module.exports = {
     const recent = [...guild.activityLog].reverse().slice(0, 15);
     const lines = await Promise.all(recent.map(e => formatActivityLine(client, e)));
 
-    msg.reply(`📜 *RECENT GUILD ACTIVITY* — ${guild.emblem} ${guild.name}\n\n${lines.join('\n')}`);
+    return msg.reply(`📜 *RECENT GUILD ACTIVITY* — ${guild.emblem} ${guild.name}\n\n${lines.join('\n')}`);
   },
 
   // .guildactivity — shorthand for .guild activity.
@@ -1634,7 +1636,7 @@ module.exports = {
     user.guildId = guild._id.toString();
     await user.save();
 
-    msg.reply(`🏰 Guild *${name}* (#${guild.guildId}) created! Invite members with .guild invite @user`);
+    return msg.reply(`🏰 Guild *${name}* (#${guild.guildId}) created! Invite members with .guild invite @user`);
   },
 
   // .guild invite @user — leader or officer
@@ -1670,7 +1672,7 @@ module.exports = {
     if (result.error === 'norole') return msg.reply('❌ Only the guild leader or an officer can invite.');
     if (result.error === 'already') return msg.reply('❌ Already invited!');
 
-    msg.reply(
+    return msg.reply(
       `📨 Invited @${mentionTag(target)} to *${result.guildName}*! They can type *.guild accept* to join.`,
       undefined,
       { mentions: [target.id._serialized] }
@@ -1715,7 +1717,7 @@ module.exports = {
     user.guildId = result.guild._id.toString();
     await user.save();
 
-    msg.reply(`🏰 You joined *${result.guild.emblem} ${result.guild.name}*!`);
+    return msg.reply(`🏰 You joined *${result.guild.emblem} ${result.guild.name}*!`);
   },
 
   // .guild decline
@@ -1736,7 +1738,7 @@ module.exports = {
     });
 
     if (result.error === 'gone') return msg.reply('❌ No pending invite.');
-    msg.reply('✅ Invite declined.');
+    return msg.reply('✅ Invite declined.');
   },
 
   // .guild join [name or ID] — request to join an 'open' guild. Doesn't
@@ -1791,7 +1793,7 @@ module.exports = {
     }
 
     const { guild } = result;
-    msg.reply(`📨 Application sent to *${guild.emblem} ${guild.name}*! A leader or officer needs to approve it with *.guild acceptapp*.`);
+    return msg.reply(`📨 Application sent to *${guild.emblem} ${guild.name}*! A leader or officer needs to approve it with *.guild acceptapp*.`);
   },
 
   // .guild inactive — leader/officer only. Lists members who haven't used
@@ -1839,7 +1841,7 @@ module.exports = {
       `${roleIcon(x.member.role)} ${names[i]} — ${x.days === null ? 'never active' : `inactive ${x.days}d`}`
     );
 
-    msg.reply(`💤 *Inactive Members (${INACTIVE_DAYS}+ days) — ${guild.name}*\n\n${lines.join('\n')}`);
+    return msg.reply(`💤 *Inactive Members (${INACTIVE_DAYS}+ days) — ${guild.name}*\n\n${lines.join('\n')}`);
   },
 
   // .guildinactive — shorthand for .guild inactive.
@@ -1865,7 +1867,7 @@ module.exports = {
 
     const names = await Promise.all(guild.pendingApplications.map(id => resolveNameById(client, id)));
     const list = names.map((n, i) => `${i + 1}. ${n}`).join('\n');
-    msg.reply(`📨 *Pending Applications — ${guild.name}*\n\n${list}\n\nUse *.guild acceptapp [name]* or *.guild declineapp [name]*.`);
+    return msg.reply(`📨 *Pending Applications — ${guild.name}*\n\n${list}\n\nUse *.guild acceptapp [name]* or *.guild declineapp [name]*.`);
   },
 
   // .guild acceptapp [applicant's name] — leader/officer only.
@@ -1937,7 +1939,7 @@ module.exports = {
     applicantUser.guildId = guild._id.toString();
     await applicantUser.save();
 
-    msg.reply(`✅ ${applicantName} has been accepted into *${guild.emblem} ${guild.name}*!`);
+    return msg.reply(`✅ ${applicantName} has been accepted into *${guild.emblem} ${guild.name}*!`);
   },
 
   // .guild declineapp [applicant's name] — leader/officer only.
@@ -1976,7 +1978,7 @@ module.exports = {
       return msg.reply(`❌ That matches multiple applicants: ${result.names.join(', ')}. Be more specific.`);
     }
 
-    msg.reply(`✅ Declined ${result.applicantName}'s application.`);
+    return msg.reply(`✅ Declined ${result.applicantName}'s application.`);
   },
 
   // .guild recruitment                       — view current setting
@@ -2013,7 +2015,7 @@ module.exports = {
     if (result.error === 'notfound') return msg.reply('❌ Guild not found.');
     if (result.error === 'norole') return msg.reply('❌ Only the guild leader can change the recruitment setting.');
 
-    msg.reply(`✅ Recruitment set to *${setting}*.`);
+    return msg.reply(`✅ Recruitment set to *${setting}*.`);
   },
 
   // .guild emblem [emoji] — leader only
@@ -2031,7 +2033,7 @@ module.exports = {
 
     guild.emblem = emblem;
     await guild.save();
-    msg.reply(`✅ Guild emblem updated to ${emblem}!`);
+    return msg.reply(`✅ Guild emblem updated to ${emblem}!`);
   },
 
   // .guild leave
@@ -2067,7 +2069,7 @@ module.exports = {
 
     user.guildId = null;
     await user.save();
-    msg.reply(`✅ You left *${result.guildName}*.`);
+    return msg.reply(`✅ You left *${result.guildName}*.`);
   },
 
   // .guild disband — leader only
@@ -2100,7 +2102,7 @@ module.exports = {
     }
     if (result.error === 'norole') return msg.reply('❌ Only the leader can disband.');
 
-    msg.reply(`🏰 Guild *${result.guildName}* has been disbanded.`);
+    return msg.reply(`🏰 Guild *${result.guildName}* has been disbanded.`);
   },
 
   // .guild challenge                — view this guild's current challenge
@@ -2176,7 +2178,7 @@ module.exports = {
     if (targetBusy) return msg.reply(`❌ *${target.name}* already has a pending or active challenge.`);
 
     await GuildChallenge.create({ challengerGuildId: guildIdStr, challengedGuildId: targetIdStr });
-    msg.reply(`⚔️ Challenge sent to *${target.emblem} ${target.name}*! Their leader can accept with *.guild acceptchallenge*.`);
+    return msg.reply(`⚔️ Challenge sent to *${target.emblem} ${target.name}*! Their leader can accept with *.guild acceptchallenge*.`);
   },
 
   // .guild acceptchallenge — leader of the CHALLENGED guild only. Starts
@@ -2210,7 +2212,7 @@ module.exports = {
     challenge.endsAt = Date.now() + CHALLENGE_DURATION_MS;
     await challenge.save();
 
-    msg.reply(`⚔️ Challenge accepted! *${guild.emblem} ${guild.name}* vs *${challenger.emblem} ${challenger.name}* — 48 hours, most reputation gained wins.`);
+    return msg.reply(`⚔️ Challenge accepted! *${guild.emblem} ${guild.name}* vs *${challenger.emblem} ${challenger.name}* — 48 hours, most reputation gained wins.`);
   },
 
   // .guild declinechallenge — leader of the CHALLENGED guild only.
@@ -2230,7 +2232,7 @@ module.exports = {
 
     challenge.status = 'declined';
     await challenge.save();
-    msg.reply('✅ Challenge declined.');
+    return msg.reply('✅ Challenge declined.');
   },
 
   // .guild cancelchallenge — leader of the CHALLENGING guild only, and
@@ -2251,7 +2253,7 @@ module.exports = {
 
     challenge.status = 'cancelled';
     await challenge.save();
-    msg.reply('✅ Challenge cancelled.');
+    return msg.reply('✅ Challenge cancelled.');
   },
 
   // .guild season — view current season status (number, time remaining,
@@ -2283,7 +2285,7 @@ module.exports = {
       ? 'No guild has earned any season reputation yet.'
       : `🏆 *Standings*\n${top.map((g, i) => `${i + 1}. #${g.guildId ?? '?'} ${g.emblem} ${g.name} — 🌟 ${formatNum(g.seasonReputation || 0)}`).join('\n')}`;
 
-    msg.reply(text);
+    return msg.reply(text);
   },
 
   // .guildseason — shorthand for .guild season.
@@ -2320,7 +2322,7 @@ module.exports = {
     guilds.forEach((g, i) => {
       text += `${i + 1}. #${g.guildId ?? '?'} ${g.emblem} ${g.name} — ${valueFor(g)} | 👥 ${g.members.length}\n`;
     });
-    msg.reply(text);
+    return msg.reply(text);
   },
 
   // .guildlb — shorthand for .guild leaderboard. Implemented as a

@@ -12,7 +12,7 @@ async function sendImage(msg, url, caption) {
     const media = await MessageMedia.fromUrl(url, { unsafeMime: true });
     await msg.reply(media, undefined, { caption });
   } catch {
-    msg.reply(caption + `\n🔗 ${url}`);
+    return msg.reply(caption + `\n🔗 ${url}`);
   }
 }
 
@@ -43,7 +43,7 @@ module.exports = {
     const query = args.join(' ');
     if (!query) return msg.reply('❌ Usage: .pinterest [search term]');
 
-    msg.reply(`🔍 Searching Pinterest for "${query}"...`);
+    await msg.reply(`🔍 Searching Pinterest for "${query}"...`);
     try {
       const chat = await safeGetChat(msg);
       if (!chat) return;
@@ -102,13 +102,13 @@ module.exports = {
       console.error('[pinterest] request failed. status:', status, 'body:', JSON.stringify(err.response?.data)?.slice(0, 1500) || err.message);
 
       if (status === 401 || status === 403) {
-        msg.reply('❌ Pinterest search failed: RapidAPI rejected the key (401/403).\n💡 This usually means either the key is wrong, or this RapidAPI account isn\'t subscribed to "Pinterest Pin Search" specifically. Check both in your RapidAPI dashboard.');
+        return msg.reply('❌ Pinterest search failed: RapidAPI rejected the key (401/403).\n💡 This usually means either the key is wrong, or this RapidAPI account isn\'t subscribed to "Pinterest Pin Search" specifically. Check both in your RapidAPI dashboard.');
       } else if (status === 429) {
-        msg.reply('❌ Pinterest search failed: RapidAPI rate/quota limit hit (429).\n💡 Check your remaining quota for "Pinterest Pin Search" on RapidAPI.');
+        return msg.reply('❌ Pinterest search failed: RapidAPI rate/quota limit hit (429).\n💡 Check your remaining quota for "Pinterest Pin Search" on RapidAPI.');
       } else if (err.code === 'ECONNABORTED') {
-        msg.reply('❌ Pinterest search timed out (slow connection). Try again.');
+        return msg.reply('❌ Pinterest search timed out (slow connection). Try again.');
       } else {
-        msg.reply('❌ Pinterest search failed. Check `pm2 logs ani-chan-bot` for the exact error.');
+        return msg.reply('❌ Pinterest search failed. Check `pm2 logs ani-chan-bot` for the exact error.');
       }
     }
   },
@@ -134,7 +134,7 @@ module.exports = {
       return msg.reply('❌ Reply to an image with .sauce to reverse search it.');
     }
 
-    msg.reply('🔍 Reverse searching image...');
+    await msg.reply('🔍 Reverse searching image...');
 
     let media;
     try {
@@ -237,7 +237,7 @@ module.exports = {
   // .wallpaper [query]
 async wallpaper(client, msg, args) {
     const query = args.join(' ') || 'anime';
-    msg.reply(`🖼️ Fetching wallpaper for "${query}"...`);
+    await msg.reply(`🖼️ Fetching wallpaper for "${query}"...`);
 
     try {
       const chat = await safeGetChat(msg);
@@ -277,7 +277,7 @@ async wallpaper(client, msg, args) {
       const imgUrl = wall.path;
       await sendImage(msg, imgUrl, `🖼️ Wallpaper: ${query}\n📐 ${wall.resolution}`);
     } catch (err) {
-      msg.reply('❌ Wallpaper search failed.');
+      return msg.reply('❌ Wallpaper search failed.');
     }
   },
 
@@ -294,7 +294,7 @@ async wallpaper(client, msg, args) {
     const query = args.join(' ');
     if (!query) return msg.reply('❌ Usage: .lyrics [song name]');
 
-    msg.reply(`🎵 Searching lyrics for "${query}"...`);
+    await msg.reply(`🎵 Searching lyrics for "${query}"...`);
 
     const search = (params) =>
       axios.get('https://lrclib.net/api/search', {
@@ -336,15 +336,15 @@ async wallpaper(client, msg, args) {
       const lyrics = rawLyrics.slice(0, 3000); // WhatsApp message limit
       const hasMore = rawLyrics.length > 3000;
 
-      msg.reply(
+      return msg.reply(
         `🎵 *${best.trackName}*\n👤 ${best.artistName}\n\n${lyrics}${hasMore ? '\n\n... (truncated)' : ''}`
       );
     } catch (err) {
       if (err.code === 'ECONNABORTED') {
-        msg.reply('❌ Lyrics search timed out (slow connection). Try again.');
+        return msg.reply('❌ Lyrics search timed out (slow connection). Try again.');
       } else {
         console.error('[lyrics] request failed:', err.response?.data || err.message);
-        msg.reply('❌ Lyrics search failed.');
+        return msg.reply('❌ Lyrics search failed.');
       }
     }
   },

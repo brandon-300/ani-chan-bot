@@ -22,6 +22,12 @@ const GroupSchema = new mongoose.Schema({
   cardDropInterval: { type: Number, default: 0 },  // ms between drops
   lastDrop: { type: Number, default: 0 },
   messageCount: { type: Number, default: 0 },
+  // LEGACY — superseded by the GroupActivity collection (models/GroupActivity.js).
+  // Nothing writes to this anymore; kept only so index.js's one-time
+  // migrateGroupActivityLog() can still read old data out of it. Safe to
+  // drop from the schema entirely once you're confident that migration has
+  // run for every group that had data here (check for any
+  // "GroupActivity migration failed" lines in the logs).
   activityLog: { type: Map, of: Number, default: {} }, // userId -> message count
   rules: { type: String, default: null }, // null = not set yet, per .rules/.setrules
 });

@@ -189,7 +189,7 @@ module.exports = {
     if (hunger >= 100) warning += `\n⚠️ *${name || type}* is starving! Use *.pet feed*.`;
     if (happiness === 0) warning += `\n⚠️ *${name || type}* is miserable! Use *.pet play*.`;
 
-    msg.reply(
+    return msg.reply(
       `🐾 *${name || 'Your Pet'}* (${type}${rarityTag})\n\n` +
       `🍗 Hunger: ${hungerBar(hunger)} ${hunger}% — ${hungerStatus(hunger)}\n` +
       `😊 Happiness: ${happinessBar(happiness)} ${happiness}%\n\n` +
@@ -207,7 +207,7 @@ module.exports = {
     }
     lines.push('');
     lines.push('Adopt a specific one with *.pet adopt [name]*, or *.pet adopt* for a random pull using card-style odds.');
-    msg.reply(lines.join('\n'));
+    return msg.reply(lines.join('\n'));
   },
 
   // .pet adopt [name]
@@ -250,7 +250,7 @@ module.exports = {
     user.pet.hungerMigrated = true; // created under the new hunger-direction semantics from the start
     await user.save();
 
-    msg.reply(
+    return msg.reply(
       `🎉 You adopted a ${tierEmoji(rarity)} *${RARITY_LABEL[rarity]}* ${formatPetType(entry)} *(${entry.series})*!\n\nName it with *.pet name [name]*`
     );
   },
@@ -278,7 +278,7 @@ module.exports = {
     await user.save();
 
     const remaining = user.inventory.filter(i => i.toLowerCase() === 'pet food').length;
-    msg.reply(
+    return msg.reply(
       `🍗 You fed *${user.pet.name}* a Pet Food! Hunger: ${user.pet.hunger}% — ${hungerStatus(user.pet.hunger)}\n🎒 Pet Food left: ${remaining}`
     );
   },
@@ -303,7 +303,7 @@ module.exports = {
     await user.save();
 
     const reactions = ['🎾 Ball toss!', '🎀 Ribbon play!', '🧸 Toy time!', '🏃 Running around!'];
-    msg.reply(`${pick(reactions)}\n\n😊 *${user.pet.name}* is happy! Happiness: ${user.pet.happiness}%`);
+    return msg.reply(`${pick(reactions)}\n\n😊 *${user.pet.name}* is happy! Happiness: ${user.pet.happiness}%`);
   },
 
   // .pet name [name]
@@ -318,6 +318,6 @@ module.exports = {
 
     user.pet.name = name;
     await user.save();
-    msg.reply(`✅ Pet renamed to *${name}*!`);
+    return msg.reply(`✅ Pet renamed to *${name}*!`);
   },
 };

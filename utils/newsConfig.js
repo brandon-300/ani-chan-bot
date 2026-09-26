@@ -6,8 +6,7 @@
 // what counts as "real anime news". You edit these in code, not .env.
 //
 // Google News coverage (including Netflix/Tudum, which has no first-party
-// RSS feed) and the overall fallback live here too, via NEWS_RSS_QUERY from
-// utils/config.js.
+// RSS feed) lives here too, via NEWS_RSS_QUERY from utils/config.js.
 
 const { NEWS_RSS_QUERY } = require('./config');
 
@@ -17,8 +16,12 @@ const { NEWS_RSS_QUERY } = require('./config');
 // (see fetchAllArticles in commands/news.js).
 //
 // Netflix/Tudum: Netflix publishes no RSS feed for Tudum, so Netflix
-// coverage arrives through the Google News feed — which also acts as the
-// overall fallback when the direct feeds fail or have nothing new.
+// coverage arrives through the Google News feed. NOTE: Google News is NOT a
+// sequential "fallback" — fetchAllArticles fetches it in parallel alongside
+// the direct feeds on EVERY run (it's a fourth always-on source that
+// widens coverage), and it only *behaves* like a safety net because its
+// broad query still returns items when a direct feed fails or has nothing
+// new. All four sources are always fetched.
 const NEWS_SOURCES = [
   {
     name: 'Crunchyroll News',

@@ -20,7 +20,7 @@ async function requireAdminHere(msg) {
   const contact = await msg.getContact().catch(() => null);
   if (contact && isOwner(contact.id._serialized)) return true;
   const ok = await isAdmin(msg);
-  if (!ok) { msg.reply('❌ Admins only!'); return false; }
+  if (!ok) { await msg.reply('❌ Admins only!'); return false; }
   return true;
 }
 
@@ -204,7 +204,7 @@ module.exports = {
     if (!group.rules) {
       return msg.reply(`📜 No rules have been set for this group yet.\nAn admin can set them with *${PREFIX}setrules [text]*.`);
     }
-    msg.reply(`📜 *Group Rules*\n\n${group.rules}`);
+    return msg.reply(`📜 *Group Rules*\n\n${group.rules}`);
   },
 
   // .setrules [text] — admin only
@@ -218,7 +218,7 @@ module.exports = {
     const group = await getOrCreateGroup(chat.id._serialized);
     group.rules = text;
     await group.save();
-    msg.reply(`✅ Rules updated:\n\n${text}`);
+    return msg.reply(`✅ Rules updated:\n\n${text}`);
   },
 
   // .ping — ping/latency check (was .test — kept as an alias below, both
@@ -226,7 +226,7 @@ module.exports = {
   async ping(client, msg, args) {
     // msg.timestamp is WhatsApp's own send-time, in seconds
     const latencyMs = Date.now() - msg.timestamp * 1000;
-    msg.reply(`🏓 Pong! ${BOT_NAME} is online.\nLatency: ${latencyMs}ms`);
+    return msg.reply(`🏓 Pong! ${BOT_NAME} is online.\nLatency: ${latencyMs}ms`);
   },
 
   // .test — old name for .ping, kept working as an alias to the same function.
@@ -252,10 +252,10 @@ module.exports = {
 
     try {
       const report = await buildStatsReport(client);
-      msg.reply(report);
+      return msg.reply(report);
     } catch (err) {
       console.error('.stats failed:', err.message);
-      msg.reply('❌ Could not build stats right now — check `pm2 logs` for details.');
+      return msg.reply('❌ Could not build stats right now — check `pm2 logs` for details.');
     }
   },
 
@@ -307,7 +307,7 @@ module.exports = {
       await msg.reply(ownerContact);
     } catch (err) {
       console.error('owner command failed:', err.message);
-      msg.reply(`❌ Couldn't fetch the owner's contact card right now.`);
+      return msg.reply(`❌ Couldn't fetch the owner's contact card right now.`);
     }
   },
 
@@ -324,7 +324,7 @@ module.exports = {
     }
 
     if (!lines.length) return msg.reply('❌ No moderators configured.');
-    msg.reply(`🛡️ *${BOT_NAME} Moderators*\n\n${lines.join('\n')}`);
+    return msg.reply(`🛡️ *${BOT_NAME} Moderators*\n\n${lines.join('\n')}`);
   },
 
   // .url — this group's invite link (admin only — anyone holding it can invite people)
@@ -336,16 +336,16 @@ module.exports = {
 
     try {
       const code = await chat.getInviteCode();
-      msg.reply(`🔗 Invite link:\nhttps://chat.whatsapp.com/${code}`);
+      return msg.reply(`🔗 Invite link:\nhttps://chat.whatsapp.com/${code}`);
     } catch (err) {
       console.error('url command failed:', err.message);
-      msg.reply(`❌ Couldn't fetch the invite link — make sure ${BOT_NAME} is a group admin.`);
+      return msg.reply(`❌ Couldn't fetch the invite link — make sure ${BOT_NAME} is a group admin.`);
     }
   },
 
   // .otp — random 6-digit one-time code (utility/fun; not tied to any account system)
   async otp(client, msg, args) {
     const code = Math.floor(100000 + Math.random() * 900000);
-    msg.reply(`🔐 Your OTP: *${code}*\n(Valid for this message only — generate a new one anytime with ${PREFIX}otp.)`);
+    return msg.reply(`🔐 Your OTP: *${code}*\n(Valid for this message only — generate a new one anytime with ${PREFIX}otp.)`);
   },
 };

@@ -133,14 +133,14 @@ module.exports = {
       answers: [],
     });
 
-    msg.reply(`🔮 *Akinator*\n\nThink of a character and I'll guess it!\n\nQ1: ${AKI_QUESTIONS[0]}`);
+    return msg.reply(`🔮 *Akinator*\n\nThink of a character and I'll guess it!\n\nQ1: ${AKI_QUESTIONS[0]}`);
   },
 
   // .greekgod
   async greekgod(client, msg, args) {
     const god = pick(GREEK_GODS);
     const contact = await msg.getContact();
-    msg.reply(
+    return msg.reply(
       `🏛️ *Your Greek God*\n\n${god.symbol} *${god.name}*\nDomain: ${god.domain}\n\nYou embody the spirit of ${god.name}, ${contact.pushname}!`
     );
   },
@@ -154,7 +154,7 @@ module.exports = {
   // .wcg — would you rather (group game)
   async wcg(client, msg, args) {
     const q = pick(WCG_QUESTIONS);
-    msg.reply(`🎮 *Would You Rather?*\n\n${q.q}\n\nA) ${q.opts[0]}\nB) ${q.opts[1]}\n\nReply A or B!`);
+    return msg.reply(`🎮 *Would You Rather?*\n\n${q.q}\n\nA) ${q.opts[0]}\nB) ${q.opts[1]}\n\nReply A or B!`);
   },
 
   // .chess @user (play a person) | .chess [easy|medium|hard] (play the bot)

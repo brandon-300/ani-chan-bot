@@ -9,9 +9,11 @@
 const axios = require('axios');
 const { MessageMedia } = require('whatsapp-web.js');
 const Group = require('../models/Group');
+const User = require('../models/User');
 const SentNsfwLink = require('../models/SentNsfwLink');
-const { safeGetChat, isAdmin, isOwner } = require('../utils/helpers');
+const { safeGetChat, isAdmin, isOwner, isMod, isVerifiedAdult } = require('../utils/helpers');
 const { fetchRandomImage } = require('../utils/danbooru');
+const { MIN_REGISTRATION_AGE } = require('../utils/config');
 
 const PREFIX = process.env.BOT_PREFIX || '.';
 
@@ -47,11 +49,16 @@ function sweepLastUse(now) {
 // ─── NSFW gate ──────────────────────────────────────────────────────────────
 // Groups: the Group document must have nsfw=true (set via ".nsfw on").
 // DMs: owner only.
+// Either way, the sender ALSO needs a verified DOB (not just the group/DM
+// access check above) — see the age-verification block below.
 async function getNsfwGate(msg) {
   const chat = await safeGetChat(msg).catch(() => null);
   if (!chat) {
     return { ok: false, reply: '⚠️ WhatsApp connection hiccup — please try again in a moment.' };
   }
+
+  const senderId = msg.author || msg.from;
+
   if (chat.isGroup) {
     const group = await Group.findOne({ id: chat.id._serialized }).catch(() => null);
     if (!group || !group.nsfw) {
@@ -60,12 +67,29 @@ async function getNsfwGate(msg) {
         reply: '❌ NSFW is disabled in this group.\nAdmin can enable it with *.nsfw on*',
       };
     }
-    return { ok: true, chat };
-  }
-  const senderId = msg.author || msg.from;
-  if (!isOwner(senderId)) {
+  } else if (!isOwner(senderId)) {
     return { ok: false, reply: '❌ NSFW commands in DMs are owner-only.' };
   }
+
+  // Age verification, independent of the group/DM check above — a group
+  // having NSFW enabled says nothing about whether THIS sender is a
+  // verified adult. Checked against registration.dobSet + the actual dob
+  // (utils/helpers.js's isVerifiedAdult), never the mutable user.age
+  // field. Owner/mods are exempt, the same way index.js's registration
+  // gate already exempts them from registering at all — everyone else
+  // needs to have gone through .setdob first.
+  if (!isOwner(senderId) && !isMod(senderId)) {
+    const user = await User.findOne({ id: senderId }).catch(() => null);
+    if (!isVerifiedAdult(user)) {
+      return {
+        ok: false,
+        reply:
+          `❌ NSFW commands need a verified date of birth first.\n` +
+          `Complete your profile with *.setdob [DD/MM/YYYY]* (must show you're ${MIN_REGISTRATION_AGE}+).`,
+      };
+    }
+  }
+
   return { ok: true, chat };
 }
 

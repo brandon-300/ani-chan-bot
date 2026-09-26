@@ -25,7 +25,7 @@ async function downloadAndSend(msg, url, caption) {
     // applied to the game board sends and to converter.js.
     await msg.reply(media, undefined, { caption });
   } catch (err) {
-    msg.reply(`❌ Failed to download. Error: ${err.message}`);
+    return msg.reply(`❌ Failed to download. Error: ${err.message}`);
   }
 }
 
@@ -60,15 +60,15 @@ function replyForError(msg, label, err) {
   console.error(`[${label}] request failed. status:`, status, 'body:', JSON.stringify(err.response?.data)?.slice(0, 1500) || err.message);
 
   if (status === 401 || status === 403) {
-    msg.reply(`❌ ${label} download failed: RapidAPI rejected the key (401/403).\n💡 Check this RapidAPI account is subscribed to the right API for ${label}, and that the key is correct.`);
+    return msg.reply(`❌ ${label} download failed: RapidAPI rejected the key (401/403).\n💡 Check this RapidAPI account is subscribed to the right API for ${label}, and that the key is correct.`);
   } else if (status === 404) {
-    msg.reply(`❌ ${label} download failed: not found (404). The link may be private, deleted, or region-locked.`);
+    return msg.reply(`❌ ${label} download failed: not found (404). The link may be private, deleted, or region-locked.`);
   } else if (status === 429) {
-    msg.reply(`❌ ${label} download failed: rate/quota limit hit (429).\n💡 Check your remaining quota on RapidAPI.`);
+    return msg.reply(`❌ ${label} download failed: rate/quota limit hit (429).\n💡 Check your remaining quota on RapidAPI.`);
   } else if (err.code === 'ECONNABORTED') {
-    msg.reply(`❌ ${label} download timed out (slow connection). Try again.`);
+    return msg.reply(`❌ ${label} download timed out (slow connection). Try again.`);
   } else {
-    msg.reply(`❌ ${label} download failed. Check \`pm2 logs ani-chan-bot\` for the exact error.`);
+    return msg.reply(`❌ ${label} download failed. Check \`pm2 logs ani-chan-bot\` for the exact error.`);
   }
 }
 
@@ -189,7 +189,7 @@ module.exports = {
 
       await downloadAndSend(msg, mediaUrl, '📸 Downloaded from Instagram');
     } catch (err) {
-      replyForError(msg, 'Instagram', err);
+      return replyForError(msg, 'Instagram', err);
     }
   },
 
@@ -233,7 +233,7 @@ module.exports = {
 
       await downloadAndSend(msg, mediaUrl, '🎵 Downloaded from TikTok');
     } catch (err) {
-      replyForError(msg, 'TikTok', err);
+      return replyForError(msg, 'TikTok', err);
     }
   },
 
@@ -306,7 +306,7 @@ module.exports = {
       await downloadAndSend(msg, mediaUrl, title ? `🎬 ${title}` : '🎬 Downloaded from YouTube');
     } catch (err) {
       console.error('YT download error:', err.response?.status, JSON.stringify(err.response?.data)?.slice(0, 300) || err.message);
-      msg.reply('❌ YouTube download failed.');
+      return msg.reply('❌ YouTube download failed.');
     }
   },
 
@@ -378,7 +378,7 @@ module.exports = {
 
       await downloadAndSend(msg, mediaUrl, '🐦 Downloaded from X');
     } catch (err) {
-      replyForError(msg, 'X', err);
+      return replyForError(msg, 'X', err);
     }
   },
 
@@ -422,7 +422,7 @@ module.exports = {
 
       await downloadAndSend(msg, mediaUrl, '📘 Downloaded from Facebook');
     } catch (err) {
-      replyForError(msg, 'Facebook', err);
+      return replyForError(msg, 'Facebook', err);
     }
   },
 
@@ -478,7 +478,7 @@ module.exports = {
       await downloadAndSend(msg, dlRes.data.link, `🎵 ${dlRes.data.title || firstResult.title}`);
     } catch (err) {
       console.error('Play error:', err.response?.status, JSON.stringify(err.response?.data)?.slice(0, 300) || err.message);
-      msg.reply('❌ Play failed. Try with a direct YouTube URL using .yt');
+      return msg.reply('❌ Play failed. Try with a direct YouTube URL using .yt');
     }
   },
 };

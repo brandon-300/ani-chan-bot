@@ -195,7 +195,7 @@ async function sendGif(msg, nekosEndpoint, otakuReaction, text, mentions = []) {
   }
   // Fallback: text only, same mentions so the tag still works — also a
   // reply (quoted), not a fresh chat.sendMessage.
-  msg.reply(text, undefined, { mentions });
+  return msg.reply(text, undefined, { mentions });
 }
 
 // ─── Target resolution for two-party actions ───────────────────────────────
@@ -400,7 +400,7 @@ module.exports = {
       solo: (s) => `☪️ @${s} declared a holy war on the chat! 💣`,
       pair: (s, t) => `☪️ @${s} declared a holy war on @${t}! 💣`,
     });
-    msg.reply(text, undefined, { mentions });
+    return msg.reply(text, undefined, { mentions });
   },
 
   async crusade(client, msg, args) {
@@ -408,7 +408,7 @@ module.exports = {
       solo: (s) => `✝️ @${s} called for a crusade! ⚔️ Deus Vult!`,
       pair: (s, t) => `✝️ @${s} called for a crusade against @${t}! ⚔️ Deus Vult!`,
     });
-    msg.reply(text, undefined, { mentions });
+    return msg.reply(text, undefined, { mentions });
   },
 
   async shrug(client, msg, args) {
@@ -416,7 +416,7 @@ module.exports = {
       solo: (s) => `🤷 @${s}: ¯\\_(ツ)_/¯`,
       pair: (s, t) => `🤷 @${s} shrugs at @${t}: ¯\\_(ツ)_/¯`,
     });
-    msg.reply(text, undefined, { mentions });
+    return msg.reply(text, undefined, { mentions });
   },
 
   // Left as self-only, intentionally NOT wired into buildAction's
@@ -425,7 +425,7 @@ module.exports = {
   // keeps its original solo-only text unchanged.
   async wank(client, msg, args) {
     const contact = await msg.getContact();
-    msg.reply(
+    return msg.reply(
       `😏 @${mentionTag(contact)} is... busy. Please do not disturb.`,
       undefined,
       { mentions: [contact.id._serialized] }

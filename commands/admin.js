@@ -1,8 +1,9 @@
 const Group = require('../models/Group');
+const GroupActivity = require('../models/GroupActivity');
 const User = require('../models/User');
 const { OwnedCard } = require('../models/Card');
 const BotState = require('../models/BotState');
-const { isAdmin, botIsAdmin, mentionName, mentionTag, isOwner, safeGetChat, safeGetQuotedMessage, resolveNameById, withRetry, decodeIdKey, formatNum } = require('../utils/helpers');
+const { isAdmin, botIsAdmin, mentionName, mentionTag, isOwner, safeGetChat, safeGetQuotedMessage, resolveNameById, withRetry, formatNum } = require('../utils/helpers');
 const scheduler = require('../utils/scheduler');
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -795,28 +796,21 @@ async tagall(client, msg, args) {
     if (!chat) return;
     if (!chat.isGroup) return msg.reply('❌ Group only.');
 
-    const group = await withRetry(() => Group.findOne({ id: chat.id._serialized }))
-      .catch(err => { console.error('activity: Group lookup failed:', err.message); return null; });
-    if (!group?.activityLog?.size) return msg.reply('📊 No activity data yet.');
-
     const botId = client.info.wid._serialized;
-    // activityLog keys are stored "~"-encoded (see encodeIdKey in
-    // utils/helpers.js — Mongoose's Map type rejects "." in keys outright,
-    // and every WhatsApp id contains one). Decode back to real ids before
-    // comparing to botId or resolving names.
-    const sorted = [...(group.activityLog || new Map())]
-      .map(([key, count]) => [decodeIdKey(key), count])
-      .filter(([id]) => id !== botId)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 10);
-    if (!sorted.length) return msg.reply('📊 No activity data yet.');
-    // Previously showed the raw WhatsApp id (e.g. "2341234567890@c.us") here
-    // instead of the person's actual name.
-    const names = await Promise.all(sorted.map(([id]) => resolveNameById(client, id)));
+    // Sort/limit/bot-exclusion all pushed down to the query itself now
+    // that this is a real per-(group,user) collection (models/GroupActivity.js)
+    // instead of a Map field that had to be fully loaded and sorted in JS.
+    const rows = await withRetry(() => GroupActivity.find({ groupId: chat.id._serialized, userId: { $ne: botId } })
+      .sort({ count: -1 })
+      .limit(10))
+      .catch(err => { console.error('activity: GroupActivity lookup failed:', err.message); return null; });
+    if (!rows?.length) return msg.reply('📊 No activity data yet.');
+
+    const names = await Promise.all(rows.map(r => resolveNameById(client, r.userId)));
 
     let text = '📊 *Member Activity*\n\n';
-    sorted.forEach(([, count], i) => {
-      text += `${i + 1}. ${names[i]} — ${count} messages\n`;
+    rows.forEach((r, i) => {
+      text += `${i + 1}. ${names[i]} — ${r.count} messages\n`;
     });
     msg.reply(text);
   },
@@ -832,15 +826,14 @@ async tagall(client, msg, args) {
     if (!chat) return;
     if (!chat.isGroup) return msg.reply('❌ Group only.');
 
-    const group = await withRetry(() => Group.findOne({ id: chat.id._serialized }))
-      .catch(err => { console.error('inactive: Group lookup failed:', err.message); return null; });
     const botId = client.info.wid._serialized;
     const allIds = chat.participants.map(p => p.id._serialized).filter(id => id !== botId);
-    // activityLog keys are stored "~"-encoded (see encodeIdKey in
-    // utils/helpers.js — Mongoose's Map type rejects "." in keys outright).
-    // Decode into a real id -> count map before doing any id comparisons.
-    const rawLog = group?.activityLog || new Map();
-    const log = new Map([...rawLog].map(([key, count]) => [decodeIdKey(key), count]));
+
+    // Every row for this group (not just a top-N slice) — every current
+    // participant needs to be checked against it, not just the active ones.
+    const rows = await withRetry(() => GroupActivity.find({ groupId: chat.id._serialized }))
+      .catch(err => { console.error('inactive: GroupActivity lookup failed:', err.message); return null; });
+    const log = new Map((rows || []).map(r => [r.userId, r.count]));
 
     const inactive = allIds.filter(id => !log.has(id) || log.get(id) < 5).slice(0, 10);
     // Same fix as .activity — resolve to real names instead of showing raw ids.

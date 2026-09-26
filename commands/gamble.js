@@ -62,11 +62,11 @@ module.exports = {
 
     const display = `[ ${reels.join(' | ')} ]`;
     if (mult === 0) {
-      msg.reply(`🎰 *Slots*\n\n${display}\n\n❌ No match! Lost 💰 ${amount}\nBalance: ${formatNum(user.coins)}`);
+      return msg.reply(`🎰 *Slots*\n\n${display}\n\n❌ No match! Lost 💰 ${amount}\nBalance: ${formatNum(user.coins)}`);
     } else if (mult >= 10) {
-      msg.reply(`🎰 *JACKPOT!* 🎉🎉🎉\n\n${display}\n\n${mult}x multiplier!\n+💰 ${winnings} coins!\nBalance: ${formatNum(user.coins)}`);
+      return msg.reply(`🎰 *JACKPOT!* 🎉🎉🎉\n\n${display}\n\n${mult}x multiplier!\n+💰 ${winnings} coins!\nBalance: ${formatNum(user.coins)}`);
     } else {
-      msg.reply(`🎰 *Slots*\n\n${display}\n\n✅ ${mult}x win! +💰 ${winnings}\nBalance: ${formatNum(user.coins)}`);
+      return msg.reply(`🎰 *Slots*\n\n${display}\n\n✅ ${mult}x win! +💰 ${winnings}\nBalance: ${formatNum(user.coins)}`);
     }
   },
 
@@ -83,7 +83,7 @@ module.exports = {
     user.coins += heads ? amount : -amount;
     await user.save();
 
-    msg.reply(
+    return msg.reply(
       `🪙 *Coin Flip*\n\n${heads ? '🟡 HEADS — You win!' : '⚫ TAILS — You lose!'}\n${heads ? `+💰 ${amount}` : `-💰 ${amount}`}\nBalance: ${formatNum(user.coins)}`
     );
   },
@@ -103,7 +103,7 @@ module.exports = {
     if (!draw) user.coins += win ? amount : -amount;
     await user.save();
 
-    msg.reply(
+    return msg.reply(
       `🎲 *Dice*\n\nYou rolled: *${myRoll}*\nBot rolled: *${botRoll}*\n\n${draw ? '🤝 Draw! No coins lost.' : win ? `🏆 You win! +💰 ${amount}` : `😢 You lose! -💰 ${amount}`}\nBalance: ${formatNum(user.coins)}`
     );
   },
@@ -121,7 +121,7 @@ module.exports = {
     user.coins += win ? amount * 2 : -amount;
     await user.save();
 
-    msg.reply(
+    return msg.reply(
       win
         ? `💥 *Double!* +💰 ${amount * 2}\nBalance: ${formatNum(user.coins)}`
         : `💥 *Bust!* -💰 ${amount}\nBalance: ${formatNum(user.coins)}`
@@ -145,7 +145,7 @@ module.exports = {
 
     user.coins += result.gain;
     await user.save();
-    msg.reply(`🎯 *Double or Pass*\n\n${result.label}\n${result.gain >= 0 ? '+' : ''}💰 ${result.gain}\nBalance: ${formatNum(user.coins)}`);
+    return msg.reply(`🎯 *Double or Pass*\n\n${result.label}\n${result.gain >= 0 ? '+' : ''}💰 ${result.gain}\nBalance: ${formatNum(user.coins)}`);
   },
 
   // .roulette [amount] [bet_type]
@@ -179,7 +179,7 @@ module.exports = {
     user.coins += gain;
     await user.save();
 
-    msg.reply(
+    return msg.reply(
       `🎡 *Roulette*\n\nBall landed on: ${color} *${spinNum}*\nYour bet: ${betType} — ${win ? '✅ WIN' : '❌ LOSE'}\n${gain >= 0 ? '+' : ''}💰 ${gain}\nBalance: ${formatNum(user.coins)}`
     );
   },
@@ -218,7 +218,7 @@ module.exports = {
     }
     await user.save();
 
-    msg.reply(
+    return msg.reply(
       `🏇 *Horse Race!*\n\n${HORSES.map((h, i) => `${h.emoji} ${h.name}${i === winnerIdx ? ' 🏆' : ''}`).join('\n')}\n\n${win ? `🎉 Your horse *${chosen.name}* won!\n+💰 ${amount * chosen.odds}` : `😢 *${winner.name}* won. You lost 💰 ${amount}`}\nBalance: ${formatNum(user.coins)}`
     );
   },

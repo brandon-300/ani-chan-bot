@@ -16,6 +16,17 @@ const {
 
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
+// In-process re-entrancy lock for the hourly broadcast. The scheduler ticks
+// every minute, and a run can legitimately take longer than a minute when
+// there are many groups (each group waits NEWS_SEND_DELAY_MS). Without this
+// lock, the next tick could enter _maybeSendDailyNews while the previous run
+// is still sending — both would read the pre-run hourlyNewsLastRun value from
+// BotState and both would broadcast, doubling every group's message for that
+// hour. The BotState hour-key remains in place because it guards the OTHER
+// overlap window this lock can't see: a PM2 restart landing in the same hour
+// (a restart wipes this variable, but the Mongo key survives it).
+let hourlyNewsRunning = false;
+
 // ─── URL normalization + dedup ─────────────────────────────────────────────
 // SentNews uses the article link as its identity (models/SentNews.js), so
 // the SAME story arriving from two feeds with cosmetically different URLs
@@ -113,6 +124,10 @@ function decodeEntities(text) {
     .replace(/&apos;/g, "'")
     .replace(/&#39;/g, "'")
     .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)))
+    // Hex numeric entities (&#x27;, &#x2019;, ...) — feeds (Google News
+    // especially) emit these regularly; without this they leaked into
+    // titles/descriptions as literal "&#x...;" text.
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, code) => String.fromCharCode(parseInt(code, 16)))
     .replace(/&nbsp;/g, ' ');
 }
 
@@ -215,15 +230,19 @@ function shuffle(array) {
   return out;
 }
 
-// Fetches ALL sources in parallel, then MERGES every successful source's
-// results into one pool; relevance ranking (scoreArticle) decides what gets
-// sent, not source order. Because all sources are fetched, the randomized
-// order is NOT "which site the news comes from" — it only (a) breaks ties
-// in equal-score situations more variedly across runs, and (b) varies which
-// story tops the merged pool among equally-scored candidates. Any source
-// that fails (bad internet, feed down, etc.) is skipped rather than failing
-// the whole run — the news goes out from whichever sources actually
-// respond. If every source fails, an empty array is returned.
+// Fetches ALL sources in parallel (Google News included — it's a fourth
+// always-on source that widens coverage, not a sequential fallback; it only
+// *behaves* like a safety net because its broad query still returns items
+// when a direct feed fails or has nothing new), then MERGES every
+// successful source's results into one pool; relevance ranking
+// (scoreArticle) decides what gets sent, not source order. Because all
+// sources are fetched, the randomized order is NOT "which site the news
+// comes from" — it only (a) breaks ties in equal-score situations more
+// variedly across runs, and (b) varies which story tops the merged pool
+// among equally-scored candidates. Any source that fails (bad internet,
+// feed down, etc.) is skipped rather than failing the whole run — the news
+// goes out from whichever sources actually respond. If every source fails,
+// an empty array is returned.
 async function fetchAllArticles() {
   const randomizedSources = shuffle(NEWS_SOURCES);
   const results = await Promise.allSettled(
@@ -302,7 +321,10 @@ async function requireAdmin(msg) {
   const contact = await msg.getContact().catch(() => null);
   if (contact && isOwner(contact.id._serialized)) return true;
   const ok = await isAdmin(msg);
-  if (!ok) { msg.reply('❌ Admins only!'); return false; }
+  if (!ok) {
+    await msg.reply('❌ Admins only!').catch(() => {});
+    return false;
+  }
   return true;
 }
 
@@ -318,6 +340,10 @@ module.exports = {
   // then the article AS A REPLY to that command (msg.reply, not
   // chat.sendMessage — this is what makes it show up as a reply bubble in
   // WhatsApp) — nothing else on the happy path.
+  //
+  // The article is marked as sent ONLY after msg.reply() succeeds, so a
+  // failed send is retried on the next .news call instead of being
+  // silently skipped (same order guarantee the hourly broadcast uses).
   async news(client, msg, args) {
     if (!await requireAdmin(msg)) return;
 
@@ -339,10 +365,12 @@ module.exports = {
       return msg.reply(`📭 You're all caught up — no new anime news right now. Check back later!`);
     }
 
-    await markSent(chat.id._serialized, article);
     // msg.reply() (not chat.sendMessage()) — quotes the .news command
-    // itself, which is what renders as a reply bubble in WhatsApp.
+    // itself, which is what renders as a reply bubble in WhatsApp. Send
+    // FIRST, mark sent SECOND: if the reply fails (network blip), the
+    // article stays unseen and is retried next time.
     await msg.reply(formatArticle(article));
+    await markSent(chat.id._serialized, article);
   },
 
   // Internal — called every minute by index.js's scheduler (same shape as
@@ -361,8 +389,13 @@ module.exports = {
   // the correct "all caught up" behavior here (the .news command above is
   // the one that talks back).
   //
-  // BotState remembers the last hour-key this actually ran for, so a PM2
-  // restart landing in the same hour can't cause a duplicate broadcast.
+  // Two guards against duplicate broadcasts, complementary by design:
+  //   • hourlyNewsRunning (RAM, this process) — stops the next scheduler
+  //     tick from entering while a slow run (many groups × send delay) is
+  //     still in flight. Released in finally, so even a throw can't wedge
+  //     the lock and permanently kill future hourly broadcasts.
+  //   • BotState 'hourlyNewsLastRun' hour-key (Mongo, survives restarts) —
+  //     stops a PM2 restart landing in the same hour from re-broadcasting.
   //
   // This has no triggering message to reply to (it's unprompted, not a
   // response to a command) — chat.sendMessage() is correct here, unlike
@@ -373,55 +406,64 @@ module.exports = {
     // and since both clocks tick hourly, "minute === 0" is hourly in WAT.
     if (now.getUTCMinutes() !== 0) return;
 
-    // Hour key — e.g. "2026-09-23T14". One run per wall-clock hour.
-    const hourKey = now.toISOString().slice(0, 13);
-    const state = await BotState.findOne({ key: 'hourlyNewsLastRun' }).catch(() => null);
-    if (state?.value === hourKey) return;
+    // In-process re-entrancy lock — a previous run (same process) is still
+    // sending; bail out and let it finish this hour.
+    if (hourlyNewsRunning) return;
+    hourlyNewsRunning = true;
 
-    let articles;
     try {
-      articles = await fetchAllArticles();
-    } catch (err) {
-      console.error('❌ Hourly anime news fetch failed:', err.message);
-      return;
-    }
-    if (!articles.length) {
-      // All sources failed or all items were stale — stay quiet, and only
-      // record the hour AFTER a successful path so a failed hour retries.
-      return;
-    }
+      // Hour key — e.g. "2026-09-23T14". One run per wall-clock hour.
+      const hourKey = now.toISOString().slice(0, 13);
+      const state = await BotState.findOne({ key: 'hourlyNewsLastRun' }).catch(() => null);
+      if (state?.value === hourKey) return;
 
-    let groupChats = [];
-    try {
-      groupChats = (await client.getChats()).filter(c => c.isGroup);
-    } catch (err) {
-      console.error('❌ Hourly anime news: getChats failed:', err.message);
-      return;
-    }
-
-    let sentCount = 0;
-    for (const chat of groupChats) {
+      let articles;
       try {
-        const chatId = chat.id._serialized;
-        const article = await pickNextArticle(chatId, articles);
-        if (article) {
-          await sendArticle(chat, article);
-          // Mark as sent ONLY after the message actually went out, so a
-          // failed send is retried next hour instead of being skipped.
-          await markSent(chatId, article);
-          sentCount++;
-        }
+        articles = await fetchAllArticles();
       } catch (err) {
-        console.error(`❌ Hourly anime news: failed for ${chat.id._serialized}:`, err.message);
+        console.error('❌ Hourly anime news fetch failed:', err.message);
+        return;
       }
-      await sleep(NEWS_SEND_DELAY_MS); // gap between groups
-    }
+      if (!articles.length) {
+        // All sources failed or all items were stale — stay quiet, and only
+        // record the hour AFTER a successful path so a failed hour retries.
+        return;
+      }
 
-    await BotState.findOneAndUpdate(
-      { key: 'hourlyNewsLastRun' },
-      { value: hourKey },
-      { upsert: true }
-    );
-    console.log(`✅ Hourly anime news: ${sentCount} article(s) sent across ${groupChats.length} group(s) at ${now.toLocaleString()}`);
+      let groupChats = [];
+      try {
+        groupChats = (await client.getChats()).filter(c => c.isGroup);
+      } catch (err) {
+        console.error('❌ Hourly anime news: getChats failed:', err.message);
+        return;
+      }
+
+      let sentCount = 0;
+      for (const chat of groupChats) {
+        try {
+          const chatId = chat.id._serialized;
+          const article = await pickNextArticle(chatId, articles);
+          if (article) {
+            await sendArticle(chat, article);
+            // Mark as sent ONLY after the message actually went out, so a
+            // failed send is retried next hour instead of being skipped.
+            await markSent(chatId, article);
+            sentCount++;
+          }
+        } catch (err) {
+          console.error(`❌ Hourly anime news: failed for ${chat.id._serialized}:`, err.message);
+        }
+        await sleep(NEWS_SEND_DELAY_MS); // gap between groups
+      }
+
+      await BotState.findOneAndUpdate(
+        { key: 'hourlyNewsLastRun' },
+        { value: hourKey },
+        { upsert: true }
+      );
+      console.log(`✅ Hourly anime news: ${sentCount} article(s) sent across ${groupChats.length} group(s) at ${now.toLocaleString()}`);
+    } finally {
+      hourlyNewsRunning = false;
+    }
   },
 };
