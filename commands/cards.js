@@ -12,6 +12,13 @@ const scheduler = require('../utils/scheduler');
 const crypto = require('crypto');
 const mongoose = require('mongoose');
 
+// How long a .sc (sale) or .tc (trade) offer stays valid — used both when
+// creating one (models/Card.js's expiresAt TTL field on SaleRequest/
+// TradeRequest) and when checking one's age in .acceptsale/.accepttrade.
+// One constant instead of the literal "10 * 60 * 1000" in three places, so
+// the creation side and the check side can't drift out of sync.
+const REQUEST_EXPIRY_MS = 10 * 60 * 1000;
+
 // Thrown inside a mongoose session.withTransaction(...) callback purely to
 // abort it with a specific, already-worded user-facing message attached.
 // withTransaction() aborts the transaction and rethrows whatever the
@@ -530,7 +537,7 @@ module.exports = {
   _initCardLending,
   // .cards on/off
   async cards(client, msg, args) {
-    const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
+    const chat = await safeGetChat(msg).catch(async err => { console.error("getChat failed:", err.message); await msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
     if (!chat) return;
     if (!chat.isGroup) return msg.reply('❌ Group only.');
     const sub = args[0]?.toLowerCase();
@@ -543,7 +550,9 @@ module.exports = {
       { cardsEnabled: sub === 'on' },
       { upsert: true, new: true }
     );
-    msg.reply(`🎴 Cards are now *${group.cardsEnabled ? 'ON' : 'OFF'}*`);
+    // Intentionally await, not return — the scheduler call below still
+    // needs to run after this confirmation goes out.
+    await msg.reply(`🎴 Cards are now *${group.cardsEnabled ? 'ON' : 'OFF'}*`);
 
     if (group.cardsEnabled) {
       await scheduler.scheduleTask({
@@ -694,7 +703,7 @@ Use *.claim* when this card drops!`;
         // fall through to text-only reply below
       }
     }
-    msg.reply(caption, undefined, { mentions });
+    return msg.reply(caption, undefined, { mentions });
   },
 
   // .cardinfo alias
@@ -711,7 +720,7 @@ if (!name) return msg.reply('❌ Usage: .si [series]');
 
     let text = `📚 *${cards[0].series}* (${cards.length} cards)\n\n`;
     cards.forEach(c => { text += `${tierEmoji(c.tier)} ${c.name} — ${c.tier}\n`; });
-    msg.reply(text);
+    return msg.reply(text);
   },
 
   // .ss [series] — owned cards from that series
@@ -728,7 +737,7 @@ const cards = await OwnedCard.find({
 
     let text = `📚 *Your ${series} Cards* (${cards.length})\n\n`;
     cards.forEach((c, i) => { text += `${i + 1}. ${tierEmoji(c.tier)} ${c.name} — ${c.tier}\n`; });
-    msg.reply(text);
+    return msg.reply(text);
   },
 
   // .slb [series] — series leaderboard (who has most)
@@ -746,7 +755,7 @@ const cards = await OwnedCard.find({
     if (!results.length) return msg.reply('❌ No data found.');
     let text = `🏆 *${series} Leaderboard*\n\n`;
     results.forEach((r, i) => { text += `${i + 1}. @${r._id.split('@')[0]} — ${r.count} cards\n`; });
-    msg.reply(text, undefined, { mentions: results.map(r => r._id) });
+    return msg.reply(text, undefined, { mentions: results.map(r => r._id) });
   },
 
   // .clb — card leaderboard (most total cards)
@@ -759,7 +768,7 @@ const cards = await OwnedCard.find({
     if (!results.length) return msg.reply('❌ No data found.');
     let text = `🏆 *Collection Size Leaderboard*\n\n`;
     results.forEach((r, i) => { text += `${i + 1}. @${r._id.split('@')[0]} — ${r.count} cards\n`; });
-    msg.reply(text, undefined, { mentions: results.map(r => r._id) });
+    return msg.reply(text, undefined, { mentions: results.map(r => r._id) });
   },
 
   // .vlb — leaderboard by total collection value (Phase 7)
@@ -776,7 +785,7 @@ const cards = await OwnedCard.find({
     ranked.forEach(([id, value], i) => {
       text += `${i + 1}. @${id.split('@')[0]} — 💰 ${value.toLocaleString()} coins\n`;
     });
-    msg.reply(text, undefined, { mentions: ranked.map(([id]) => id) });
+    return msg.reply(text, undefined, { mentions: ranked.map(([id]) => id) });
   },
 
   // .tlb — leaderboard by the single highest-tier card each person owns (Phase 7)
@@ -796,7 +805,7 @@ const cards = await OwnedCard.find({
     ranked.forEach(([id, info], i) => {
       text += `${i + 1}. @${id.split('@')[0]} — ${tierEmoji(info.tier)} ${info.tier} (${info.name})\n`;
     });
-    msg.reply(text, undefined, { mentions: ranked.map(([id]) => id) });
+    return msg.reply(text, undefined, { mentions: ranked.map(([id]) => id) });
   },
 
   // .sslb — leaderboard by number of SS/SSS cards owned (Phase 7)
@@ -813,7 +822,7 @@ const cards = await OwnedCard.find({
     ranked.forEach(([id, count], i) => {
       text += `${i + 1}. @${id.split('@')[0]} — 🟠 ${count} card(s)\n`;
     });
-    msg.reply(text, undefined, { mentions: ranked.map(([id]) => id) });
+    return msg.reply(text, undefined, { mentions: ranked.map(([id]) => id) });
   },
 
   // .mclb — leaderboard by each person's best-completed series (Phase 7)
@@ -850,7 +859,7 @@ const cards = await OwnedCard.find({
     ranked.forEach(([id, info], i) => {
       text += `${i + 1}. @${id.split('@')[0]} — ${info.series} (${info.count}/${info.total}, ${Math.round(info.pct * 100)}%)\n`;
     });
-    msg.reply(text, undefined, { mentions: ranked.map(([id]) => id) });
+    return msg.reply(text, undefined, { mentions: ranked.map(([id]) => id) });
   },
 
   // .deck [page] — visual grid image of your whole card collection,
@@ -897,7 +906,9 @@ const cards = await OwnedCard.find({
       : [];
     const catalogueById = new Map(catalogues.map(c => [c.cardId, c]));
 
-    msg.reply(`🖼️ Rendering your card grid (page ${page}/${totalPages})...`);
+    // Intentionally await, not return — the (potentially slow) grid
+    // rendering below still needs to run after this status message.
+    await msg.reply(`🖼️ Rendering your card grid (page ${page}/${totalPages})...`);
 
     // cells only ever holds successes — a missing catalogue link or a
     // failed render just drops that one card from the grid (counted in
@@ -1015,7 +1026,7 @@ const cards = await OwnedCard.find({
     text += `Use *.col <number>* to view a card's full details.`;
     if (totalPages > 1) text += `\nUse *.col page <n>* to see more (e.g. .col page 2).`;
 
-    msg.reply(text);
+    return msg.reply(text);
   },
 
   // .cardshop — combined shop listing: (1) cards other players have put up
@@ -1059,7 +1070,7 @@ const cards = await OwnedCard.find({
     if (totalPages > 1) text += `Use *.cardshop page <n>* to see more (e.g. .cardshop page 2).`;
 
     const mentions = forSale.map(c => c.ownerId).filter(Boolean);
-    msg.reply(text, undefined, { mentions });
+    return msg.reply(text, undefined, { mentions });
   },
 
   // .buyc [code] — buy an unclaimed catalogue card directly (the "shop
@@ -1176,7 +1187,7 @@ const cards = await OwnedCard.find({
     const unlocked = await checkAchievements(contact.id._serialized);
     const newTitle = await checkTitle(contact.id._serialized);
     const xpLine = `\n⭐ +${XP_REWARDS.shopBuy} XP${xpResult.levelUp ? ` — 🎉 Level up! You're now level ${xpResult.level}!` : ''}`;
-    msg.reply(`✅ You bought *${ownedCard.name}* [${ownedCard.tier}] for 💰 ${formatNum(price)}!` + xpLine + formatUnlockNotice(unlocked) + formatTitleUnlockNotice(newTitle));
+    return msg.reply(`✅ You bought *${ownedCard.name}* [${ownedCard.tier}] for 💰 ${formatNum(price)}!` + xpLine + formatUnlockNotice(unlocked) + formatTitleUnlockNotice(newTitle));
   },
 
   // .sellc [index] [price]
@@ -1193,7 +1204,7 @@ const cards = await OwnedCard.find({
     card.isForSale = true;
     card.price = price;
     await card.save();
-    msg.reply(`✅ *${card.name}* listed for 💰 ${price} coins!`);
+    return msg.reply(`✅ *${card.name}* listed for 💰 ${price} coins!`);
   },
 
   // .rc [index] — remove card from sale
@@ -1206,12 +1217,12 @@ const cards = await OwnedCard.find({
     card.isForSale = false;
     card.price = 0;
     await card.save();
-    msg.reply(`✅ *${card.name}* removed from shop.`);
+    return msg.reply(`✅ *${card.name}* removed from shop.`);
   },
 
   // .claim [id] — claim a dropped card or buy from shop
   async claim(client, msg, args) {
-    const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
+    const chat = await safeGetChat(msg).catch(async err => { console.error("getChat failed:", err.message); await msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
     if (!chat) return;
     const contact = await msg.getContact();
     const id = args[0]?.trim();
@@ -1397,7 +1408,7 @@ const cards = await OwnedCard.find({
     // guild or this doesn't advance the guild's currently active quest.
     const questResult = await Guild.addQuestProgress(contact.id._serialized, 'cards', 1);
     const xpLine = `\n⭐ +${XP_REWARDS.claim} XP${xpResult.levelUp ? ` — 🎉 Level up! You're now level ${xpResult.level}!` : ''}`;
-    msg.reply(`✅ *${contact.pushname}* claimed ${tierEmoji(catalogue.tier)} *${catalogue.name}* [${catalogue.tier}]!` + xpLine + formatUnlockNotice(unlocked) + formatTitleUnlockNotice(newTitle) + _formatQuestCompletionNote(questResult));
+    return msg.reply(`✅ *${contact.pushname}* claimed ${tierEmoji(catalogue.tier)} *${catalogue.name}* [${catalogue.tier}]!` + xpLine + formatUnlockNotice(unlocked) + formatTitleUnlockNotice(newTitle) + _formatQuestCompletionNote(questResult));
   },
 
   // .sc [@user] [index] [price] — propose selling a card to a user.
@@ -1428,7 +1439,7 @@ const cards = await OwnedCard.find({
     if (card.isForSale) return msg.reply('❌ This card is currently listed in the shop — remove it with *.rc* first, or just tell them the shop code.');
     if (card.isLent) return msg.reply('❌ This card is currently lent out — get it back before selling it.');
 
-    const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
+    const chat = await safeGetChat(msg).catch(async err => { console.error("getChat failed:", err.message); await msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
     if (!chat) return;
 
     // Replace any earlier pending offer between these two in this chat, so
@@ -1445,10 +1456,11 @@ const cards = await OwnedCard.find({
       sellerId: contact.id._serialized,
       buyerId: buyer.id._serialized,
       cardId: card._id,
-      price
+      price,
+      expiresAt: new Date(Date.now() + REQUEST_EXPIRY_MS)
     });
 
-    msg.reply(
+    return msg.reply(
       `🛍️ *Sale Offer*\n\n${mentionName(contact)} wants to sell you:\n${tierEmoji(card.tier)} *${card.name}* [${card.tier}]\nfor 💰 ${formatNum(price)} coins\n\n@${buyer.id.user}, reply *.acceptsale* or *.declinesale* (expires in 10 min)`,
       undefined,
       { mentions: [buyer.id._serialized] }
@@ -1459,7 +1471,7 @@ const cards = await OwnedCard.find({
   // this chat. Money and ownership only actually move here.
   async acceptsale(client, msg, args) {
     const contact = await msg.getContact();
-    const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
+    const chat = await safeGetChat(msg).catch(async err => { console.error("getChat failed:", err.message); await msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
     if (!chat) return;
 
     const sale = await SaleRequest.findOne({
@@ -1469,7 +1481,12 @@ const cards = await OwnedCard.find({
 
     if (!sale) return msg.reply('❌ You have no pending sale offers.');
 
-    if (Date.now() - sale.createdAt.getTime() > 10 * 60 * 1000) {
+    // Falls back to createdAt+window for a sale offer created before this
+    // field existed — without this, one made in the few minutes before
+    // deploying this and accepted right after would crash here instead of
+    // just being correctly treated as not-yet-expired.
+    const saleExpiresAt = sale.expiresAt || new Date(sale.createdAt.getTime() + REQUEST_EXPIRY_MS);
+    if (Date.now() > saleExpiresAt.getTime()) {
       await sale.deleteOne();
       return msg.reply('❌ That sale offer expired. Ask them to send a new one.');
     }
@@ -1573,7 +1590,7 @@ const cards = await OwnedCard.find({
       await session.endSession();
     }
 
-    msg.reply(
+    return msg.reply(
       `✅ Bought *${boughtCard.name}* [${boughtCard.tier}] from @${sale.sellerId.split('@')[0]} for 💰 ${formatNum(sale.price)} coins!`,
       undefined,
       { mentions: [sale.sellerId] }
@@ -1584,7 +1601,7 @@ const cards = await OwnedCard.find({
   // in this chat.
   async declinesale(client, msg, args) {
     const contact = await msg.getContact();
-    const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
+    const chat = await safeGetChat(msg).catch(async err => { console.error("getChat failed:", err.message); await msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
     if (!chat) return;
 
     const sale = await SaleRequest.findOne({
@@ -1595,7 +1612,7 @@ const cards = await OwnedCard.find({
     if (!sale) return msg.reply('❌ You have no pending sale offers.');
 
     await sale.deleteOne();
-    msg.reply(
+    return msg.reply(
       `❌ ${mentionName(contact)} declined the sale offer from @${sale.sellerId.split('@')[0]}.`,
       undefined,
       { mentions: [sale.sellerId] }
@@ -1629,7 +1646,7 @@ const cards = await OwnedCard.find({
     if (myCard.isLent) return msg.reply('❌ Your card is currently lent out — get it back before trading it.');
     if (theirCard.isLent) return msg.reply('❌ Their card is currently lent out.');
 
-    const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
+    const chat = await safeGetChat(msg).catch(async err => { console.error("getChat failed:", err.message); await msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
     if (!chat) return;
 
     // Replace any earlier pending offer between these two in this chat, so
@@ -1645,10 +1662,11 @@ const cards = await OwnedCard.find({
       initiatorId: contact.id._serialized,
       partnerId: partner.id._serialized,
       initiatorCardId: myCard._id,
-      partnerCardId: theirCard._id
+      partnerCardId: theirCard._id,
+      expiresAt: new Date(Date.now() + REQUEST_EXPIRY_MS)
     });
 
-    msg.reply(
+    return msg.reply(
       `🔄 *Trade Offer*\n\n${mentionName(contact)} wants to trade:\n${tierEmoji(myCard.tier)} *${myCard.name}*\n\nfor\n\n${tierEmoji(theirCard.tier)} *${theirCard.name}*\n\n@${partner.id.user}, reply *.accepttrade* or *.declinetrade* (expires in 10 min)`,
       undefined,
       { mentions: [partner.id._serialized] }
@@ -1659,7 +1677,7 @@ const cards = await OwnedCard.find({
   // in this chat.
   async accepttrade(client, msg, args) {
     const contact = await msg.getContact();
-    const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
+    const chat = await safeGetChat(msg).catch(async err => { console.error("getChat failed:", err.message); await msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
     if (!chat) return;
 
     const trade = await TradeRequest.findOne({
@@ -1669,7 +1687,9 @@ const cards = await OwnedCard.find({
 
     if (!trade) return msg.reply('❌ You have no pending trade offers.');
 
-    if (Date.now() - trade.createdAt.getTime() > 10 * 60 * 1000) {
+    // See .acceptsale's identical comment above.
+    const tradeExpiresAt = trade.expiresAt || new Date(trade.createdAt.getTime() + REQUEST_EXPIRY_MS);
+    if (Date.now() > tradeExpiresAt.getTime()) {
       await trade.deleteOne();
       return msg.reply('❌ That trade offer expired. Ask them to send a new one.');
     }
@@ -1782,7 +1802,7 @@ const cards = await OwnedCard.find({
     if (initiatorUnlocks.length || initiatorTitle) text += `\n\n@${trade.initiatorId.split('@')[0]}${formatUnlockNotice(initiatorUnlocks)}${formatTitleUnlockNotice(initiatorTitle)}`;
     if (partnerUnlocks.length || partnerTitle) text += `\n\n@${trade.partnerId.split('@')[0]}${formatUnlockNotice(partnerUnlocks)}${formatTitleUnlockNotice(partnerTitle)}`;
 
-    msg.reply(
+    return msg.reply(
       text,
       undefined,
       { mentions: [trade.initiatorId, trade.partnerId] }
@@ -1793,7 +1813,7 @@ const cards = await OwnedCard.find({
   // in this chat.
   async declinetrade(client, msg, args) {
     const contact = await msg.getContact();
-    const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
+    const chat = await safeGetChat(msg).catch(async err => { console.error("getChat failed:", err.message); await msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
     if (!chat) return;
 
     const trade = await TradeRequest.findOne({
@@ -1804,7 +1824,7 @@ const cards = await OwnedCard.find({
     if (!trade) return msg.reply('❌ You have no pending trade offers.');
 
     await trade.deleteOne();
-    msg.reply(
+    return msg.reply(
       `❌ ${mentionName(contact)} declined the trade offer with @${trade.initiatorId.split('@')[0]}.`,
       undefined,
       { mentions: [trade.initiatorId] }
@@ -1821,7 +1841,7 @@ const cards = await OwnedCard.find({
   async lendcard(client, msg, args) {
     const contact = await msg.getContact();
     const userId = contact.id._serialized;
-    const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
+    const chat = await safeGetChat(msg).catch(async err => { console.error("getChat failed:", err.message); await msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
     if (!chat) return;
     if (!chat.isGroup) return msg.reply('❌ Group only.');
 
@@ -1852,7 +1872,9 @@ const cards = await OwnedCard.find({
     card.lendExpiresAt = expiresAt;
     await card.save();
 
-    msg.reply(`✅ You lent ${tierEmoji(card.tier)} *${card.name}* to this group for 1 hour!\nUse *.unlendcard ${index}* to get it back early.`);
+    // Intentionally await, not return — the scheduled auto-return task
+    // below still needs to be created after this confirmation goes out.
+    await msg.reply(`✅ You lent ${tierEmoji(card.tier)} *${card.name}* to this group for 1 hour!\nUse *.unlendcard ${index}* to get it back early.`);
 
     // Persisted via the central scheduler (utils/scheduler.js) instead of
     // an in-memory setTimeout — see scheduler.registerHandler('card_lend_return', ...)
@@ -1908,7 +1930,9 @@ const cards = await OwnedCard.find({
     // no reason to leave it sitting in Mongo until then.
     await scheduler.cancelTask(`lend:${target._id}`);
 
-    msg.reply(`✅ ${tierEmoji(target.tier)} *${target.name}* has been returned to you early.`);
+    // Intentionally await, not return — the lending group's own
+    // notification below still needs to run after this confirmation.
+    await msg.reply(`✅ ${tierEmoji(target.tier)} *${target.name}* has been returned to you early.`);
 
     if (lentToChatId) {
       try {
@@ -1931,7 +1955,7 @@ const cards = await OwnedCard.find({
       text += `${tierEmoji(a.cardTier)} *${a.cardName}* [${a.cardTier}]\n   Current Bid: 💰 ${a.currentBid || a.startPrice}\n   Ends in: ${timeLeft}m\n   🆔 ${a.code || 'pending'}\n\n`;
     });
     text += `Use *.submit [code] [amount]* to bid!`;
-    msg.reply(text);
+    return msg.reply(text);
   },
 
   // .submit [code] [amount] — bid
@@ -1951,7 +1975,7 @@ const cards = await OwnedCard.find({
     auction.currentBid = amount;
     auction.currentBidder = contact.id._serialized;
     await auction.save();
-    msg.reply(`✅ Bid of 💰 ${amount} placed on *${auction.cardName}*!`);
+    return msg.reply(`✅ Bid of 💰 ${amount} placed on *${auction.cardName}*!`);
   },
 
   // .myauc — your active auctions
@@ -1964,7 +1988,7 @@ const cards = await OwnedCard.find({
     auctions.forEach((a) => {
       text += `${a.cardName} [${a.cardTier}] — Bid: 💰 ${a.currentBid}\n   🆔 ${a.code || 'pending'}\n`;
     });
-    msg.reply(text);
+    return msg.reply(text);
   },
 
   // .remauc [code] — remove your auction
@@ -1975,7 +1999,7 @@ const cards = await OwnedCard.find({
     if (!auction) return msg.reply('❌ Auction not found.');
     auction.isActive = false;
     await auction.save();
-    msg.reply('✅ Auction removed.');
+    return msg.reply('✅ Auction removed.');
   },
 
   // .listauc — same as .auction
@@ -1987,14 +2011,14 @@ const cards = await OwnedCard.find({
   async stardust(client, msg, args) {
     const contact = await msg.getContact();
     const user = await User.findOrCreate(contact.id._serialized);
-    msg.reply(`✨ *Stardust Balance*\n\nYou have ✨ *${user.stardust}* stardust.\n\nConvert duplicate cards to stardust to upgrade your collection!`);
+    return msg.reply(`✨ *Stardust Balance*\n\nYou have ✨ *${user.stardust}* stardust.\n\nConvert duplicate cards to stardust to upgrade your collection!`);
   },
 
   // .anticamp — toggle anticamp
   async anticamp(client, msg, args) {
     const contact = await msg.getContact();
     const user = await User.findOrCreate(contact.id._serialized);
-    msg.reply(`🏕️ *Anticamp*\n\nYour camp count: ${user.campCount}\n\nIf you hoard too many duplicate cards, they'll decay automatically.`);
+    return msg.reply(`🏕️ *Anticamp*\n\nYour camp count: ${user.campCount}\n\nIf you hoard too many duplicate cards, they'll decay automatically.`);
   },
 
   // .wishlist [add|remove] [name] — manage your wishlist, or view it with no args
@@ -2033,7 +2057,7 @@ const cards = await OwnedCard.find({
     }
 
     const lines = user.wishlist.map((w, i) => `${i + 1}. ${w}`).join('\n');
-    msg.reply(`❤️ *Your Wishlist*\n\n${lines}\n\nUse *.wishlist remove [name]* to remove one.`);
+    return msg.reply(`❤️ *Your Wishlist*\n\n${lines}\n\nUse *.wishlist remove [name]* to remove one.`);
   },
 
   // .wishlb — leaderboard by wishlist size
@@ -2050,7 +2074,7 @@ const cards = await OwnedCard.find({
     ranked.forEach((u, i) => {
       text += `${i + 1}. @${u.id.split('@')[0]} — ${u.count} card(s)\n`;
     });
-    msg.reply(text, undefined, { mentions: ranked.map(u => u.id) });
+    return msg.reply(text, undefined, { mentions: ranked.map(u => u.id) });
   },
 
   // .fuse [i1] [i2] [i3] — sacrifice 3 same-tier cards for a chance at one
@@ -2148,7 +2172,7 @@ const cards = await OwnedCard.find({
     const luckyNote = lucky ? '\n\n🍀 *Lucky!* Jumped two tiers instead of one!' : '';
     const xpLine = `\n⭐ +${XP_REWARDS.fusion} XP${xpResult.levelUp ? ` — 🎉 Level up! You're now level ${xpResult.level}!` : ''}`;
 
-    msg.reply(
+    return msg.reply(
       `✨ *Fusion Success!*\n\nConsumed: ${consumedList}\n\nReceived: ${tierEmoji(resultCatalogue.tier)} *${resultCatalogue.name}* [${resultCatalogue.tier}]` +
       luckyNote + xpLine + formatUnlockNotice(unlocked) + formatTitleUnlockNotice(newTitle)
     );
@@ -2184,7 +2208,7 @@ const cards = await OwnedCard.find({
     user.bank += resellPrice;
     await user.save();
 
-    msg.reply(`✅ Resold *${card.name}* [${card.tier}] to the bot for 💰 ${formatNum(resellPrice)} coins (deposited to your bank).\n\nThis card is gone for good — use *.sellc* instead next time if you want a shot at full value from another player.`);
+    return msg.reply(`✅ Resold *${card.name}* [${card.tier}] to the bot for 💰 ${formatNum(resellPrice)} coins (deposited to your bank).\n\nThis card is gone for good — use *.sellc* instead next time if you want a shot at full value from another player.`);
   },
 
   // .tier — shows the rarity tier list with real drop odds (read straight
@@ -2228,7 +2252,7 @@ const cards = await OwnedCard.find({
       text += `\n...and ${catalogueCards.length - TIER_BROWSE_LIMIT} more.`;
     }
     text += `\n💎 = available to claim  🔒 = already claimed`;
-    msg.reply(text);
+    return msg.reply(text);
   },
 
   // .cs [name or series] — search the catalogue by name OR series, returning
@@ -2262,7 +2286,7 @@ const cards = await OwnedCard.find({
       text += `${status} ${tierEmoji(c.tier)} *${c.name}* [${c.tier}] — ${c.series}\n`;
     });
     text += `\nUse *.ci [name]* for full details on a specific card.`;
-    msg.reply(text);
+    return msg.reply(text);
   },
 
   // .myseries — overview of every series you own at least one card from,
@@ -2305,6 +2329,6 @@ const cards = await OwnedCard.find({
       text += `${r.name} — ${r.owned}/${r.total} (${pct}%)${complete}\n`;
     });
     text += `\nUse *.ss [series]* to see your cards from one series, or *.si [series]* for the full catalogue.`;
-    msg.reply(text);
+    return msg.reply(text);
   },
 };

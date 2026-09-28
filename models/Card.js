@@ -220,6 +220,15 @@ const TradeRequestSchema = new mongoose.Schema({
   partnerId: { type: String, required: true },
   initiatorCardId: { type: mongoose.Schema.Types.ObjectId, ref: 'OwnedCard', required: true },
   partnerCardId: { type: mongoose.Schema.Types.ObjectId, ref: 'OwnedCard', required: true },
+  // BUGFIX: previously nothing here actually deleted an abandoned offer —
+  // .accepttrade/.declinetrade only checked age (createdAt vs. a 10-minute
+  // window) and deleted it themselves if it was time to. That only ever
+  // ran when someone actually tried to act on it; if neither side ever
+  // touched it again, the document lived forever. This is a real MongoDB
+  // TTL index (`expires: 0` — expire exactly at the stored date), so Mongo
+  // itself removes it on schedule regardless of whether anyone comes back
+  // to it. Set at creation time in commands/cards.js's .tc.
+  expiresAt: { type: Date, required: true, expires: 0 },
 }, { timestamps: true });
 
 // ─── Sale Request (direct user-to-user sale via .sc) ─────────────────────────
@@ -237,6 +246,9 @@ const SaleRequestSchema = new mongoose.Schema({
   buyerId: { type: String, required: true },
   cardId: { type: mongoose.Schema.Types.ObjectId, ref: 'OwnedCard', required: true },
   price: { type: Number, required: true },
+  // See TradeRequestSchema's identical field above for why this exists —
+  // same fix, same reasoning, applied to sale offers too.
+  expiresAt: { type: Date, required: true, expires: 0 },
 }, { timestamps: true });
 
 // ─── Catalogue Auto-Growth State ──────────────────────────────────────────────
