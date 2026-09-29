@@ -10,6 +10,7 @@ const { BOT_NAME, MENU_IMAGE_URL, BOT_PREFIX, AI_CALL_NAMES_OVERRIDE } = require
 const { getActivePersonaSafe } = require('./utils/persona');
 const aiStickers = require('./utils/aiStickers');
 const { instrumentHttpClients, wrapWithUsageTracking } = require('./utils/usageTracking');
+const logger = require('./utils/logger');
 const { tryHandleQuizAnswer } = require('./commands/games/quiz');
 const AiConversation = require('./models/AiConversation');
 const GroupActivity = require('./models/GroupActivity');
@@ -84,14 +85,16 @@ async function migrateGroupActivityLog() {
 }
 
 async function connectMongo() {
+  const operation = logger.start('background.mongo_connect', { retryDelayMs: 15000 });
   try {
     await mongoose.connect(process.env.MONGO_URI, mongoOptions);
+    operation.finish('success', { readyState: mongoose.connection.readyState });
     console.log('✅ MongoDB connected');
 
     // Sticker metadata is rebuilt from Mongo only after the connection is
     // live. This is best-effort and must never block WhatsApp/non-AI startup.
     aiStickers.initialize().catch(err => {
-      console.error('AI sticker metadata startup failed (non-fatal):', err.message);
+      logger.error('background.ai_sticker_metadata_startup.failed', err);
     });
 
     // One-time self-healing schema migration: AiConversation used to be
@@ -104,17 +107,18 @@ async function connectMongo() {
     // just means a second user in a chat would fail to get their own
     // conversation document until this succeeds on a later restart).
     AiConversation.syncIndexes().catch(err => {
-      console.error('⚠️  AiConversation.syncIndexes() failed:', err.message);
+      logger.error('background.ai_conversation_indexes.failed', err);
     });
 
     // See migrateGroupActivityLog()'s own comment — safe to run on every
     // restart, not fatal to startup if it fails.
     migrateGroupActivityLog().catch(err => {
-      console.error('⚠️  GroupActivity migration failed:', err.message);
+      logger.error('background.group_activity_migration.failed', err);
     });
   } catch (err) {
-    console.error('❌ MongoDB error:', err.message);
-    setTimeout(connectMongo, 15000);
+    operation.finish('failed', { error: err });
+    logger.error('background.mongo_connect.retry_scheduled', err, { retryDelayMs: 15000 });
+    setTimeout(() => connectMongo(), 15000);
   }
 }
 
@@ -312,6 +316,13 @@ async function sendQuickMenu(msg) {
 // never invents or maintains a second command list.
 client.sendQuickMenu = (msg) => sendQuickMenu(msg);
 
+let backgroundTaskCounter = 0;
+
+async function runLoggedBackgroundTask(name, details, fn) {
+  const taskId = `bg-${++backgroundTaskCounter}`;
+  return logger.run(`background.${name}`, { taskId, ...details }, fn);
+}
+
 let reconnectTimer = null;
 let cardDropsStarted = false;
 let participantsSeeded = false;
@@ -431,6 +442,7 @@ async function handleAuthTimeout() {
   if (authTimeoutRecovering) return;
   authTimeoutRecovering = true;
   whatsappStarting = false;
+  logger.write('WARN', 'background.whatsapp_auth_timeout.recovery_started');
 
   console.log('🔁 Recovering from auth timeout (page got stuck reloading)...');
   try {
@@ -439,6 +451,7 @@ async function handleAuthTimeout() {
     // the browser process directly so we're never stuck waiting on it.
     await withTimeout(client.destroy(), 15000);
   } catch (err) {
+    logger.error('background.whatsapp_auth_timeout.destroy_failed', err);
     console.error('Clean destroy did not finish in time, forcing cleanup:', err.message);
     recoverFromBrowserLock();
   }
@@ -452,14 +465,17 @@ function scheduleReconnect(reason) {
 
   if (reconnectTimer) return;
 
+  logger.write('INFO', 'background.whatsapp_reconnect.armed', { reason, delayMs: 5000 });
   reconnectTimer = setTimeout(async () => {
     reconnectTimer = null;
+    const operation = logger.start('background.whatsapp_reconnect', { reason });
     try {
-      console.log('🔄 Reinitializing client in 5 seconds...');
       whatsappStarting = true;
       await client.initialize();
+      operation.finish('success');
     } catch (err) {
-      console.error('Reconnect failed:', err);
+      operation.finish('failed', { error: err });
+      logger.error('background.whatsapp_reconnect.failed', err, { reason });
       whatsappStarting = false;
       if (isBrowserLockError(err)) {
         console.log('🔒 Detected a stuck browser lock — cleaning up before retrying...');
@@ -477,7 +493,7 @@ async function startWhatsApp() {
   try {
     await client.initialize();
   } catch (err) {
-    console.error('❌ WhatsApp initialize failed:', err.message);
+    logger.error('background.whatsapp_initialization.failed', err);
     whatsappStarting = false;
     if (isBrowserLockError(err)) {
       console.log('🔒 Detected a stuck browser lock — cleaning up before retrying...');
@@ -488,6 +504,7 @@ async function startWhatsApp() {
 }
 
 client.on('code', (code) => {
+  logger.write('INFO', 'whatsapp.pairing_code.presented', { codeLength: String(code || '').length });
   console.log('');
   console.log('╔════════════════════════════════╗');
   console.log(`  🔗 Pairing code: ${code}`);
@@ -499,39 +516,48 @@ client.on('code', (code) => {
 });
 
 client.on('qr', qr => {
+  logger.write('INFO', 'whatsapp.qr.presented', { qrLength: String(qr || '').length });
   console.log('📱 Or scan this QR code:');
   qrcode.generate(qr, { small: true });
 });
 
 client.on('authenticated', () => {
+  logger.write('INFO', 'whatsapp.authenticated');
   console.log('✅ WhatsApp authenticated');
 });
 
 client.on('auth_failure', (msg) => {
+  logger.error('whatsapp.auth_failure', new Error(String(msg || 'unknown authentication failure')));
   console.error('❌ Authentication failed:', msg);
 });
 
 client.on('loading_screen', (percent, message) => {
+  logger.debug('whatsapp.loading', { percent, message });
   console.log(`Loading ${percent}% - ${message}`);
 });
 
 client.on('change_state', (state) => {
+  logger.write('INFO', 'whatsapp.state_changed', { state });
   console.log('📡 State:', state);
   currentState = state;
 });
 
 client.on('disconnected', (reason) => {
+  logger.write('WARN', 'whatsapp.disconnected', { reason });
   whatsappStarting = false;
   scheduleReconnect(reason);
 });
 
 client.on('error', (err) => {
+  logger.error('whatsapp.client_error', err);
   console.error('Client error:', err);
 });
 
 client.on('ready', () => {
   whatsappStarting = false;
-  aiStickers.initialize().catch(err => console.error('AI sticker library startup failed:', err.message));
+  logger.write('INFO', 'whatsapp.ready', { commandCount: Object.keys(commands).length });
+  runLoggedBackgroundTask('ai_sticker_library_startup', {}, () => aiStickers.initialize())
+    .catch(err => logger.error('background.ai_sticker_library_startup.failed', err));
 
   console.log(`
 ╭━━★彡 ${BOT_NAME} is ONLINE 彡★━━╮
@@ -547,19 +573,19 @@ client.on('ready', () => {
     // backfills a scheduled task for any card that was already mid-lend
     // BEFORE this scheduler existed — see _initCardLending's own comment
     // in commands/cards.js for why that backfill matters.
-    scheduler.init(client)
+    runLoggedBackgroundTask('scheduler_init', {}, () => scheduler.init(client))
       .then(() => {
         const { _initCardLending } = require('./commands/cards');
         if (_initCardLending) return _initCardLending();
       })
-      .catch(err => console.error('Scheduler init error:', err.message));
+      .catch(err => logger.error('background.scheduler_init.failed', err));
   }
 
   if (!cardDropsStarted) {
     cardDropsStarted = true;
     const { _initCardDrops } = require('./commands/cards');
     if (_initCardDrops) {
-      _initCardDrops(client).catch(err => console.error('Card drop resume error:', err.message));
+      runLoggedBackgroundTask('card_drop_restore', {}, () => _initCardDrops(client)).catch(err => logger.error('background.card_drop_restore.failed', err));
     }
   }
 
@@ -567,7 +593,7 @@ client.on('ready', () => {
     participantsSeeded = true;
     const { _seedParticipants } = require('./commands/admin');
     if (_seedParticipants) {
-      _seedParticipants(client).catch(err => console.error('Participant snapshot error:', err.message));
+      runLoggedBackgroundTask('participant_seed', {}, () => _seedParticipants(client)).catch(err => logger.error('background.participant_seed.failed', err));
     }
   }
 
@@ -575,7 +601,7 @@ client.on('ready', () => {
     catalogueGrowthStarted = true;
     const { _initCatalogueGrowth } = require('./commands/cardmanager');
     if (_initCatalogueGrowth) {
-      _initCatalogueGrowth(client).catch(err => console.error('Catalogue auto-growth resume error:', err.message));
+      runLoggedBackgroundTask('catalogue_growth_restore', {}, () => _initCatalogueGrowth(client)).catch(err => logger.error('background.catalogue_growth_restore.failed', err));
     }
   }
 
@@ -583,7 +609,7 @@ client.on('ready', () => {
     mutesResumeStarted = true;
     const { _resumePendingMutes } = require('./commands/admin');
     if (_resumePendingMutes) {
-      _resumePendingMutes(client).catch(err => console.error('Mute resume error:', err.message));
+      runLoggedBackgroundTask('mute_restore', {}, () => _resumePendingMutes(client)).catch(err => logger.error('background.mute_restore.failed', err));
     }
   }
 
@@ -591,7 +617,7 @@ client.on('ready', () => {
     afkInitStarted = true;
     const { _initAfk } = require('./commands/afk');
     if (_initAfk) {
-      _initAfk().catch(err => console.error('AFK restore error:', err.message));
+      runLoggedBackgroundTask('afk_restore', {}, () => _initAfk()).catch(err => logger.error('background.afk_restore.failed', err));
     }
   }
 
@@ -599,7 +625,7 @@ client.on('ready', () => {
     tttInitStarted = true;
     const { _initTTT } = require('./commands/games/tictactoe');
     if (_initTTT) {
-      _initTTT(client).catch(err => console.error('Tic Tac Toe restore error:', err.message));
+      runLoggedBackgroundTask('ttt_restore', {}, () => _initTTT(client)).catch(err => logger.error('background.ttt_restore.failed', err));
     }
   }
 
@@ -607,7 +633,7 @@ client.on('ready', () => {
     c4InitStarted = true;
     const { _initC4 } = require('./commands/games/connect4');
     if (_initC4) {
-      _initC4(client).catch(err => console.error('Connect 4 restore error:', err.message));
+      runLoggedBackgroundTask('connect4_restore', {}, () => _initC4(client)).catch(err => logger.error('background.connect4_restore.failed', err));
     }
   }
 
@@ -615,7 +641,7 @@ client.on('ready', () => {
     battleInitStarted = true;
     const { _initBattle } = require('./commands/games/battle');
     if (_initBattle) {
-      _initBattle().catch(err => console.error('Battle restore error:', err.message));
+      runLoggedBackgroundTask('battle_restore', {}, () => _initBattle()).catch(err => logger.error('background.battle_restore.failed', err));
     }
   }
 
@@ -623,7 +649,7 @@ client.on('ready', () => {
     chessInitStarted = true;
     const { _initChess } = require('./commands/games/chess');
     if (_initChess) {
-      _initChess(client).catch(err => console.error('Chess restore error:', err.message));
+      runLoggedBackgroundTask('chess_restore', {}, () => _initChess(client)).catch(err => logger.error('background.chess_restore.failed', err));
     }
   }
 
@@ -631,7 +657,7 @@ client.on('ready', () => {
     quizInitStarted = true;
     const { _initQuiz } = require('./commands/games/quiz');
     if (_initQuiz) {
-      _initQuiz(client).catch(err => console.error('Quiz restore error:', err.message));
+      runLoggedBackgroundTask('quiz_restore', {}, () => _initQuiz(client)).catch(err => logger.error('background.quiz_restore.failed', err));
     }
   }
 });
@@ -824,15 +850,20 @@ function enqueueHeavyTask(task) {
 async function runHeavyQueue() {
   if (heavyBusy) return;
   heavyBusy = true;
-  while (heavyQueue.length > 0) {
-    const task = heavyQueue.shift();
-    try {
-      await task();
-    } catch (err) {
-      console.error('💥 Heavy queue task crashed:', err);
+  logger.write('INFO', 'queue.heavy.worker.start', { queued: heavyQueue.length });
+  try {
+    while (heavyQueue.length > 0) {
+      const task = heavyQueue.shift();
+      try {
+        await task();
+      } catch (err) {
+        logger.error('queue.heavy.task.crashed', err);
+      }
     }
+  } finally {
+    heavyBusy = false;
+    logger.write('INFO', 'queue.heavy.worker.idle', { queued: heavyQueue.length });
   }
-  heavyBusy = false;
 }
 
 // ─── Auto AI-reply classification ──────────────────────────────────────────
@@ -944,10 +975,19 @@ const commandQueues = new Map();
 
 function enqueueCommand(chatId, task) {
   const previous = commandQueues.get(chatId) || Promise.resolve();
+  const queuedAt = Date.now();
+  logger.write('INFO', 'queue.command.enqueued', { chatId, waitingBehindExisting: commandQueues.has(chatId) });
 
   const next = previous
-    .then(task)
-    .catch(err => console.error('Queue error:', err))
+    .then(async () => {
+      logger.write('INFO', 'queue.command.started', { chatId, waitMs: Date.now() - queuedAt });
+      try {
+        return await task();
+      } finally {
+        logger.write('INFO', 'queue.command.finished', { chatId, durationMs: Date.now() - queuedAt });
+      }
+    })
+    .catch(err => logger.error('queue.command.failed', err, { chatId }))
     .finally(() => {
       if (commandQueues.get(chatId) === next) {
         commandQueues.delete(chatId);
@@ -965,16 +1005,22 @@ client.on('message', (msg) => {
     // whatsapp-web.js this event generally doesn't fire for self-sent
     // messages anyway (they go through message_create instead), but this
     // costs nothing and protects against any future/edge-case behavior.
-    if (msg.fromMe) return;
+    if (msg.fromMe) {
+      logger.debug('message.ignored', { reason: 'from_me', messageType: msg.type });
+      return;
+    }
 
     patchQuotedReply(msg);
 
     if (msg.type === 'sticker') {
       const imported = await aiStickers.handleIncomingSticker(client, msg).catch(err => {
-        console.error('AI sticker import dispatch failed:', err.message);
+        logger.error('route.ai_sticker_import.failed', err, { chatId: msg.from });
         return false;
       });
-      if (imported) return;
+      if (imported) {
+        logger.write('INFO', 'route.ai_sticker_import', { messageType: msg.type, chatId: msg.from });
+        return;
+      }
     }
 
     // ── Anime Quiz answers ───────────────────────────────────────────────
@@ -996,9 +1042,12 @@ client.on('message', (msg) => {
     // directly off the raw message event, before anything is queued, means
     // an answer is only ever too late if the real clock says so.
     try {
-      if (await tryHandleQuizAnswer(client, msg)) return;
+      if (await tryHandleQuizAnswer(client, msg)) {
+        logger.write('INFO', 'route.quiz_answer', { chatId: msg.from, messageType: msg.type });
+        return;
+      }
     } catch (err) {
-      console.error('Quiz answer check failed:', err.message);
+      logger.error('route.quiz_answer.failed', err, { chatId: msg.from });
     }
 
     // Everything else still goes through the per-chat queue, so ordinary
@@ -1021,7 +1070,11 @@ client.on('message', (msg) => {
         // in this function gets one lower down, only once we know a
         // response is actually needed at all. See that comment for why.
         const stable = await waitForStableConnection();
-        if (!stable) return;
+        if (!stable) {
+          logger.write('WARN', 'route.menu.ignored', { reason: 'unstable_connection', chatId: msg.from });
+          return;
+        }
+        logger.write('INFO', 'route.menu.mention', { chatId: msg.from });
         return await sendQuickMenu(msg);
       }
 
@@ -1030,7 +1083,10 @@ client.on('message', (msg) => {
       if (quoted && quoted.fromMe) {
         // Existing reply-to-bot behavior stays ahead of the plain-DM router.
         const replyKind = classifyReplyKind(msg);
-        if (replyKind === 'other') return;
+        if (replyKind === 'other') {
+          logger.debug('message.ignored', { reason: 'unsupported_reply_to_bot', chatId: msg.from, messageType: msg.type });
+          return;
+        }
         msg._aiStickerReply = replyKind === 'sticker';
         const typed = (msg.body || '').trim();
         args = typed
@@ -1038,6 +1094,12 @@ client.on('message', (msg) => {
           : (replyKind === 'image' ? ['Take', 'a', 'look', 'and', 'respond', 'naturally.'] :
             replyKind === 'sticker' ? ['Interpret', 'this', 'sticker', 'and', 'respond', 'naturally.'] : []);
         command = isVoiceNoteMessage(quoted) ? 'voice' : 'copilot';
+        logger.write('INFO', command === 'voice' ? 'route.ai.voice' : 'route.ai.copilot', {
+          reason: 'reply_to_bot',
+          chatId: msg.from,
+          replyKind,
+          botStickerReply: Boolean(quoted.type === 'sticker' && quoted.fromMe),
+        });
       } else {
         const chat = await safeGetChat(msg).catch(() => null);
         if (chat && chat.isGroup === false && !String(chat.id?._serialized || '').endsWith('@g.us')) {
@@ -1046,22 +1108,29 @@ client.on('message', (msg) => {
           if (isVoiceNoteMessage(msg)) {
             command = 'voice';
             args = [];
+            logger.write('INFO', 'route.ai.voice', { reason: 'dm_voice_note', chatId: msg.from });
           } else if (msg.type === 'chat' && !msg.hasMedia && body.trim()) {
             command = isCommandMenuRequest(body) ? 'menu' : 'copilot';
             args = [body.trim()];
+            logger.write('INFO', command === 'menu' ? 'route.menu.dm_request' : 'route.ai.copilot', { reason: 'dm_text', chatId: msg.from, bodyLength: body.length });
           } else {
+            logger.debug('message.ignored', { reason: 'unsupported_dm_message', chatId: msg.from, messageType: msg.type });
             return;
           }
         } else {
           // Group behavior remains wake-word/reply-only; plain group text
           // still never routes into Copilot.
-          if (!isCallingBotByName(body)) return;
+          if (!isCallingBotByName(body)) {
+            logger.debug('message.ignored', { reason: 'group_not_addressed_to_bot', chatId: msg.from, messageType: msg.type });
+            return;
+          }
           const quotedText = quoted ? (quoted.body || '').trim() : '';
           const prompt = quotedText
             ? `${body}\n\n(They're replying to this message: "${quotedText}")`
             : body;
           args = [prompt];
           command = 'copilot';
+          logger.write('INFO', 'route.ai.copilot', { reason: 'group_wake_word', chatId: msg.from, bodyLength: body.length });
         }
       }
     } else {
@@ -1070,6 +1139,16 @@ client.on('message', (msg) => {
 
       if (aliases[command]) command = aliases[command];
     }
+
+    logger.debug('command.received', {
+      taskId: `attempt-${nextTaskId()}`,
+      command,
+      argsPreview: args.map(arg => String(arg).slice(0, 160)),
+      messageType: msg.type,
+      from: msg.from,
+      author: msg.author || msg.from,
+      bodyLength: (msg.body || '').length,
+    });
 
     // Only reached once we know this message actually needs a response —
     // an explicit command, a wake-word call, or a reply to the bot all set
@@ -1093,10 +1172,13 @@ client.on('message', (msg) => {
     // See checkRegistrationGate()'s own comment above for the bypass list
     // and fail-open behavior.
     const registrationCheck = await checkRegistrationGate(msg, command).catch(err => {
-      console.error('Registration gate threw unexpectedly, allowing command through:', err.message);
+      logger.error('registration.gate.failed_open', err, { command });
       return { blocked: false, senderId: null, wasActive: true };
     });
-    if (registrationCheck.blocked) return;
+    if (registrationCheck.blocked) {
+      logger.write('INFO', 'registration.blocked', { command, senderId: registrationCheck.senderId, reason: 'incomplete_registration' });
+      return;
+    }
 
     // ── Task ID + logging context ──────────────────────────────────────────
     // Assigned as soon as we know a command was *attempted*, whether or not
@@ -1106,11 +1188,13 @@ client.on('message', (msg) => {
     const [senderName, chatLabel] = await Promise.all([getSenderName(msg), getChatLabel(msg)]);
 
     const queuePosition = inFlightCount + 1;
+    const isHeavy = HEAVY_COMMANDS.has(command);
     inFlightCount++;
 
-    console.log(`📨 Command received: ${command} by ${senderName}, ${chatLabel} at ${receivedAt}`);
-    console.log(`🆔 Task ID: ${taskId}`);
-    console.log(`👥 Position at queue: ${ordinal(queuePosition)}`);
+    logger.write('INFO', 'command.accepted', {
+      taskId, command, argsPreview: args.map(arg => String(arg).slice(0, 160)), senderName, chatLabel, receivedAt,
+      queuePosition, queue: isHeavy ? 'heavy' : 'normal', from: msg.from,
+    });
 
     // ── Resolve the handler — same routing as before, just captured into a
     // closure instead of returning immediately, so it can be logged/queued
@@ -1148,7 +1232,7 @@ client.on('message', (msg) => {
     }
 
     if (!handlerFn) {
-      console.log(`❌ Failed to execute command: Unknown command "${command}"`);
+      logger.write('WARN', 'command.unknown', { taskId, command, args, senderName, chatLabel });
       inFlightCount = Math.max(0, inFlightCount - 1);
       return await msg.reply(`❓ Unknown command: *${PREFIX}${command}*\nType *${PREFIX}menu* to see what's available.`);
     }
@@ -1173,10 +1257,8 @@ client.on('message', (msg) => {
       const usageUserId = trackContact?.id._serialized || (msg.author || msg.from);
       trackedHandlerFn = wrapWithUsageTracking(handlerFn, { groupId: usageGroupId, userId: usageUserId, command });
     } catch (err) {
-      console.error('Usage tracking context resolution failed (command still runs untracked):', err.message);
+      logger.error('usage.context.failed', err, { command });
     }
-
-    const isHeavy = HEAVY_COMMANDS.has(command);
 
     if (isHeavy) {
       // Heavy commands: reserve a spot in the global queue *first* (that's
@@ -1185,16 +1267,21 @@ client.on('message', (msg) => {
       // on it. The actual execution/logging inside the queued task below is
       // unchanged — only what happens in-chat right here changed.
       const heavyPosition = enqueueHeavyTask(async () => {
-        console.log(`Executing command (Task ID: ${taskId})`);
+        const heavyStartedAt = Date.now();
+        let heavyStatus = 'success';
+        logger.write('INFO', 'queue.heavy.job.start', { taskId, command, queuePosition: heavyPosition });
         try {
-          await trackedHandlerFn();
-          console.log(`Command executed and replied to ${senderName} successfully at ${new Date().toLocaleString()}`);
+          await logger.run(`command.${command}`, { taskId, command, argsPreview: args.map(arg => String(arg).slice(0, 160)), senderName, chatLabel, queue: 'heavy', queuePosition: heavyPosition }, () => trackedHandlerFn());
         } catch (err) {
-          console.error(`Failed to execute command: ${err.message}`);
+          heavyStatus = 'failed';
+          logger.error('command.heavy.failed', err, { taskId, command, queuePosition: heavyPosition });
           try {
             await msg.reply('❌ An error occurred while processing your request. Please try again.');
-          } catch {}
+          } catch (replyErr) {
+            logger.error('command.error_reply_failed', replyErr, { taskId, command });
+          }
         } finally {
+          logger.write(heavyStatus === 'success' ? 'INFO' : 'ERROR', 'queue.heavy.job.end', { taskId, command, queuePosition: heavyPosition, status: heavyStatus, durationMs: Date.now() - heavyStartedAt });
           inFlightCount = Math.max(0, inFlightCount - 1);
         }
       });
@@ -1202,7 +1289,7 @@ client.on('message', (msg) => {
       // No more "Command received / Task ID / position" text sent to the
       // chat — the queue system itself is unchanged, this position is just
       // logged now instead of messaged, same as Task ID already is above.
-      console.log(`🕒 Heavy queue position: ${ordinal(heavyPosition)} (Task ID: ${taskId})`);
+      logger.write('INFO', 'queue.heavy.enqueued', { taskId, command, queuePosition: heavyPosition, queued: heavyQueue.length });
 
       // In-chat acknowledgment is now a reaction instead of text: ▶️
       // specifically for .play (matches the "now queued to play" moment),
@@ -1224,10 +1311,8 @@ client.on('message', (msg) => {
     }
 
     // Normal commands: run immediately, same as before.
-    console.log('Executing command');
     try {
-      await trackedHandlerFn();
-      console.log(`Command executed and replied to ${senderName} successfully at ${new Date().toLocaleString()}`);
+      await logger.run(`command.${command}`, { taskId, command, argsPreview: args.map(arg => String(arg).slice(0, 160)), senderName, chatLabel, queue: 'normal' }, () => trackedHandlerFn());
 
       // ── Post-registration menu send ────────────────────────────────────
       // Only relevant right after one of the four registration commands
@@ -1251,17 +1336,17 @@ client.on('message', (msg) => {
         }
       }
     } catch (err) {
-      console.error(`Failed to execute command: ${err.message}`);
+      logger.error('command.normal.failed', err, { taskId, command });
       await msg.reply('❌ An error occurred. Please try again.');
     } finally {
       inFlightCount = Math.max(0, inFlightCount - 1);
     }
 } catch (err) {
-  console.error('Command error:', err);
+  logger.error('command.dispatch.failed', err, { chatId: msg.from });
   await msg.reply('❌ An error occurred. Please try again.').catch(() => {});
 }
     });
-  })().catch(err => console.error('Message handling error:', err.message));
+  })().catch(err => logger.error('message.handler.failed', err, { chatId: msg.from }));
 });
 
 client.on('group_join', async (notification) => {
@@ -1445,11 +1530,9 @@ client.on('message', async (msg) => {
 });
 
 setInterval(() => {
-  try {
-    console.log(`💚 Heartbeat: ${new Date().toLocaleString()}`);
-  } catch (err) {
-    console.error('Heartbeat error:', err.message);
-  }
+  runLoggedBackgroundTask('heartbeat', {}, async () => {
+    logger.write('INFO', 'heartbeat', { inFlightCommands: inFlightCount, heavyQueueLength: heavyQueue.length, activeChatQueues: commandQueues.size });
+  }).catch(err => logger.error('background.heartbeat.unhandled', err));
 }, 60000);
 
 // ── Daily bot-stats digest (8:00 AM WAT, unprompted) ────────────────────
@@ -1461,7 +1544,7 @@ setInterval(() => {
 setInterval(() => {
   const { _maybeSendDailyStats } = require('./commands/general');
   if (_maybeSendDailyStats) {
-    _maybeSendDailyStats(client).catch(err => console.error('Daily stats digest error:', err.message));
+    runLoggedBackgroundTask('daily_stats_digest_check', {}, () => _maybeSendDailyStats(client)).catch(err => logger.error('background.daily_stats_digest_check.unhandled', err));
   }
 }, 60000);
 
@@ -1472,7 +1555,7 @@ setInterval(() => {
 setInterval(() => {
   const { _sweepInactiveUsers } = require('./commands/admin');
   if (_sweepInactiveUsers) {
-    _sweepInactiveUsers(client).catch(err => console.error('Inactive user sweep error:', err.message));
+    runLoggedBackgroundTask('inactive_user_sweep_check', {}, () => _sweepInactiveUsers(client)).catch(err => logger.error('background.inactive_user_sweep_check.unhandled', err));
   }
 }, 60000);
 
@@ -1483,7 +1566,7 @@ setInterval(() => {
 setInterval(() => {
   const { _maybeSendGuildEvents } = require('./commands/guilds');
   if (_maybeSendGuildEvents) {
-    _maybeSendGuildEvents(client).catch(err => console.error('Guild events check error:', err.message));
+    runLoggedBackgroundTask('guild_events_check', {}, () => _maybeSendGuildEvents(client)).catch(err => logger.error('background.guild_events_check.unhandled', err));
   }
 }, 60000);
 
@@ -1496,7 +1579,7 @@ setInterval(() => {
 setInterval(() => {
   const { _maybeSendDailyNews } = require('./commands/news');
   if (_maybeSendDailyNews) {
-    _maybeSendDailyNews(client).catch(err => console.error('Daily anime news broadcast error:', err.message));
+    runLoggedBackgroundTask('daily_news_broadcast_check', {}, () => _maybeSendDailyNews(client)).catch(err => logger.error('background.daily_news_broadcast_check.unhandled', err));
   }
 }, 60000);
 

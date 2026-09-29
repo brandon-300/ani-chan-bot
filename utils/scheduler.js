@@ -1,4 +1,5 @@
 const ScheduledTask = require('../models/ScheduledTask');
+const logger = require('./logger');
 
 // ─── Central persistent scheduler ──────────────────────────────────────────
 // One Mongo-backed timer for the whole app, instead of one setTimeout per
@@ -86,6 +87,7 @@ function registerHandler(type, handler) {
 // Always re-arms the timer afterward in case this new task is now the
 // soonest pending one.
 async function scheduleTask({ type, key, runAt, payload = {} }) {
+  logger.write('INFO', 'scheduler.task.schedule.requested', { type, key, runAt, payload });
   if (!type || !key || !runAt) {
     throw new Error('scheduler.scheduleTask requires type, key, and runAt');
   }
@@ -103,6 +105,7 @@ async function scheduleTask({ type, key, runAt, payload = {} }) {
     { upsert: true, setDefaultsOnInsert: true }
   );
   await armNext();
+  logger.write('INFO', 'scheduler.task.scheduled', { type, key, runAt });
 }
 
 // Like scheduleTask, but does nothing if a task with this key already
@@ -114,6 +117,7 @@ async function scheduleTask({ type, key, runAt, payload = {} }) {
 // given key is ever seen — an existing key (pending, running, or even
 // failed) is left completely untouched.
 async function scheduleIfMissing({ type, key, runAt, payload = {} }) {
+  logger.write('INFO', 'scheduler.task.schedule_if_missing.requested', { type, key, runAt, payload });
   if (!type || !key || !runAt) {
     throw new Error('scheduler.scheduleIfMissing requires type, key, and runAt');
   }
@@ -125,6 +129,7 @@ async function scheduleIfMissing({ type, key, runAt, payload = {} }) {
   // Harmless if this was a no-op (key already existed) — armNext() just
   // re-confirms the current nearest task, which hasn't changed.
   await armNext();
+  logger.write('INFO', 'scheduler.task.schedule_if_missing.completed', { type, key, runAt });
 }
 
 // Cancels a pending task early (e.g. .unlendcard returning a card before
@@ -135,8 +140,9 @@ async function scheduleIfMissing({ type, key, runAt, payload = {} }) {
 // won't be there afterward for its success/failure update to match, which
 // is harmless.
 async function cancelTask(key) {
+  logger.write('INFO', 'scheduler.task.cancel.requested', { key });
   await ScheduledTask.deleteOne({ key }).catch(err => {
-    console.error('scheduler: cancelTask failed:', err.message);
+    logger.error('scheduler.task.cancel.failed', err, { key });
   });
   // Only need to actively re-arm if we just deleted whatever the live
   // timer was specifically waiting on — otherwise the nearest task hasn't
@@ -145,6 +151,7 @@ async function cancelTask(key) {
   if (armedKey === key) {
     await armNext();
   }
+  logger.write('INFO', 'scheduler.task.cancel.completed', { key });
 }
 
 function clearTimer() {
@@ -163,14 +170,18 @@ function clearTimer() {
 // after a restart.
 async function armNext() {
   const next = await ScheduledTask.findOne({ status: 'pending' }).sort({ runAt: 1 }).catch(err => {
-    console.error('scheduler: armNext lookup failed:', err.message);
+    logger.error('scheduler.arm.lookup_failed', err);
     return null;
   });
 
   clearTimer();
-  if (!next) return;
+  if (!next) {
+    logger.write('INFO', 'scheduler.idle');
+    return;
+  }
 
   const remaining = next.runAt.getTime() - Date.now();
+  logger.write('INFO', 'scheduler.armed', { key: next.key, type: next.type, runAt: next.runAt, remainingMs: remaining });
 
   if (remaining > MAX_DELAY_MS) {
     // Genuinely not due within our re-check window yet — just wake up and
@@ -194,16 +205,19 @@ async function armNext() {
 // "delete first, execute second" design, where a handler failure meant the
 // task was already gone and would never run again.
 async function runDueTask(key) {
+  const runStartedAt = Date.now();
+  logger.write('INFO', 'scheduler.task.claim.requested', { key });
   const task = await ScheduledTask.findOneAndUpdate(
     { key, status: 'pending' },
     { $set: { status: 'running', lockedUntil: new Date(Date.now() + LEASE_MS) }, $inc: { attempts: 1 } },
     { new: true }
   ).catch(err => {
-    console.error('scheduler: claim failed:', err.message);
+    logger.error('scheduler.task.claim.failed', err, { key });
     return null;
   });
 
   if (task) {
+    logger.write('INFO', 'scheduler.task.started', { key: task.key, type: task.type, attempt: task.attempts, payload: task.payload });
     const handler = handlers.get(task.type);
     if (!handler) {
       // Don't silently consume a task whose type has no registered
@@ -211,7 +225,7 @@ async function runDueTask(key) {
       // a handler module that failed to load). Mark it failed instead of
       // deleting the evidence.
       const err = new Error(`No handler registered for task type "${task.type}"`);
-      console.error(`scheduler: ${err.message} (key: ${key})`);
+      logger.error('scheduler.task.handler_missing', err, { key, type: task.type })
       await failTask(task, err);
     } else {
       try {
@@ -228,10 +242,11 @@ async function runDueTask(key) {
         // destroy that freshly-armed next occurrence the instant it was
         // created, silently ending the recurring cycle after one run.
         await ScheduledTask.deleteOne({ _id: task._id, status: 'running' }).catch(err => {
-          console.error('scheduler: post-success cleanup failed:', err.message);
+          logger.error('scheduler.task.cleanup.failed', err, { key: task.key, type: task.type });
         });
+        logger.write('INFO', 'scheduler.task.completed', { key: task.key, type: task.type, attempt: task.attempts, durationMs: Date.now() - runStartedAt });
       } catch (err) {
-        console.error(`scheduler: handler for "${task.type}" threw:`, err.message);
+        logger.error('scheduler.task.failed', err, { key: task.key, type: task.type, attempt: task.attempts, durationMs: Date.now() - runStartedAt });
         await failTask(task, err);
       }
     }
@@ -251,6 +266,7 @@ async function runDueTask(key) {
 // spin forever, but also doesn't silently disappear.
 async function failTask(task, err) {
   const giveUp = task.attempts >= MAX_ATTEMPTS;
+  logger.write('WARN', 'scheduler.task.retry_decision', { key: task.key, type: task.type, attempt: task.attempts, giveUp });
   const message = String((err && err.message) || err || 'Unknown error').slice(0, 500);
 
   await ScheduledTask.updateOne(
@@ -266,7 +282,7 @@ async function failTask(task, err) {
   ).catch(e => console.error('scheduler: failTask update failed:', e.message));
 
   if (giveUp) {
-    console.error(`scheduler: task "${task.key}" (${task.type}) exhausted ${task.attempts} attempt(s) — marked failed. Last error: ${message}`);
+    logger.write('ERROR', 'scheduler.task.exhausted', { key: task.key, type: task.type, attempts: task.attempts, lastError: message });
   }
 }
 
@@ -277,7 +293,7 @@ async function failTask(task, err) {
 // in-process failure. Called once from init(), before the first armNext().
 async function _recoverStaleRunningTasks() {
   const stale = await ScheduledTask.find({ status: 'running' }).catch(err => {
-    console.error('scheduler: stale-task lookup failed:', err.message);
+    logger.error('scheduler.stale_lookup.failed', err);
     return [];
   });
 
@@ -297,7 +313,7 @@ async function _recoverStaleRunningTasks() {
   }
 
   if (stale.length) {
-    console.log(`⏰ scheduler: recovered ${stale.length} task(s) that were mid-run during the last restart`);
+    logger.write('INFO', 'scheduler.stale_recovery.completed', { count: stale.length });
   }
 }
 
@@ -307,9 +323,11 @@ async function _recoverStaleRunningTasks() {
 // point (registerHandler calls run at module require time, which happens
 // well before 'ready').
 async function init(readyClient) {
-  client = readyClient;
-  await _recoverStaleRunningTasks();
-  await armNext();
+  return logger.run('scheduler.init', {}, async () => {
+    client = readyClient;
+    await _recoverStaleRunningTasks();
+    await armNext();
+  });
 }
 
 module.exports = { registerHandler, scheduleTask, scheduleIfMissing, cancelTask, init };

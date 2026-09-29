@@ -1,4 +1,5 @@
 const { MessageMedia } = require('whatsapp-web.js');
+const logger = require('../../utils/logger');
 const { CardCatalogue } = require('../../models/Card');
 const { safeGetChat, safeGetQuotedMessage, safeGetContact, resolveNameById } = require('../../utils/helpers');
 const { isChatBusy, claim, release } = require('./activeGame');
@@ -307,7 +308,8 @@ async function advanceQuestion(session) {
   // happens to be processed late) — see the comment there.
   session.current.messageId = sentMsg?.id?._serialized || null;
 
-  session.current.timer = setTimeout(() => handleTimeout(session), session.timeSeconds * 1000);
+  logger.write('INFO', 'background.quiz_question_timeout.armed', { chatId: session.chatId, timeoutMs: session.timeSeconds * 1000 });
+  session.current.timer = setTimeout(() => { logger.write('INFO', 'background.quiz_question_timeout.fired', { chatId: session.chatId }); handleTimeout(session); }, session.timeSeconds * 1000);
   saveQuizSession(session);
 }
 
@@ -391,7 +393,8 @@ async function openQuizLobby(client, msg, difficultyArg) {
     difficulty,
   };
   quizLobbies.set(chatId, lobby);
-  lobby.timer = setTimeout(() => {
+  logger.write('INFO', 'background.quiz_lobby_timeout.armed', { chatId, timeoutMs: LOBBY_WINDOW_MS });
+    lobby.timer = setTimeout(() => { logger.write('INFO', 'background.quiz_lobby_timeout.fired', { chatId });
     // Still here means .quiz end never cancelled it first — see
     // connect4.js's identical comment on its own lobby timeout for why
     // this presence check is enough. Unlike Connect4 (and unlike this
@@ -1003,7 +1006,8 @@ async function _initQuiz(client) {
           startedAt: Date.now(),
           timer: null,
         };
-        session.current.timer = setTimeout(() => handleTimeout(session), session.timeSeconds * 1000);
+        logger.write('INFO', 'background.quiz_question_timeout.armed', { chatId: session.chatId, timeoutMs: session.timeSeconds * 1000 });
+  session.current.timer = setTimeout(() => { logger.write('INFO', 'background.quiz_question_timeout.fired', { chatId: session.chatId }); handleTimeout(session); }, session.timeSeconds * 1000);
         saveQuizSession(session);
       } else {
         await advanceQuestion(session);

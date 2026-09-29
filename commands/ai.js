@@ -302,16 +302,25 @@ async function resolveMultimodalInput(msg, args) {
       return { error: '❌ Reply to an image AND tell me what to do with it, e.g. *.copilot describe this image*' };
     }
     const images = [{ base64: media.data, mimeType: mimetype || 'image/webp' }];
+    const botSentStickerReply = Boolean(quoted?.fromMe && quoted?.type === 'sticker');
     const stickerReply = msg.type === 'sticker' && !!quoted?.fromMe;
     if (stickerReply && quoted?.type === 'sticker' && quoted.hasMedia) {
       const quotedMedia = await download(quoted);
       if (quotedMedia?.data) images.push({ base64: quotedMedia.data, mimeType: quotedMedia.mimetype || 'image/webp' });
     }
-    let prompt = typed || 'Interpret this sticker as part of our conversation and respond naturally. Decide whether a text or sticker response fits better.';
-    if (stickerReply && quoted?.id?._serialized) {
-      const sentContext = await aiStickers.getSentStickerContext(quoted.id._serialized);
+    // A text reply to a sticker sent by the bot is conversation about the
+    // bot's sticker, not a user-sent sticker. Only a new sticker from the
+    // user gets the interpret-this-sticker instruction.
+    let prompt = botSentStickerReply
+      ? (typed || 'Respond naturally to the user about the reaction sticker you sent.')
+      : (typed || 'Interpret this sticker as part of our conversation and respond naturally. Decide whether a text or sticker response fits better.');
+    const quotedMessageId = quoted?.id?._serialized || quoted?.id?.id;
+    if (botSentStickerReply && quotedMessageId) {
+      const sentContext = await aiStickers.getSentStickerContext(quotedMessageId);
       if (sentContext) {
-        prompt += `\n\nThe quoted sticker was previously sent by you as ${sentContext.personaId} with reaction ${sentContext.reaction}. Interpret the user's new sticker as a response to that exchange.`;
+        prompt += `\n\nIMPORTANT: The quoted sticker was sent by you (the bot/persona ${sentContext.personaId}), not by the user. The user did NOT send that sticker. It was your reaction sticker with reaction label ${sentContext.reaction || 'unknown'}. Treat the user's current message as a response to the sticker you sent.`;
+      } else {
+        prompt += '\n\nIMPORTANT: WhatsApp shows that the quoted sticker was sent by you (the bot), not by the user. The user did NOT send that sticker. Treat the user\'s current message as a response to your reaction sticker.';
       }
     }
     return { prompt, image: images[0], images, stickerReply };

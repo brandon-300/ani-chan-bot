@@ -1,4 +1,5 @@
 const { safeGetChat, resolveNameById } = require('../../utils/helpers');
+const logger = require('../../utils/logger');
 const { getBestMove } = require('./connect4Engine');
 const { BOT_NAME } = require('../../utils/config');
 const { isChatBusy, claim, release } = require('./activeGame');
@@ -165,7 +166,9 @@ function scheduleTurnTimeout(chat, chatId, game) {
   if (game.turnTimer) clearTimeout(game.turnTimer);
 
   const skippedPlayer = game.players[game.turn];
+  logger.write('INFO', 'background.game_turn_timeout.armed', { game: __filename.split('/').pop(), chatId, timeoutMs: 30000 });
   game.turnTimer = setTimeout(async () => {
+    logger.write('INFO', 'background.game_turn_timeout.fired', { game: __filename.split('/').pop(), chatId });
     // Guards against a stale timer firing after the game already moved on
     // some other way (shouldn't happen — clearTimeout above already
     // prevents it in every normal path — but cheap insurance against a
@@ -292,7 +295,8 @@ module.exports = {
       claim(chatId, 'c4');
       const lobby = { players: [], timer: null };
       c4Lobbies.set(chatId, lobby);
-      lobby.timer = setTimeout(() => {
+      logger.write('INFO', 'background.game_lobby_timeout.armed', { game: __filename.split('/').pop(), chatId, timeoutMs: LOBBY_WINDOW_MS });
+    lobby.timer = setTimeout(() => {
         // Still here means it never filled — someone joining in between
         // clears this same timer before deleting the lobby, so by the
         // time this fires, finding it still present means "fewer than 2

@@ -10,6 +10,7 @@ const EDITABLE_FIELDS = ['name', 'series', 'tier', 'description', 'imageUrl'];
 const ANILIST_URL = 'https://graphql.anilist.co';
 
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+const logger = require('../utils/logger');
 
 // ─── Owner Guard ──────────────────────────────────────────────────────────────
 async function checkOwner(msg) {
@@ -80,6 +81,7 @@ async function fetchAniListCharacter(name, attempt = 1) {
       await sleep(attempt * 1500);
       return fetchAniListCharacter(name, attempt + 1);
     }
+    operation.finish('failed', { error: err, durationMs: Date.now() - startedAt });
     throw err;
   }
 }
@@ -246,10 +248,15 @@ function escapeRegex(str) {
 }
 
 async function runDiscoveryBatch() {
+  const operation = logger.start('background.catalogue_growth_batch', { intervalMs: DISCOVERY_INTERVAL_MS });
+  const startedAt = Date.now();
   const state = await CatalogueGrowthState.findByIdAndUpdate(
     'singleton', {}, { upsert: true, new: true, setDefaultsOnInsert: true }
   );
-  if (!state.enabled) return { skipped: true };
+  if (!state.enabled) {
+    operation.finish('success', { skipped: true });
+    return { skipped: true };
+  }
 
   let added = 0;
   let page = state.page;
@@ -304,11 +311,13 @@ async function runDiscoveryBatch() {
       $inc: { totalAdded: added },
     });
 
+    operation.finish('success', { added, page, durationMs: Date.now() - startedAt });
     return { added, page };
   } catch (err) {
     await CatalogueGrowthState.findByIdAndUpdate('singleton', {
       $set: { lastRunAt: new Date(), lastError: err.message },
     }).catch(() => {});
+    operation.finish('failed', { error: err, durationMs: Date.now() - startedAt });
     throw err;
   }
 }
@@ -317,8 +326,9 @@ let discoveryIntervalId = null;
 
 function startDiscoveryInterval() {
   if (discoveryIntervalId) clearInterval(discoveryIntervalId);
+  logger.write('INFO', 'background.catalogue_growth.interval.started', { intervalMs: DISCOVERY_INTERVAL_MS });
   discoveryIntervalId = setInterval(() => {
-    runDiscoveryBatch().catch(err => console.error('Catalogue auto-growth error:', err.message));
+    runDiscoveryBatch().catch(err => logger.error('background.catalogue_growth.batch.unhandled', err));
   }, DISCOVERY_INTERVAL_MS);
 }
 
@@ -326,6 +336,7 @@ function stopDiscoveryInterval() {
   if (discoveryIntervalId) {
     clearInterval(discoveryIntervalId);
     discoveryIntervalId = null;
+    logger.write('INFO', 'background.catalogue_growth.interval.stopped');
   }
 }
 

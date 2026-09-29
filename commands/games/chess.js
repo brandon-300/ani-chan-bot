@@ -1,4 +1,5 @@
 const { Chess } = require('chess.js');
+const logger = require('../../utils/logger');
 const { MessageMedia } = require('whatsapp-web.js');
 const { safeGetChat, resolveNameById } = require('../../utils/helpers');
 const { getBestMove } = require('./chessEngine');
@@ -195,7 +196,9 @@ function scheduleTurnTimeout(chat, chatId, game) {
   if (game.turnTimer) clearTimeout(game.turnTimer);
 
   const skippedColor = game.chess.turn();
+  logger.write('INFO', 'background.game_turn_timeout.armed', { game: __filename.split('/').pop(), chatId, timeoutMs: 30000 });
   game.turnTimer = setTimeout(async () => {
+    logger.write('INFO', 'background.game_turn_timeout.fired', { game: __filename.split('/').pop(), chatId });
     if (chessGames.get(chatId) !== game) return;
     if (game.chess.turn() !== skippedColor) return;
 
@@ -339,7 +342,8 @@ module.exports = {
       claim(chatId, 'chess');
       const lobby = { players: [], timer: null };
       chessLobbies.set(chatId, lobby);
-      lobby.timer = setTimeout(() => {
+      logger.write('INFO', 'background.game_lobby_timeout.armed', { game: __filename.split('/').pop(), chatId, timeoutMs: LOBBY_WINDOW_MS });
+    lobby.timer = setTimeout(() => {
         // Still here means it never filled — see connect4.js's identical
         // comment on its own lobby timeout for why this check is enough.
         if (!chessLobbies.has(chatId)) return;

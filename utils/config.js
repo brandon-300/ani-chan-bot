@@ -137,7 +137,10 @@ const FISH_VOICE_ID = process.env.FISH_VOICE_ID || '';
 const FISH_MODEL = process.env.FISH_MODEL || 's2.1-pro-free';
 const FISH_REQUEST_TIMEOUT_MS = positiveEnvInt('FISH_REQUEST_TIMEOUT_MS', 45000);
 const AI_STICKER_ANALYSIS_VERSION = positiveEnvInt('AI_STICKER_ANALYSIS_VERSION', 1);
-const AI_STICKER_MATCH_THRESHOLD = positiveEnvInt('AI_STICKER_MATCH_THRESHOLD', 10);
+// Non-exact sticker matches must be unusually strong. Exact persona reaction
+// labels are still accepted directly; this threshold prevents weak emotion/
+// mood overlap from selecting unrelated meme stickers.
+const AI_STICKER_MATCH_THRESHOLD = positiveEnvInt('AI_STICKER_MATCH_THRESHOLD', 18);
 const AI_STICKER_ANALYSIS_DELAY_MS = envInt('AI_STICKER_ANALYSIS_DELAY_MS', 8000);
 
 module.exports = {

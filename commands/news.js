@@ -13,6 +13,7 @@ const {
   HIGH_PRIORITY_TERMS,
   LOW_PRIORITY_TERMS,
 } = require('../utils/newsConfig');
+const logger = require('../utils/logger');
 
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -212,12 +213,20 @@ function parseFeed(xml, sourceName) {
 }
 
 async function fetchSource(source) {
-  const { data } = await axios.get(source.url, {
-    headers: { 'User-Agent': NEWS_USER_AGENT },
-    timeout: NEWS_FETCH_TIMEOUT_MS,
-    responseType: 'text',
-  });
-  return parseFeed(typeof data === 'string' ? data : String(data), source.name);
+  const operation = logger.start('api.news_feed.fetch', { source: source.name, url: logger.redactUrl(source.url) });
+  try {
+    const { data } = await axios.get(source.url, {
+      headers: { 'User-Agent': NEWS_USER_AGENT },
+      timeout: NEWS_FETCH_TIMEOUT_MS,
+      responseType: 'text',
+    });
+    const articles = parseFeed(typeof data === 'string' ? data : String(data), source.name);
+    operation.finish('success', { status: 'ok', articleCount: articles.length });
+    return articles;
+  } catch (err) {
+    operation.finish('failed', { error: err });
+    throw err;
+  }
 }
 
 // Fisher–Yates shuffle — randomizes the source order each run.
@@ -256,7 +265,7 @@ async function fetchAllArticles() {
       articles.push(...result.value);
     } else {
       const sourceName = randomizedSources[i].name;
-      console.error(`⚠️ News source "${sourceName}" failed:`, result.reason?.message || result.reason);
+      logger.error('background.news_feed.source_failed', result.reason, { source: sourceName });
     }
   }
 
@@ -357,7 +366,7 @@ module.exports = {
       const all = await fetchAllArticles();
       article = await pickNextArticle(chat.id._serialized, all);
     } catch (err) {
-      console.error('.news: fetch failed:', err.message);
+      logger.error('command.news.fetch_failed', err, { chatId: chat.id._serialized });
       return msg.reply('❌ Could not fetch news right now — try again in a bit.');
     }
 
@@ -410,6 +419,8 @@ module.exports = {
     // sending; bail out and let it finish this hour.
     if (hourlyNewsRunning) return;
     hourlyNewsRunning = true;
+    const operation = logger.start('background.news_auto_broadcast', { scheduled: true });
+    let sentCount = 0;
 
     try {
       // Hour key — e.g. "2026-09-23T14". One run per wall-clock hour.
@@ -421,7 +432,7 @@ module.exports = {
       try {
         articles = await fetchAllArticles();
       } catch (err) {
-        console.error('❌ Hourly anime news fetch failed:', err.message);
+        logger.error('background.news_auto_broadcast.fetch_failed', err);
         return;
       }
       if (!articles.length) {
@@ -434,11 +445,10 @@ module.exports = {
       try {
         groupChats = (await client.getChats()).filter(c => c.isGroup);
       } catch (err) {
-        console.error('❌ Hourly anime news: getChats failed:', err.message);
+        logger.error('background.news_auto_broadcast.get_chats_failed', err);
         return;
       }
 
-      let sentCount = 0;
       for (const chat of groupChats) {
         try {
           const chatId = chat.id._serialized;
@@ -451,7 +461,7 @@ module.exports = {
             sentCount++;
           }
         } catch (err) {
-          console.error(`❌ Hourly anime news: failed for ${chat.id._serialized}:`, err.message);
+          logger.error('background.news_auto_broadcast.group_failed', err, { chatId: chat.id._serialized });
         }
         await sleep(NEWS_SEND_DELAY_MS); // gap between groups
       }
@@ -462,6 +472,10 @@ module.exports = {
         { upsert: true }
       );
       console.log(`✅ Hourly anime news: ${sentCount} article(s) sent across ${groupChats.length} group(s) at ${now.toLocaleString()}`);
+      operation.finish('success', { sentCount, groupCount: groupChats.length });
+    } catch (err) {
+      operation.finish('failed', { error: err, sentCount });
+      throw err;
     } finally {
       hourlyNewsRunning = false;
     }

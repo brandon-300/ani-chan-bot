@@ -19,6 +19,7 @@ const {
   AI_STICKER_ANALYSIS_DELAY_MS,
 } = require('./config');
 const { getActivePersonaSafe, listPersonaIds, loadPersona } = require('./persona');
+const logger = require('./logger');
 
 const ALLOWED_REACTIONS = new Set([
   'amused', 'happy', 'laughing', 'love', 'excited', 'sad', 'angry', 'confused',
@@ -206,30 +207,37 @@ function enqueueAnalysis(personaId, hash) {
   if (queuedAnalysis.has(key)) return;
   queuedAnalysis.add(key);
   analysisQueue.push({ personaId, hash });
+  logger.write('INFO', 'background.ai_sticker_analysis.queued', { personaId, hash, queueLength: analysisQueue.length });
   setImmediate(runAnalysisQueue);
 }
 
 async function runAnalysisQueue() {
   if (analysisBusy) return;
   analysisBusy = true;
+  logger.write('INFO', 'background.ai_sticker_analysis.worker.start', { queued: analysisQueue.length });
   try {
     while (analysisQueue.length) {
       const task = analysisQueue.shift();
       const key = analysisKey(task.personaId, task.hash);
-      console.log(`🔍 Analyzing shared sticker ${task.hash}...`);
+      const operation = logger.start('background.ai_sticker_analysis.task', { personaId: task.personaId, hash: task.hash, remaining: analysisQueue.length });
       try {
-        await analyzeSticker(task.personaId, task.hash);
+        const result = await analyzeSticker(task.personaId, task.hash);
+        if (result?.failed) operation.finish('failed', { error: new Error(result.error) });
+        else operation.finish('success', { reactions: result?.reactions || [] });
       } catch (err) {
-        console.error(`AI sticker analysis failed for ${task.personaId}/${task.hash}:`, err.message);
+        operation.finish('failed', { error: err });
+        logger.error('background.ai_sticker_analysis.task.unhandled', err, { personaId: task.personaId, hash: task.hash });
       } finally {
         queuedAnalysis.delete(key);
       }
       if (analysisQueue.length && AI_STICKER_ANALYSIS_DELAY_MS > 0) {
+        logger.write('INFO', 'background.ai_sticker_analysis.delay', { delayMs: AI_STICKER_ANALYSIS_DELAY_MS, remaining: analysisQueue.length });
         await new Promise(resolve => setTimeout(resolve, AI_STICKER_ANALYSIS_DELAY_MS));
       }
     }
   } finally {
     analysisBusy = false;
+    logger.write('INFO', 'background.ai_sticker_analysis.worker.idle', { queued: analysisQueue.length });
     if (analysisQueue.length) setImmediate(runAnalysisQueue);
   }
 }
@@ -335,7 +343,7 @@ async function analyzeSticker(sourcePersona, hash) {
       $set: { personaAnalyses: analyses },
     });
     if (updated) setCachedSticker(SHARED_LIBRARY_KEY, updated);
-    console.log(`✅ Shared sticker ${hash} classified for ${personaId}: reactions=[${classification.reactions.join(', ')}]`);
+    return classification;
   } catch (err) {
     const analysisError = String(err.message || err).slice(0, 300);
     try {
@@ -355,9 +363,16 @@ async function analyzeSticker(sourcePersona, hash) {
         if (updated) setCachedSticker(SHARED_LIBRARY_KEY, updated);
       }
     } catch (persistError) {
-      console.error(`AI sticker analysis status save failed for ${personaId}/${hash}:`, persistError.message);
+      logger.error('background.ai_sticker_analysis.status_save_failed', persistError, {
+        personaId,
+        hash,
+      });
     }
-    console.error(`AI sticker analysis failed for ${personaId}/${hash}:`, analysisError);
+    logger.error('background.ai_sticker_analysis.failed', new Error(analysisError), {
+      personaId,
+      hash,
+    });
+    return { failed: true, error: analysisError };
   }
 }
 
@@ -394,13 +409,17 @@ function clearSession(key) {
 function armSessionExpiry(key, session, client) {
   if (session.timer) clearTimeout(session.timer);
   session.expiresAt = Date.now() + AI_STICKER_IMPORT_TIMEOUT_MINUTES * 60 * 1000;
+  logger.write('INFO', 'background.ai_sticker_import_expiry.armed', { key, expiresAt: new Date(session.expiresAt), timeoutMs: AI_STICKER_IMPORT_TIMEOUT_MINUTES * 60 * 1000 });
   session.timer = setTimeout(async () => {
     if (importSessions.get(key) !== session) return;
+    const operation = logger.start('background.ai_sticker_import_expiry', { key, chatId: session.chatId });
     clearSession(key);
     try {
       await client.sendMessage(session.chatId, '⏱️ Sticker import mode expired after being idle. Send .stickerimport to start again.');
+      operation.finish('success', { notified: true });
     } catch (err) {
-      console.error('AI sticker import expiry notice failed:', err.message);
+      operation.finish('failed', { error: err });
+      logger.error('background.ai_sticker_import_expiry.notice_failed', err, { key });
     }
   }, AI_STICKER_IMPORT_TIMEOUT_MINUTES * 60 * 1000);
   session.timer.unref?.();
@@ -704,6 +723,15 @@ function scoreStickerAnalysis(analysis, reaction) {
   return score;
 }
 
+function hasExactReactionMatch(analysis, reaction) {
+  return Boolean(
+    analysis
+      && analysis.analysisStatus === 'classified'
+      && Array.isArray(analysis.reactions)
+      && analysis.reactions.includes(reaction)
+  );
+}
+
 async function selectSticker(reaction, chatId, persona = null) {
   if (!reaction || reaction === 'none' || !ALLOWED_REACTIONS.has(reaction)) return null;
   const activePersona = persona || getActivePersonaSafe();
@@ -711,17 +739,37 @@ async function selectSticker(reaction, chatId, persona = null) {
   const records = await loadSharedStickers();
   const candidates = records.map(entry => {
     const analysis = getPersonaAnalysis(entry, activePersona.id);
-    return { entry, analysis, score: scoreStickerAnalysis(analysis, reaction) };
-  }).filter(candidate => candidate.entry.cloudinaryUrl && candidate.entry.cloudinaryPublicId && candidate.score >= AI_STICKER_MATCH_THRESHOLD);
-  if (!candidates.length) return null;
+    const exactReaction = hasExactReactionMatch(analysis, reaction);
+    return { entry, analysis, exactReaction, score: scoreStickerAnalysis(analysis, reaction) };
+  }).filter(candidate => (
+    candidate.entry.cloudinaryUrl
+    && candidate.entry.cloudinaryPublicId
+    // Exact reaction labels are the preferred/strong path. A non-exact
+    // candidate must clear the deliberately high threshold; weak emotions,
+    // moods, uses, unclassified records, and barely related memes cannot win.
+    && (candidate.exactReaction || candidate.score >= AI_STICKER_MATCH_THRESHOLD)
+  ));
+  if (!candidates.length) {
+    logger.write('INFO', 'sticker.selection.skipped', { reaction, personaId: activePersona.id, reason: 'no_good_match' });
+    return null;
+  }
 
-  const bestScore = Math.max(...candidates.map(candidate => candidate.score));
-  const best = candidates.filter(candidate => candidate.score === bestScore);
+  const exactCandidates = candidates.filter(candidate => candidate.exactReaction);
+  const preferredCandidates = exactCandidates.length ? exactCandidates : candidates;
+  const bestScore = Math.max(...preferredCandidates.map(candidate => candidate.score));
+  const best = preferredCandidates.filter(candidate => candidate.score === bestScore);
   const recentHash = recentByChat.get(String(chatId || 'unknown-chat'));
   const nonRecent = best.filter(candidate => candidate.entry.hash !== recentHash);
   const selected = (nonRecent.length ? nonRecent : best)[Math.floor(Math.random() * (nonRecent.length || best.length))];
   if (!selected) return null;
   rememberRecent(chatId, selected.entry.hash);
+  logger.write('INFO', 'sticker.selection.picked', {
+    reaction,
+    personaId: activePersona.id,
+    hash: String(selected.entry.hash || '').slice(0, 8),
+    match: selected.exactReaction ? 'exact reaction' : 'strong score',
+    score: selected.score,
+  });
   return { entry: selected.entry, analysis: selected.analysis, persona: activePersona, score: selected.score };
 }
 

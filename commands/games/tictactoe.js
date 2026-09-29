@@ -1,4 +1,5 @@
 const { MessageMedia } = require('whatsapp-web.js');
+const logger = require('../../utils/logger');
 const { safeGetChat, resolveNameById } = require('../../utils/helpers');
 const { getBestMove } = require('./tictactoeEngine');
 const { renderBoardImage } = require('./tictactoeBoardImage');
@@ -161,7 +162,9 @@ function scheduleTurnTimeout(chat, chatId, game) {
 
   const skippedIdx = game.turn;
   const skippedId = game.players[skippedIdx];
+  logger.write('INFO', 'background.game_turn_timeout.armed', { game: __filename.split('/').pop(), chatId, timeoutMs: 30000 });
   game.turnTimer = setTimeout(async () => {
+    logger.write('INFO', 'background.game_turn_timeout.fired', { game: __filename.split('/').pop(), chatId });
     if (tttGames.get(chatId) !== game) return;
     if (game.turn !== skippedIdx) return;
 
@@ -394,7 +397,8 @@ module.exports = {
       claim(chatId, 'ttt');
       const lobby = { players: [], timer: null };
       tttLobbies.set(chatId, lobby);
-      lobby.timer = setTimeout(() => {
+      logger.write('INFO', 'background.game_lobby_timeout.armed', { game: __filename.split('/').pop(), chatId, timeoutMs: LOBBY_WINDOW_MS });
+    lobby.timer = setTimeout(() => {
         // Still here means it never filled — see connect4.js's identical
         // comment on its own lobby timeout for why this check is enough.
         if (!tttLobbies.has(chatId)) return;

@@ -1,4 +1,5 @@
 const cloudinary = require('cloudinary').v2;
+const logger = require('./logger');
 
 // Cloudinary's SDK auto-reads a single CLOUDINARY_URL env var if it's set
 // (the format Cloudinary's own dashboard gives you: cloudinary://key:secret@
@@ -31,16 +32,24 @@ function isCloudConfigured() {
 // instead of piling up orphaned copies — e.g. a user changing their profile
 // picture reuses their own id.
 async function uploadToCloud(filePath, { folder, publicId, resourceType = 'image' } = {}) {
+  const operation = logger.start('api.cloudinary.upload', { folder, publicId, resourceType, input: 'file' });
   if (!configured) {
+    operation.finish('failed', { error: new Error('Cloudinary is not configured') });
     throw new Error('Cloudinary is not configured — set CLOUDINARY_URL (or CLOUDINARY_CLOUD_NAME/API_KEY/API_SECRET) in .env');
   }
-  const result = await cloudinary.uploader.upload(filePath, {
-    folder,
-    public_id: publicId,
-    overwrite: true,
-    resource_type: resourceType,
-  });
-  return { url: result.secure_url, publicId: result.public_id, version: result.version };
+  try {
+    const result = await cloudinary.uploader.upload(filePath, {
+      folder,
+      public_id: publicId,
+      overwrite: true,
+      resource_type: resourceType,
+    });
+    operation.finish('success', { status: 'ok', publicId: result.public_id, version: result.version });
+    return { url: result.secure_url, publicId: result.public_id, version: result.version };
+  } catch (err) {
+    operation.finish('failed', { error: err });
+    throw err;
+  }
 }
 
 // Deletes a previously-uploaded file by its full publicId (as returned from
@@ -48,9 +57,13 @@ async function uploadToCloud(filePath, { folder, publicId, resourceType = 'image
 // cleanup shouldn't block whatever the caller is doing.
 async function deleteFromCloud(publicId, resourceType = 'image') {
   if (!configured || !publicId) return;
+  const operation = logger.start('api.cloudinary.delete', { publicId, resourceType });
   try {
     await cloudinary.uploader.destroy(publicId, { resource_type: resourceType });
+    operation.finish('success', { status: 'ok' });
   } catch (err) {
+    operation.finish('failed', { error: err });
+    logger.error('api.cloudinary.delete.failed', err, { publicId, resourceType });
     console.error('Cloudinary delete failed:', err.message);
   }
 }
@@ -63,7 +76,9 @@ async function deleteFromCloud(publicId, resourceType = 'image') {
 // created, nothing to clean up on disk. The optional format setting lets
 // sticker imports guarantee the Cloudinary asset format is WebP.
 async function uploadBufferToCloud(buffer, { folder, publicId, resourceType = 'image', format } = {}) {
+  const operation = logger.start('api.cloudinary.upload_buffer', { folder, publicId, resourceType, format, bytes: Buffer.isBuffer(buffer) ? buffer.length : null });
   if (!configured) {
+    operation.finish('failed', { error: new Error('Cloudinary is not configured') });
     throw new Error('Cloudinary is not configured — set CLOUDINARY_URL (or CLOUDINARY_CLOUD_NAME/API_KEY/API_SECRET) in .env');
   }
   const uploadOptions = { folder, public_id: publicId, overwrite: true, resource_type: resourceType };
@@ -72,7 +87,11 @@ async function uploadBufferToCloud(buffer, { folder, publicId, resourceType = 'i
     const stream = cloudinary.uploader.upload_stream(
       uploadOptions,
       (err, result) => {
-        if (err) return reject(err);
+        if (err) {
+          operation.finish('failed', { error: err });
+          return reject(err);
+        }
+        operation.finish('success', { status: 'ok', publicId: result.public_id, version: result.version });
         resolve({ url: result.secure_url, publicId: result.public_id, version: result.version });
       }
     );
