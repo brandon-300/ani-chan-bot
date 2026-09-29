@@ -164,10 +164,11 @@ async function generateText({ systemPrompt, history = [], prompt, maxOutputToken
 // any) stays plain text, same shape/mapping as generateText — only the
 // newest turn carries the image, since Gemini doesn't need the image
 // re-sent on every follow-up message to keep the thread coherent.
-async function generateVision({ systemPrompt, history = [], prompt, base64Image, mimeType, maxOutputTokens = 2048 }) {
+async function generateVision({ systemPrompt, history = [], prompt, base64Image, mimeType, images = [], maxOutputTokens = 2048 }) {
   assertKey();
 
-  if (!base64Image) {
+  const visionImages = images.length ? images : (base64Image ? [{ base64: base64Image, mimeType }] : []);
+  if (!visionImages.length) {
     const err = new Error('generateVision called without an image');
     err.code = 'NO_IMAGE_DATA';
     throw err;
@@ -182,7 +183,9 @@ async function generateVision({ systemPrompt, history = [], prompt, base64Image,
     role: 'user',
     parts: [
       { text: prompt },
-      { inlineData: { mimeType: mimeType || 'image/jpeg', data: base64Image } },
+      ...visionImages.map(image => ({
+        inlineData: { mimeType: image.mimeType || 'image/jpeg', data: image.base64 },
+      })),
     ],
   });
 

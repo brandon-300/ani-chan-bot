@@ -200,10 +200,15 @@ test('Cloudinary buffer upload preserves WebP format and version metadata withou
 });
 
 test('AI control tags are removed, malformed controls are stripped, and menu actions remain DM-gated', () => {
-  const controls = _parseAiControls('[[reaction:unknown]]Hello! [[reaction:happy]] [[bot_action:command_menu]] [[bot_action:danger]]', { allowBotActions: false });
+  const controls = _parseAiControls('[[reaction:unknown]]Hello! [[response_mode:sticker]] [[reaction:happy]] [[bot_action:command_menu]] [[bot_action:danger]]', { allowBotActions: false });
   assert.equal(controls.text, 'Hello!');
   assert.equal(controls.reaction, 'happy');
+  assert.equal(controls.responseMode, 'sticker');
   assert.equal(controls.action, null);
+
+  const noSticker = _parseAiControls('Useful answer [[reaction:none]]');
+  assert.equal(noSticker.reaction, 'none');
+  assert.equal(noSticker.text, 'Useful answer');
 
   const dmAction = _parseAiControls('[[bot_action:command_menu]]', { allowBotActions: true });
   assert.equal(dmAction.action, 'command_menu');
@@ -252,10 +257,10 @@ test('owner private-DM imports save to one shared library and deduplicate across
   const first = makeMessage({ type: 'sticker', bytes: importedBytes });
   assert.equal(await aiStickers.handleIncomingSticker(client, first.message), true);
   assert.match(first.replies[0], /saved to the shared AI sticker library/);
-  const stored = memoryModel.get('marin', importedHash);
+  const stored = memoryModel.get('shared', importedHash);
   assert.ok(stored);
   assert.equal(stored.hash, importedHash);
-  assert.equal(stored.personaId, 'marin');
+  assert.equal(stored.personaId, 'shared');
   assert.equal(stored.cloudinaryPublicId, `ai-stickers/shared/${importedHash}`);
   assert.match(stored.cloudinaryUrl, /^https:\/\//);
   assert.equal(stored.cloudinaryVersion, 77);
@@ -274,12 +279,12 @@ test('owner private-DM imports save to one shared library and deduplicate across
   // A different persona reuses the original record and Cloudinary object.
   const gojoCopy = await aiStickers._persistStickerRecord({ id: 'gojo' }, importedHash, importedBytes);
   assert.equal(gojoCopy.duplicate, true);
-  assert.equal(gojoCopy.record.personaId, 'marin');
+  assert.equal(gojoCopy.record.personaId, 'shared');
   assert.equal(uploadCalls.length, 1, 'another persona must not create a second Cloudinary copy');
 
   const second = makeMessage({ type: 'sticker', bytes: secondBytes });
   assert.equal(await aiStickers.handleIncomingSticker(client, second.message), true);
-  assert.ok(memoryModel.get('marin', secondHash));
+  assert.ok(memoryModel.get('shared', secondHash));
 
   const stop = makeMessage();
   assert.equal(await aiStickers.stopImportMode(stop.message), true);
@@ -291,20 +296,21 @@ test('legacy persona-tagged Cloudinary stickers are shared and reused without mi
   const legacyHash = crypto.createHash('sha256').update(legacyBytes).digest('hex');
   const legacyUrl = `https://res.cloudinary.com/test/image/upload/v12/ai-stickers/marin/${legacyHash}.webp`;
   memoryModel.set({
-    personaId: 'marin',
+    personaId: 'shared',
     hash: legacyHash,
     cloudinaryPublicId: `ai-stickers/marin/${legacyHash}`,
     cloudinaryUrl: legacyUrl,
     cloudinaryVersion: 12,
     format: 'webp',
     bytes: legacyBytes.length,
-    analysisStatus: 'classified',
-    emotions: ['love'],
-    moods: ['warm'],
-    uses: ['reaction'],
-    reactions: ['love'],
+    analysisStatus: 'unclassified',
+    emotions: [],
+    moods: [],
+    uses: [],
+    reactions: [],
     intensity: 'medium',
-    notes: 'already saved',
+    notes: '',
+    personaAnalyses: [{ personaId: 'rias', analysisVersion: 1, personaVersion: '', analysisStatus: 'classified', emotions: ['love'], moods: ['warm'], uses: ['reaction'], reactions: ['love'], intensity: 'medium', personaFit: 1, notes: 'already saved' }],
     importedAt: new Date(),
     analyzedAt: new Date(),
   });
@@ -325,14 +331,15 @@ test('legacy persona-tagged Cloudinary stickers are shared and reused without mi
 });
 
 test('selector rebuilds metadata from Mongo and uses Cloudinary URLs, with exact and unclassified fallback tiers', async () => {
-  const first = memoryModel.get('marin', importedHash);
+  const first = memoryModel.get('shared', importedHash);
   memoryModel.set({
     ...first,
-    analysisStatus: 'classified',
-    emotions: ['amused'],
-    moods: ['playful'],
-    uses: ['reaction'],
-    reactions: ['amused'],
+    analysisStatus: 'unclassified',
+    emotions: [],
+    moods: [],
+    uses: [],
+    reactions: [],
+    personaAnalyses: [{ personaId: 'marin', analysisVersion: 1, personaVersion: '', analysisStatus: 'classified', emotions: ['amused'], moods: ['playful'], uses: ['reaction'], reactions: ['amused'], intensity: 'medium', personaFit: 1 }],
   });
   aiStickers._setAdaptersForTests({ Model: memoryModel, storage: cloudinaryMock, mongoConnected: () => true });
   await aiStickers.initialize(persona);
@@ -343,8 +350,7 @@ test('selector rebuilds metadata from Mongo and uses Cloudinary URLs, with exact
   assert.equal(exact.persona.id, 'marin');
 
   const genericClassified = await aiStickers._selectSticker('neutral', 'chat-two', persona);
-  assert.equal(genericClassified.entry.analysisStatus, 'classified', 'any classified shared sticker is preferred before the unclassified tier');
-  assert.notEqual(genericClassified.entry.hash, secondHash);
+  assert.equal(genericClassified, null, 'a classified sticker without a strong persona match must not be sent');
 
   for (const record of [...memoryModel.records.values()]) {
     memoryModel.set({ ...record, analysisStatus: 'unclassified', reactions: [] });
@@ -352,21 +358,21 @@ test('selector rebuilds metadata from Mongo and uses Cloudinary URLs, with exact
   aiStickers._setAdaptersForTests({ Model: memoryModel, storage: cloudinaryMock, mongoConnected: () => true });
   await aiStickers.initialize(persona);
   const unclassified = await aiStickers._selectSticker('neutral', 'chat-three', persona);
-  assert.equal(unclassified.entry.analysisStatus, 'unclassified');
+  assert.equal(unclassified, null, 'unclassified stickers are never an automatic reaction source');
   assert.equal(fs.existsSync(path.join(__dirname, '..', 'data', 'ai-stickers')), false, 'selection must not depend on a local library');
 });
 
 test('analysis failure leaves the Cloudinary asset and Mongo record intact as unclassified', async () => {
-  const pending = { ...memoryModel.get('marin', secondHash), analysisStatus: 'pending' };
+  const pending = { ...memoryModel.get('shared', secondHash), analysisStatus: 'unclassified', personaAnalyses: [] };
   memoryModel.set(pending);
   aiStickers._setAdaptersForTests({ Model: memoryModel, storage: cloudinaryMock, mongoConnected: () => true });
   axios.get = async () => ({ data: Buffer.from('remote Cloudinary WebP bytes') });
   gemini.generateVision = async () => { throw new Error('simulated Gemini failure'); };
 
   await aiStickers._analyzeSticker(persona, secondHash);
-  const after = memoryModel.get('marin', secondHash);
-  assert.equal(after.analysisStatus, 'unclassified');
-  assert.match(after.analysisError, /simulated Gemini failure/);
+  const after = memoryModel.get('shared', secondHash);
+  assert.equal(after.personaAnalyses[0].analysisStatus, 'unclassified');
+  assert.match(after.personaAnalyses[0].analysisError, /simulated Gemini failure/);
   assert.equal(after.cloudinaryUrl, pending.cloudinaryUrl);
   assert.equal(after.cloudinaryPublicId, pending.cloudinaryPublicId);
 });
@@ -374,6 +380,9 @@ test('analysis failure leaves the Cloudinary asset and Mongo record intact as un
 test('reaction sends use Cloudinary bytes as a standalone sticker with bot/persona attribution', async () => {
   aiStickers._setAdaptersForTests({ Model: memoryModel, storage: cloudinaryMock, mongoConnected: () => true });
   await aiStickers.initialize(persona);
+  const reactionRecord = memoryModel.get('shared', importedHash);
+  memoryModel.set({ ...reactionRecord, personaAnalyses: [{ personaId: 'marin', analysisVersion: 1, personaVersion: '', analysisStatus: 'classified', reactions: ['amused'], emotions: [], moods: [], uses: [], intensity: 'medium', personaFit: 1 }] });
+  aiStickers._setAdaptersForTests({ Model: memoryModel, storage: cloudinaryMock, mongoConnected: () => true });
   axios.get = async url => {
     assert.match(url, /^https:\/\/res\.cloudinary\.com\//);
     return { data: Buffer.from('remote WebP image bytes') };

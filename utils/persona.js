@@ -6,6 +6,18 @@ const ID_RE = /^[a-z0-9][a-z0-9_-]*$/;
 const failedPersonaLogs = new Set();
 let activePersona;
 
+function listPersonaIds() {
+  try {
+    return fs.readdirSync(PERSONAS_DIR, { withFileTypes: true })
+      .filter(entry => entry.isDirectory() && ID_RE.test(entry.name))
+      .map(entry => entry.name)
+      .sort();
+  } catch (err) {
+    console.error(`Could not enumerate persona directories: ${err.message}`);
+    return [];
+  }
+}
+
 function readPrompt(filePath, label) {
   let value;
   try {
@@ -92,4 +104,4 @@ function getActivePersonaSafe() {
   }
 }
 
-module.exports = { loadPersona, getActivePersona, getActivePersonaSafe };
+module.exports = { loadPersona, listPersonaIds, getActivePersona, getActivePersonaSafe };

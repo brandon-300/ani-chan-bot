@@ -136,6 +136,9 @@ const PERSONAS_DIR = path.resolve(__dirname, '../config/personas');
 const FISH_VOICE_ID = process.env.FISH_VOICE_ID || '';
 const FISH_MODEL = process.env.FISH_MODEL || 's2.1-pro-free';
 const FISH_REQUEST_TIMEOUT_MS = positiveEnvInt('FISH_REQUEST_TIMEOUT_MS', 45000);
+const AI_STICKER_ANALYSIS_VERSION = positiveEnvInt('AI_STICKER_ANALYSIS_VERSION', 1);
+const AI_STICKER_MATCH_THRESHOLD = positiveEnvInt('AI_STICKER_MATCH_THRESHOLD', 10);
+const AI_STICKER_ANALYSIS_DELAY_MS = envInt('AI_STICKER_ANALYSIS_DELAY_MS', 8000);
 
 module.exports = {
   BOT_NAME,
@@ -160,4 +163,7 @@ module.exports = {
   FISH_VOICE_ID,
   FISH_MODEL,
   FISH_REQUEST_TIMEOUT_MS,
+  AI_STICKER_ANALYSIS_VERSION,
+  AI_STICKER_MATCH_THRESHOLD,
+  AI_STICKER_ANALYSIS_DELAY_MS,
 };

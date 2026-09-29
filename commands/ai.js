@@ -154,63 +154,54 @@ function stripEmojis(text) {
 //   - never lets any [[...]] control syntax reach the visible reply or
 //     conversation history, matched or not
 function parseAiControls(rawOutput, { allowBotActions = false } = {}) {
-  let reaction = 'neutral';
+  let reaction = 'none';
+  let responseMode = 'text';
   let action = null;
   let sawReaction = false;
-
-  // Matches [[reaction:label]], [[bot_action:label]], and bare [[label]].
-  // The closing ]] is optional only if the token runs to the absolute end of
-  // the string (a response truncated mid-token) — this must not match a
-  // truncated opener anywhere else, or it would swallow real prose that
-  // happens to follow an unrelated "[[".
   const controlToken = /\[\[\s*([a-z_]+)(?:\s*:\s*([^\]\r\n]*))?\s*(?:\]\]|$)/gi;
 
   let clean = String(rawOutput || '').replace(controlToken, (_token, word, value) => {
     const kindWord = String(word).toLowerCase();
-    let kind, label;
-    if (kindWord === 'reaction' || kindWord === 'bot_action') {
-      kind = kindWord;
-      label = String(value || '').trim().toLowerCase();
-    } else {
-      // Bare [[label]] form — only meaningful as a reaction shorthand.
-      kind = 'reaction';
-      label = kindWord;
-    }
-    if (kind === 'reaction' && !sawReaction && aiStickers.ALLOWED_REACTIONS.has(label)) {
+    const label = String(value || '').trim().toLowerCase();
+    if (kindWord === 'reaction' && !sawReaction && (label === 'none' || aiStickers.ALLOWED_REACTIONS.has(label))) {
       sawReaction = true;
       reaction = label;
-    } else if (kind === 'bot_action' && allowBotActions && action === null && label === 'command_menu') {
+    } else if (kindWord === 'response_mode' && (label === 'text' || label === 'sticker')) {
+      responseMode = label;
+    } else if (kindWord === 'bot_action' && allowBotActions && action === null && label === 'command_menu') {
       action = 'command_menu';
+    } else if (kindWord !== 'reaction' && kindWord !== 'response_mode' && kindWord !== 'bot_action' && !sawReaction && aiStickers.ALLOWED_REACTIONS.has(kindWord)) {
+      sawReaction = true;
+      reaction = kindWord;
     }
     return '';
   });
 
-  // Safety net: catches any leftover "[[...]]" the pattern above didn't
-  // recognize (odd spacing/casing inside the brackets), and a "[[" left
-  // dangling at the end of an earlier line with no closing brackets at all —
-  // both cases would otherwise leak literal bracket syntax into the chat.
-  clean = clean
-    .replace(/\[\[[^\]\r\n]*\]\]/g, '')
-    .replace(/\[\[[^\r\n]*$/gm, '')
-    .trim();
+  clean = clean.replace(/\[\[[^\]\r\n]*\]\]/g, '').replace(/\[\[[^\r\n]*$/gm, '').trim();
   clean = stripEmojis(clean).trim();
-
-  return { text: clean, reaction, action };
+  return { text: clean, reaction, responseMode, action };
 }
 
-async function deliverTextResponse(client, msg, rawOutput, allowBotActions = false) {
+async function deliverTextResponse(client, msg, rawOutput, allowBotActions = false, { stickerReply = false } = {}) {
   const controls = parseAiControls(rawOutput, { allowBotActions });
-  if (controls.text) await msg.reply(controls.text);
   if (controls.action === 'command_menu') {
-    if (typeof client.sendQuickMenu === 'function') {
-      await client.sendQuickMenu(msg);
-    } else if (!controls.text) {
-      await msg.reply('❌ I could not open the command menu right now.');
+    if (controls.text) await msg.reply(controls.text);
+    if (typeof client.sendQuickMenu === 'function') await client.sendQuickMenu(msg);
+    else if (!controls.text) await msg.reply('❌ I could not open the command menu right now.');
+    return controls;
+  }
+
+  if (stickerReply && controls.responseMode === 'sticker' && controls.reaction !== 'none') {
+    const sent = await aiStickers.sendReactionSticker(client, msg, controls.reaction);
+    if (!sent) {
+      await msg.reply(controls.text || 'I do not have a sticker that fits that reaction.');
     }
     return controls;
   }
-  if (controls.text) await aiStickers.sendReactionSticker(client, msg, controls.reaction);
-  else if (!controls.action) await msg.reply('❌ I could not generate a text response. Please try again.');
+
+  if (controls.text) await msg.reply(controls.text);
+  if (controls.text && controls.reaction !== 'none') await aiStickers.sendReactionSticker(client, msg, controls.reaction);
+  else if (!controls.text) await msg.reply('❌ I could not generate a text response. Please try again.');
   return controls;
 }
 
@@ -284,53 +275,55 @@ function friendlyAiError(err, fallbackLabel) {
 // Returns { error } OR { prompt, image } (image is null when there isn't one).
 async function resolveMultimodalInput(msg, args) {
   const typed = args.join(' ').trim();
-
   let source = null;
+  let quoted = null;
   if (msg.hasMedia) {
     source = msg;
+    quoted = await safeGetQuotedMessage(msg).catch(() => null);
   } else {
-    const quoted = await safeGetQuotedMessage(msg).catch(() => null);
+    quoted = await safeGetQuotedMessage(msg).catch(() => null);
     if (quoted && quoted.hasMedia) source = quoted;
   }
 
-  if (!source) {
-    return { prompt: typed, image: null };
-  }
+  if (!source) return { prompt: typed, image: null, images: [], stickerReply: false };
 
-  let media;
-  try {
-    media = await source.downloadMedia();
-  } catch (err) {
-    return { error: '❌ Could not download the attached/replied-to media — it may have expired. Try re-sending it and trying again.' };
-  }
-
-  if (!media?.data) {
-    return { error: '❌ Could not download the attached/replied-to media — it may have expired. Try re-sending it and trying again.' };
-  }
-
+  const download = async target => {
+    try {
+      const media = await target.downloadMedia();
+      return media?.data ? media : null;
+    } catch { return null; }
+  };
+  const media = await download(source);
+  if (!media) return { error: '❌ Could not download the attached/replied-to media — it may have expired. Try re-sending it and trying again.' };
   const mimetype = media.mimetype || '';
 
-  if (mimetype.includes('image')) {
-    if (!typed) {
+  if (mimetype.includes('image') || msg.type === 'sticker' || source.type === 'sticker') {
+    if (!typed && msg.type !== 'sticker') {
       return { error: '❌ Reply to an image AND tell me what to do with it, e.g. *.copilot describe this image*' };
     }
-    return { prompt: typed, image: { base64: media.data, mimeType: mimetype } };
+    const images = [{ base64: media.data, mimeType: mimetype || 'image/webp' }];
+    const stickerReply = msg.type === 'sticker' && !!quoted?.fromMe;
+    if (stickerReply && quoted?.type === 'sticker' && quoted.hasMedia) {
+      const quotedMedia = await download(quoted);
+      if (quotedMedia?.data) images.push({ base64: quotedMedia.data, mimeType: quotedMedia.mimetype || 'image/webp' });
+    }
+    let prompt = typed || 'Interpret this sticker as part of our conversation and respond naturally. Decide whether a text or sticker response fits better.';
+    if (stickerReply && quoted?.id?._serialized) {
+      const sentContext = await aiStickers.getSentStickerContext(quoted.id._serialized);
+      if (sentContext) {
+        prompt += `\n\nThe quoted sticker was previously sent by you as ${sentContext.personaId} with reaction ${sentContext.reaction}. Interpret the user's new sticker as a response to that exchange.`;
+      }
+    }
+    return { prompt, image: images[0], images, stickerReply };
   }
 
   if (mimetype.includes('audio') || mimetype.includes('ogg')) {
     let transcript;
-    try {
-      transcript = await gemini.transcribeAudio({ base64Audio: media.data, mimeType: mimetype });
-    } catch (err) {
-      return { error: friendlyAiError(err, 'Transcription') };
-    }
-    const prompt = typed ? `${transcript}\n\n(${typed})` : transcript;
-    return { prompt, image: null };
+    try { transcript = await gemini.transcribeAudio({ base64Audio: media.data, mimeType: mimetype }); }
+    catch (err) { return { error: friendlyAiError(err, 'Transcription') }; }
+    return { prompt: typed ? `${transcript}\n\n(${typed})` : transcript, image: null, images: [], stickerReply: false };
   }
-
-  // Some other media type (video, document, sticker, etc.) — not supported
-  // as AI input, fall back to whatever was typed.
-  return { prompt: typed, image: null };
+  return { prompt: typed, image: null, images: [], stickerReply: false };
 }
 
 module.exports = {
@@ -377,13 +370,12 @@ module.exports = {
       const allowBotActions = !chat.isGroup;
       const systemPrompt = buildPersonaSystemPrompt(senderName, 'text', allowBotActions);
 
-      const rawReply = resolved.image
+      const rawReply = resolved.images?.length
         ? await gemini.generateVision({
             systemPrompt,
             history,
             prompt: resolved.prompt,
-            base64Image: resolved.image.base64,
-            mimeType: resolved.image.mimeType,
+            images: resolved.images,
             maxOutputTokens: 2048,
           })
         : await gemini.generateText({
@@ -396,7 +388,7 @@ module.exports = {
       const controls = parseAiControls(rawReply, { allowBotActions });
       const historyReply = controls.text || (controls.action === 'command_menu' ? 'I sent the command menu.' : '');
       await addTurnToHistory(chat.id._serialized, senderId, resolved.prompt, historyReply);
-      return await deliverTextResponse(client, msg, rawReply, allowBotActions);
+      return await deliverTextResponse(client, msg, rawReply, allowBotActions, { stickerReply: resolved.stickerReply });
     } catch (err) {
       return msg.reply(friendlyAiError(err, 'Copilot'));
     }
@@ -418,12 +410,11 @@ module.exports = {
       const allowBotActions = !!chat && !chat.isGroup;
       const systemPrompt = buildPersonaSystemPrompt(senderName, 'text', allowBotActions);
 
-      const reply = resolved.image
+      const reply = resolved.images?.length
         ? await gemini.generateVision({
             systemPrompt,
             prompt: resolved.prompt,
-            base64Image: resolved.image.base64,
-            mimeType: resolved.image.mimeType,
+            images: resolved.images,
             maxOutputTokens: 2048,
           })
         : await gemini.generateText({
@@ -469,13 +460,12 @@ module.exports = {
       const senderName = await resolveSenderName(msg, client);
       const systemPrompt = buildPersonaSystemPrompt(senderName, 'voice', false);
 
-      const rawReply = resolved.image
+      const rawReply = resolved.images?.length
         ? await gemini.generateVision({
             systemPrompt,
             history,
             prompt: resolved.prompt,
-            base64Image: resolved.image.base64,
-            mimeType: resolved.image.mimeType,
+            images: resolved.images,
             maxOutputTokens: 1200,
           })
         : await gemini.generateText({

@@ -840,10 +840,12 @@ async function runHeavyQueue() {
 // treated as an implicit .copilot / .voice command. See the comment at the
 // call site for the full rule.
 //
-// Only three reply "kinds" are recognized as AI input: a plain text reply,
-// an image reply, or a voice/audio reply — either a recorded voice note
-// (ptt) or a regular uploaded audio file (audio), both treated the same
-// way. Anything else — sticker, video, document, location, contact card,
+// Sticker replies are also AI input: they are downloaded temporarily and
+// passed to Gemini Vision, but are never added to the owner-controlled library.
+// Other media remains ignored by the implicit reply-to-bot router. Recognized
+// reply kinds are plain text, image, sticker, or voice/audio — either a
+// recorded voice note (ptt) or a regular uploaded audio file (audio), both
+// treated the same way. Anything else — video, document, location, contact card,
 // etc. — comes back 'other', and index.js does nothing with it (no
 // auto-command, no auto-menu). That last part matters: previously ANY
 // reply to the bot, sticker included, popped the full command menu, which
@@ -851,6 +853,7 @@ async function runHeavyQueue() {
 function classifyReplyKind(msg) {
   if (msg.type === 'chat' && !msg.hasMedia && (msg.body || '').trim()) return 'text';
   if (msg.type === 'image' && msg.hasMedia) return 'image';
+  if (msg.type === 'sticker' && msg.hasMedia) return 'sticker';
   if ((msg.type === 'ptt' || msg.type === 'audio') && msg.hasMedia) return 'voice';
   return 'other';
 }
@@ -1028,10 +1031,12 @@ client.on('message', (msg) => {
         // Existing reply-to-bot behavior stays ahead of the plain-DM router.
         const replyKind = classifyReplyKind(msg);
         if (replyKind === 'other') return;
+        msg._aiStickerReply = replyKind === 'sticker';
         const typed = (msg.body || '').trim();
         args = typed
           ? typed.split(/\s+/)
-          : (replyKind === 'image' ? ['Take', 'a', 'look', 'and', 'respond', 'naturally.'] : []);
+          : (replyKind === 'image' ? ['Take', 'a', 'look', 'and', 'respond', 'naturally.'] :
+            replyKind === 'sticker' ? ['Interpret', 'this', 'sticker', 'and', 'respond', 'naturally.'] : []);
         command = isVoiceNoteMessage(quoted) ? 'voice' : 'copilot';
       } else {
         const chat = await safeGetChat(msg).catch(() => null);
