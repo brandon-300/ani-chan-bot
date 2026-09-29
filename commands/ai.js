@@ -191,11 +191,16 @@ async function deliverTextResponse(client, msg, rawOutput, allowBotActions = fal
     return controls;
   }
 
-  if (stickerReply && controls.responseMode === 'sticker' && controls.reaction !== 'none') {
-    const sent = await aiStickers.sendReactionSticker(client, msg, controls.reaction);
-    if (!sent) {
-      await msg.reply(controls.text || 'I do not have a sticker that fits that reaction.');
+  if (stickerReply) {
+    if (controls.responseMode === 'sticker' && controls.reaction !== 'none') {
+      const sent = await aiStickers.sendReactionSticker(client, msg, controls.reaction);
+      if (!sent) await msg.reply(controls.text || 'I do not have a sticker that fits that reaction.');
+      return controls;
     }
+    // For an incoming sticker reply, explicit text mode, no mode, or a
+    // missing reaction must never send a second standalone sticker.
+    if (controls.text) await msg.reply(controls.text);
+    else await msg.reply('❌ I could not generate a text response. Please try again.');
     return controls;
   }
 
@@ -318,9 +323,9 @@ async function resolveMultimodalInput(msg, args) {
     if (botSentStickerReply && quotedMessageId) {
       const sentContext = await aiStickers.getSentStickerContext(quotedMessageId);
       if (sentContext) {
-        prompt += `\n\nIMPORTANT: The quoted sticker was sent by you (the bot/persona ${sentContext.personaId}), not by the user. The user did NOT send that sticker. It was your reaction sticker with reaction label ${sentContext.reaction || 'unknown'}. Treat the user's current message as a response to the sticker you sent.`;
+        prompt += `\n\nIMPORTANT IMAGE ORDER: Image 1 is the new sticker sent by the user. Image 2 is the sticker previously sent by you (the bot/persona ${sentContext.personaId}), not by the user. The user did NOT send Image 2. It was your reaction sticker with reaction label ${sentContext.reaction || 'unknown'}. Treat the user's current message as a response to the sticker you sent.`;
       } else {
-        prompt += '\n\nIMPORTANT: WhatsApp shows that the quoted sticker was sent by you (the bot), not by the user. The user did NOT send that sticker. Treat the user\'s current message as a response to your reaction sticker.';
+        prompt += '\n\nIMPORTANT IMAGE ORDER: Image 1 is the new sticker sent by the user. Image 2 is the sticker previously sent by you (the bot), not by the user. The user did NOT send Image 2. Treat the user\'s current message as a response to your reaction sticker.';
       }
     }
     return { prompt, image: images[0], images, stickerReply };
@@ -339,6 +344,7 @@ module.exports = {
   _parseAiControls: parseAiControls,
   _stripSpeechFormatting: stripSpeechFormatting,
   _buildPersonaSystemPrompt: buildPersonaSystemPrompt,
+  _deliverTextResponse: deliverTextResponse,
 
   // .stickerimport [off] — owner-only, private-DM import mode. Sticker media
   // is intercepted by index.js only after the service independently checks

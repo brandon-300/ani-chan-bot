@@ -141,6 +141,7 @@ const AI_STICKER_ANALYSIS_VERSION = positiveEnvInt('AI_STICKER_ANALYSIS_VERSION'
 // labels are still accepted directly; this threshold prevents weak emotion/
 // mood overlap from selecting unrelated meme stickers.
 const AI_STICKER_MATCH_THRESHOLD = positiveEnvInt('AI_STICKER_MATCH_THRESHOLD', 18);
+const AI_STICKER_MIN_PERSONA_FIT = Math.max(0, Math.min(1, Number(process.env.AI_STICKER_MIN_PERSONA_FIT ?? 0.6) || 0.6));
 const AI_STICKER_ANALYSIS_DELAY_MS = envInt('AI_STICKER_ANALYSIS_DELAY_MS', 8000);
 
 module.exports = {
@@ -168,5 +169,6 @@ module.exports = {
   FISH_REQUEST_TIMEOUT_MS,
   AI_STICKER_ANALYSIS_VERSION,
   AI_STICKER_MATCH_THRESHOLD,
+  AI_STICKER_MIN_PERSONA_FIT,
   AI_STICKER_ANALYSIS_DELAY_MS,
 };

@@ -19,6 +19,9 @@ The bot uses `utils/logger.js` as its single logging system. The default output 
 - Routine empty heartbeat/daily-check ticks and Axios/fetch request start/end records are DEBUG-only. API failures remain visible at INFO/ERROR.
 - Secrets, credentials, database URIs, query-string keys, full media/base64 payloads, and full sticker hashes are never printed in text logs.
 - Sticker selection requires a classified analysis for the active persona: exact `reactions[]` matches are preferred, while non-exact matches must clear `AI_STICKER_MATCH_THRESHOLD` (default `18`). Otherwise the bot skips the sticker and logs `[sticker] Skipped (no good match for teasing)`.
+- Every eligible sticker must also clear `AI_STICKER_MIN_PERSONA_FIT` (default `0.6`); exact reaction labels cannot bypass this hard active-persona fit gate.
+- Gemini sticker analysis receives both the persona personality and conversational/reaction behavior, and duplicate imports enqueue only missing or stale persona analyses.
+- For incoming sticker replies, `response_mode:text` (or no sticker mode) sends text only; `response_mode:sticker` sends a sticker only, with text fallback if no suitable sticker exists.
 
 ## Event families
 

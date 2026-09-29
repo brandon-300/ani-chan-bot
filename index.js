@@ -1092,7 +1092,11 @@ client.on('message', (msg) => {
         args = typed
           ? typed.split(/\s+/)
           : (replyKind === 'image' ? ['Take', 'a', 'look', 'and', 'respond', 'naturally.'] :
-            replyKind === 'sticker' ? ['Interpret', 'this', 'sticker', 'and', 'respond', 'naturally.'] : []);
+            // Leave sticker-only replies empty here. commands/ai.js owns the
+            // media-aware default prompt and can distinguish a new user
+            // sticker from a text reply to the bot's sticker without index.js
+            // accidentally seeding the wrong instruction for either case.
+            []);
         command = isVoiceNoteMessage(quoted) ? 'voice' : 'copilot';
         logger.write('INFO', command === 'voice' ? 'route.ai.voice' : 'route.ai.copilot', {
           reason: 'reply_to_bot',

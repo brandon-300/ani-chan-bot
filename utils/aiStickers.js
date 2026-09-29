@@ -16,6 +16,7 @@ const {
   BOT_NAME,
   AI_STICKER_ANALYSIS_VERSION,
   AI_STICKER_MATCH_THRESHOLD,
+  AI_STICKER_MIN_PERSONA_FIT,
   AI_STICKER_ANALYSIS_DELAY_MS,
 } = require('./config');
 const { getActivePersonaSafe, listPersonaIds, loadPersona } = require('./persona');
@@ -127,6 +128,22 @@ function getPersonaAnalysis(record, personaId) {
   if (embedded) return embedded;
   const legacy = legacyAnalysis(record);
   return legacy?.personaId === personaId ? legacy : null;
+}
+
+function stalePersonaIds(record) {
+  return listPersonaIds().filter(personaId => {
+    try {
+      const analysis = getPersonaAnalysis(record, personaId);
+      const currentVersion = personaVersion(loadPersona(personaId));
+      return !analysis
+        || analysis.analysisStatus !== 'classified'
+        || analysis.analysisVersion !== AI_STICKER_ANALYSIS_VERSION
+        || analysis.personaVersion !== currentVersion;
+    } catch (err) {
+      logger.error('background.ai_sticker_analysis.persona_check_failed', err, { personaId, hash: record?.hash });
+      return false;
+    }
+  });
 }
 
 function withMergedAnalyses(records) {
@@ -317,8 +334,8 @@ async function analyzeSticker(sourcePersona, hash) {
 
     const image = await fetchImageBuffer(document.cloudinaryUrl);
     const result = await gemini.generateVision({
-      systemPrompt: `You are analyzing a WhatsApp reaction sticker for the specific character ${persona.displayName}. ${persona.personality}`,
-      prompt: `Analyze this sticker as a reaction that ${persona.displayName} would realistically use in conversation. Return only JSON with arrays emotions, moods, uses, reactions, a string intensity, personaFit from 0 to 1, and a short note no longer than 160 characters. Allowed reaction labels: ${[...ALLOWED_REACTIONS].join(', ')}. Keep labels short and lowercase. Interpret the image through this character's personality, not as a neutral generic sticker.`,
+      systemPrompt: `You are analyzing a WhatsApp reaction sticker for the specific character ${persona.displayName}. Personality: ${persona.personality} Conversational and reaction behavior: ${persona.text}`,
+      prompt: `Analyze this sticker as a reaction that ${persona.displayName} would realistically use in conversation, following both the character personality and the stated conversational/reaction behavior. Return only JSON with arrays emotions, moods, uses, reactions, a string intensity, personaFit from 0 to 1, and a short note no longer than 160 characters. Allowed reaction labels: ${[...ALLOWED_REACTIONS].join(', ')}. Keep labels short and lowercase. Interpret the image through this character's personality and behavior, not as a neutral generic sticker.`,
       base64Image: image.toString('base64'),
       mimeType: 'image/webp',
       maxOutputTokens: 512,
@@ -527,7 +544,14 @@ async function persistStickerRecord(sourcePersona, hash, bytes) {
       }, { upsert: true, setDefaultsOnInsert: true });
     }
     setCachedSticker(SHARED_LIBRARY_KEY, shared || existing);
-    return { record: shared || existing, duplicate: true, shouldAnalyze: AI_STICKER_AUTO_ANALYZE };
+    const normalized = shared || existing;
+    const stalePersonaIdsToAnalyze = AI_STICKER_AUTO_ANALYZE ? stalePersonaIds(normalized) : [];
+    return {
+      record: normalized,
+      duplicate: true,
+      shouldAnalyze: stalePersonaIdsToAnalyze.length > 0,
+      analysisPersonaIds: stalePersonaIdsToAnalyze,
+    };
   }
 
   const uploaded = await cloudinaryStorage.uploadBufferToCloud(bytes, {
@@ -564,12 +588,13 @@ async function persistStickerRecord(sourcePersona, hash, bytes) {
     record = await findSticker(sharedFilter) || await findSticker({ hash });
     if (!record) throw err;
     setCachedSticker(SHARED_LIBRARY_KEY, record);
-    return { record, duplicate: true, shouldAnalyze: false };
+    return { record, duplicate: true, shouldAnalyze: false, analysisPersonaIds: [] };
   }
   if (!record) record = await findSticker(sharedFilter);
   if (!record) throw new Error('Sticker image uploaded, but its MongoDB metadata could not be read back. Please retry the import.');
   setCachedSticker(SHARED_LIBRARY_KEY, record);
-  return { record, duplicate: false, shouldAnalyze: AI_STICKER_AUTO_ANALYZE };
+  const analysisPersonaIds = AI_STICKER_AUTO_ANALYZE ? stalePersonaIds(record) : [];
+  return { record, duplicate: false, shouldAnalyze: analysisPersonaIds.length > 0, analysisPersonaIds };
 }
 
 async function saveSticker(sourcePersona, hash, bytes) {
@@ -673,7 +698,7 @@ async function handleIncomingSticker(client, msg) {
     const sourcePersonaId = getActivePersonaSafe()?.id || SHARED_LIBRARY_KEY;
     const result = await saveSticker(sourcePersonaId, hash, bytes);
     if (result.shouldAnalyze) {
-      for (const personaId of listPersonaIds()) enqueueAnalysis(personaId, hash);
+      for (const personaId of (result.analysisPersonaIds || [])) enqueueAnalysis(personaId, hash);
     }
 
     if (result.duplicate) {
@@ -740,10 +765,12 @@ async function selectSticker(reaction, chatId, persona = null) {
   const candidates = records.map(entry => {
     const analysis = getPersonaAnalysis(entry, activePersona.id);
     const exactReaction = hasExactReactionMatch(analysis, reaction);
-    return { entry, analysis, exactReaction, score: scoreStickerAnalysis(analysis, reaction) };
+    const personaFit = Math.max(0, Math.min(1, Number(analysis?.personaFit) || 0));
+    return { entry, analysis, exactReaction, personaFit, score: scoreStickerAnalysis(analysis, reaction) };
   }).filter(candidate => (
     candidate.entry.cloudinaryUrl
     && candidate.entry.cloudinaryPublicId
+    && candidate.personaFit >= AI_STICKER_MIN_PERSONA_FIT
     // Exact reaction labels are the preferred/strong path. A non-exact
     // candidate must clear the deliberately high threshold; weak emotions,
     // moods, uses, unclassified records, and barely related memes cannot win.
