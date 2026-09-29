@@ -1,0 +1,10 @@
+{
+  "id": "rias",
+  "displayName": "Rias Gremory",
+  "series": "High School DxD",
+  "callNames": ["Rias", "Gremory", "Rias Gremory"],
+  "stickerAuthor": "Rias Gremory",
+  "voice": {
+    "referenceId": "5d1ec8a03c444ee39074f209622a91aa"
+  }
+}

@@ -1,4 +1,6 @@
 // ─── Central Bot Config ────────────────────────────────────────────────────
+const path = require('path');
+
 // Single source of truth for app-level configuration. Any file that needs
 // the bot's identity, the command prefix, the menu image, the Chromium path,
 // registration/news policy values, or news operational settings should
@@ -100,17 +102,40 @@ const NEWS_SEND_DELAY_MS = envInt('NEWS_SEND_DELAY_MS', 2000);
 const NEWS_MAX_ARTICLE_AGE_DAYS = envInt('NEWS_MAX_ARTICLE_AGE_DAYS', 7);
 
 // ─── AI wake-word ("call by name") ─────────────────────────────────────────
-// Plain-text names that count as directly addressing the AI persona in a
-// group — see isCallingBotByName() in index.js. Deliberately separate from
-// BOT_NAME above: BOT_NAME is the app/account identity ("this WhatsApp
-// bot"), while this is the PERSONA's own name (hardcoded as Marin Kitagawa
-// in commands/ai.js's system prompt) — people naturally call out to the
-// character, not the app, and the two names don't have to match. Comma-
-// separated; each entry can be multiple words (e.g. "Marin Kitagawa").
-const AI_CALL_NAMES = (process.env.AI_CALL_NAMES || 'Marin,Kitagawa,Marin Kitagawa')
-  .split(',')
-  .map(s => s.trim())
-  .filter(Boolean);
+// Optional comma-separated override for the CURRENT persona only. When unset,
+// group wake names come only from that persona's own meta.json. Do not use
+// this variable as a shared pool for multiple personas; add persona folders.
+const AI_CALL_NAMES_OVERRIDE = process.env.AI_CALL_NAMES === undefined
+  ? null
+  : process.env.AI_CALL_NAMES.split(',').map(s => s.trim()).filter(Boolean);
+
+function envBool(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === '') return fallback;
+  if (/^(1|true|yes|on)$/i.test(raw.trim())) return true;
+  if (/^(0|false|no|off)$/i.test(raw.trim())) return false;
+  return fallback;
+}
+
+function positiveEnvInt(name, fallback) {
+  const value = envInt(name, fallback);
+  return Number.isInteger(value) && value > 0 ? value : fallback;
+}
+
+// ─── Persona-aware AI and Cloudinary/Mongo sticker library ──────────────────
+const AI_PERSONA = (process.env.AI_PERSONA || 'marin').trim().toLowerCase();
+const AI_STICKERS_ENABLED = envBool('AI_STICKERS_ENABLED', false);
+const AI_STICKER_AUTO_ANALYZE = envBool('AI_STICKER_AUTO_ANALYZE', true);
+const AI_STICKER_IMPORT_TIMEOUT_MINUTES = positiveEnvInt('AI_STICKER_IMPORT_TIMEOUT_MINUTES', 10);
+const AI_STICKER_MAX_BYTES = positiveEnvInt('AI_STICKER_MAX_BYTES', 2 * 1024 * 1024);
+const AI_STICKER_DOWNLOAD_TIMEOUT_MS = positiveEnvInt('AI_STICKER_DOWNLOAD_TIMEOUT_MS', 30000);
+const PERSONAS_DIR = path.resolve(__dirname, '../config/personas');
+// FISH_VOICE_ID is an emergency process-wide override. Production
+// multi-persona setups should leave it empty and configure voice.referenceId
+// independently in each persona's meta.json.
+const FISH_VOICE_ID = process.env.FISH_VOICE_ID || '';
+const FISH_MODEL = process.env.FISH_MODEL || 's2.1-pro-free';
+const FISH_REQUEST_TIMEOUT_MS = positiveEnvInt('FISH_REQUEST_TIMEOUT_MS', 45000);
 
 module.exports = {
   BOT_NAME,
@@ -124,5 +149,15 @@ module.exports = {
   NEWS_FETCH_TIMEOUT_MS,
   NEWS_SEND_DELAY_MS,
   NEWS_MAX_ARTICLE_AGE_DAYS,
-  AI_CALL_NAMES,
+  AI_CALL_NAMES_OVERRIDE,
+  AI_PERSONA,
+  AI_STICKERS_ENABLED,
+  AI_STICKER_AUTO_ANALYZE,
+  AI_STICKER_IMPORT_TIMEOUT_MINUTES,
+  AI_STICKER_MAX_BYTES,
+  AI_STICKER_DOWNLOAD_TIMEOUT_MS,
+  PERSONAS_DIR,
+  FISH_VOICE_ID,
+  FISH_MODEL,
+  FISH_REQUEST_TIMEOUT_MS,
 };

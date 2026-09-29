@@ -190,17 +190,9 @@ function buildRegistrationProgressText(user) {
 
 function buildRegistrationIntroText(botName) {
   return `👋 Hey there! I'm *${botName}*, your anime companion.\n\n` +
-    `Before you can use my features, you'll need to create your profile first.\n\n` +
-    `📝 *Registration*\n` +
-    `1️⃣ .setname [name]\n` +
-    `2️⃣ .setdob [DD/MM/YYYY]\n` +
-    `3️⃣ .setbio [bio]  (alias: .bio)\n` +
-    `4️⃣ .setpic — reply to a photo (or send one with .setpic as the caption)\n\n` +
-    `🔞 You must be 18 or older to register.\n` +
-    `You can complete these steps in any order — I'll tell you what's left after each one.\n\n` +
-    `Once everything is complete, I'll activate your account and show you the command menu.`;
+    `Before you can use my features, start your profile registration in this private chat with *.reg*.\n\n` +
+    `You must be 18 or older to register. Once you complete the existing profile steps, I'll activate your account and show you the command menu.`;
 }
-
 // ─── Random Range ─────────────────────────────────────────────────────────────
 function rand(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min;

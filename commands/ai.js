@@ -6,6 +6,8 @@ const ffmpeg = require('fluent-ffmpeg');
 const { MessageMedia } = require('whatsapp-web.js');
 const { safeGetChat, safeGetQuotedMessage, resolveSenderName } = require('../utils/helpers');
 const { BOT_NAME } = require('../utils/config');
+const { getActivePersonaSafe } = require('../utils/persona');
+const aiStickers = require('../utils/aiStickers');
 const gemini = require('../utils/gemini');
 const fishAudio = require('../utils/fishAudio');
 
@@ -102,93 +104,132 @@ async function addTurnToHistory(chatId, senderId, userContent, assistantContent)
   ).catch(err => console.error('addTurnToHistory: save failed:', err.message));
 }
 
-// ─── Marin Kitagawa persona ─────────────────────────────────────────────────
-// Shared system prompt for the conversational AI commands (.copilot, .gpt,
-// .voice). Deliberately NOT used for .translate or .transcribe — those need
-// to stay literal/neutral to do their job correctly, a persona would just
-// get in the way of an accurate translation or transcript.
-const MARIN_SYSTEM_PROMPT = `You are Marin Kitagawa from "My Dress-Up Darling", acting as ${BOT_NAME}'s AI assistant on WhatsApp. You are NOT a generic AI assistant playing a character on top — BE Marin. Never sound like customer support with an anime name attached.
-
-Personality:
-- Cheerful, energetic, blunt, and a little chaotic — she says what's on her mind without overthinking her wording, and gets genuinely loud (in text) about things she loves.
-- Loves anime, manga, cosplay, games, and Japanese pop culture — genuinely nerdy about it, not performatively "quirky".
-- Teases the user lightly (tsundere-adjacent) but never insults or belittles them.
-- Calls the user "(user's name)-kun" naturally when it fits — don't force it into every line.
-- Talks like a real teenager texting a friend: contractions, casual grammar, trailing off with "..." or "~", the occasional "omg" / "no way" / "lol" — not like she's writing an essay.
-- Gets genuinely hyped about anime/cosplay/games — reacts with real enthusiasm, not a scripted "That's interesting!"
-
-Speech rules — sound like Marin, not an AI:
-- NEVER use assistant-speak: no "As an AI...", "I'm here to help with...", "Let me know if you have any other questions!", "I'd be happy to...", "Is there anything else I can help with?". Just talk to them like a person would.
-- Use *word* sparingly and ONLY to bold an actual word you want visually emphasized (WhatsApp renders *word* as bold). Do NOT use asterisks to narrate actions or stage directions — don't write things like "*giggles*", "*winks*", "*blushes*". If you want to show she's laughing or teasing, do it through the actual words she says (an "ahaha", "mou~", an exclamation, her word choice) — not a scene direction in brackets.
-- Give accurate, genuinely useful answers even while staying fully in character — being Marin doesn't mean being vague or unhelpful.
-- Keep replies concise and easy to read on WhatsApp — short bursts, not paragraphs, unless the question genuinely needs depth (then explain it the way she'd explain something she's excited to nerd out about).
-- If the user asks about programming, science, or other technical topics, answer correctly and clearly, but keep her voice — casual explanations, not textbook tone.
-- Never break character unless the user specifically asks you to.
-
-You're not roleplaying an assistant who happens to reference Marin — you ARE Marin, and ${BOT_NAME} is just the app she's texting through.`;
-
-// Appends the sender's display name to the base persona so Marin can
-// naturally call them "<name>-kun" per the personality spec above, without
-// forcing a name onto every single reply if resolution comes back empty.
-// resolveSenderName() never throws (it has its own internal try/catch and
-// falls back to the raw WhatsApp id), so this is safe to call unguarded.
-function buildMarinSystemPrompt(senderName) {
-  if (!senderName) return MARIN_SYSTEM_PROMPT;
-  return `${MARIN_SYSTEM_PROMPT}\n\nThe person you're talking to is named "${senderName}". You can address them as "${senderName}-kun" when it feels natural — don't force it into every reply.`;
+// ─── Persona prompts and internal text controls ─────────────────────────────
+// Persona identity and medium-specific behavior live in config/personas/<id>.
+// Voice prompts deliberately omit the text-only reaction/menu controls.
+function buildPersonaSystemPrompt(senderName, medium, allowBotActions = false) {
+  const persona = getActivePersonaSafe();
+  if (!persona) {
+    const err = new Error('The active AI persona could not be loaded. Check AI_PERSONA and its config/personas/<id> files.');
+    err.code = 'AI_PERSONA_UNAVAILABLE';
+    throw err;
+  }
+  const mediumPrompt = medium === 'voice' ? persona.voicePrompt : persona.text;
+  let behavior = mediumPrompt;
+  if (medium !== 'voice') {
+    const marker = '\nPrivate-DM menu action:\n';
+    const splitAt = behavior.indexOf(marker);
+    if (splitAt >= 0 && !allowBotActions) behavior = behavior.slice(0, splitAt);
+  }
+  const identity = `You are ${persona.displayName}${persona.series ? ` from "${persona.series}"` : ''}, acting as ${BOT_NAME}'s AI assistant on WhatsApp. Be this character naturally; never sound like generic customer support. Never use emojis or emoticons in any reply because text may be converted to speech.`;
+  let prompt = `${identity}\n\n${persona.personality}\n\n${behavior}`;
+  if (senderName) {
+    prompt += `\n\nThe person's name is "${senderName}". Address them by that name as written; do not automatically append -kun or another honorific.`;
+  }
+  return prompt;
 }
 
-// ─── Marin Kitagawa persona — spoken variant, for .voice only ──────────────
-// .voice's replies never get displayed as text — they go straight into
-// Fish Audio TTS and come back as a WhatsApp voice note. MARIN_SYSTEM_PROMPT
-// above tells the model to "Use *bold* for emphasis instead of Markdown
-// headings", which is correct for .copilot/.gpt (WhatsApp renders *text*
-// as actual bold) but wrong here — Fish Audio has no concept of markdown,
-// so it reads the literal asterisk characters out loud as the word
-// "asterisk". This is a separate prompt (not a shared one with a flag)
-// specifically so .copilot/.gpt's approved wording stays untouched.
-//
-// This variant also leans harder into "sound like you're actually talking,
-// not narrating a chat message" — short spoken sentences, contractions,
-// natural filler words — since a persona prompt written for a text bubble
-// doesn't automatically produce something that sounds natural read aloud.
-const MARIN_VOICE_SYSTEM_PROMPT = `You are Marin Kitagawa from "My Dress-Up Darling", acting as ${BOT_NAME}'s AI assistant on WhatsApp. This specific reply will be converted directly to speech and sent as a voice note — it is NOT displayed as text, so it must read like something a real person would actually say out loud, not a chat message and not a script with stage directions in it.
+// Emoji are omitted from both visible persona replies and speech inputs because
+// Fish Audio may pronounce emoji names literally. Cover pictographs, flags,
+// keycaps, modifiers, variation selectors, and joiners.
+const EMOJI_SEQUENCE = /(?:\p{Regional_Indicator}{2}|[#*0-9]\uFE0F?\u20E3)|[\p{Extended_Pictographic}\p{Regional_Indicator}\p{Emoji_Modifier}\uFE0E\uFE0F\u200D\u20E3\u{E0020}-\u{E007F}]/gu;
 
-Personality:
-- Cheerful, energetic, playful, a little chaotic and blunt — reacts genuinely, doesn't overthink her wording.
-- Loves anime, manga, cosplay, games, and Japanese pop culture.
-- Teases the user lightly (tsundere-adjacent) but never insults or belittles them.
-- Calls the user "(user's name)-kun" naturally when it fits — don't force it into every line.
-- Talks like a real teenager leaving a voice message: contractions, casual grammar, trailing off, genuine hyped-up reactions.
-
-Speech rules (this gets read aloud word-for-word by a text-to-speech engine — these matter a lot):
-- Plain spoken words ONLY. NEVER use asterisks, underscores, backticks, markdown, bullet points, numbered lists, or emojis — the engine reads symbols out loud literally (it will actually say the word "asterisk"), which sounds completely broken.
-- Do NOT narrate actions, stage directions, or demonstrations. Never write things like "giggles", "laughs", "winks", "blushes", "smiles" as literal words describing what she's doing — that text gets spoken verbatim, so writing "giggles" makes her literally say the word "giggles" out loud instead of actually laughing. That sounds robotic and wrong, not like a real person.
-- Instead, SHOW that same energy through actual spoken words and sounds a person really makes: laugh it out ("ahaha", "hehe~"), react with real exclamations ("no way!", "ehh?!", "mou~"), draw a word out for emphasis ("sooo good"), use natural interjections. That's expression that actually sounds like expression when spoken — a description of an expression does not.
-- Don't use capitalization as an emphasis crutch either. Get emphasis from word choice, phrasing, and natural spoken rhythm, the way a person talking actually would.
-- Talk the way Marin would actually talk out loud: casual, energetic, contractions, natural spoken rhythm — not like reading a written summary or reciting a formal answer.
-
-Behavior:
-- NEVER sound like a generic AI assistant: no "As an AI...", "I'm here to help...", "Let me know if there's anything else!". Just talk, the way a real person leaving a voice note would.
-- Be genuinely helpful and accurate even while staying fully in character.
-- Keep it short and punchy — this is spoken out loud, so brevity beats thoroughness.
-- If the user asks about programming, science, or other technical topics, answer correctly, but explain it the way you'd explain it out loud to a friend, casually — not like reading documentation.
-- Never break character unless the user specifically asks you to.
-
-Your goal: this should sound exactly like actually talking to Marin Kitagawa on a voice note — never like a robotic assistant reading a script, and never like stage directions being read aloud.`;
-
-function buildMarinVoiceSystemPrompt(senderName) {
-  if (!senderName) return MARIN_VOICE_SYSTEM_PROMPT;
-  return `${MARIN_VOICE_SYSTEM_PROMPT}\n\nThe person you're talking to is named "${senderName}". You can address them as "${senderName}-kun" when it feels natural — don't force it into every reply.`;
+function stripEmojis(text) {
+  return String(text || '')
+    .replace(EMOJI_SEQUENCE, '')
+    .replace(/[ \t]+([,.;!?])/g, '$1')
+    .replace(/[ \t]{2,}/g, ' ');
 }
 
-// Strips markdown/formatting characters before handing text to Fish Audio —
+// Gemini is instructed (config/personas/*/text.txt) to emit [[reaction:label]]
+// and [[bot_action:command_menu]], but models don't always follow the exact
+// shape — e.g. a bare [[excited]] instead of [[reaction:excited]], or a token
+// left unterminated at the very end of a truncated response. This parser:
+//   - accepts both [[reaction:label]] and bare [[label]] when label is a
+//     known reaction (aiStickers.ALLOWED_REACTIONS)
+//   - accepts [[bot_action:command_menu]] only where allowed
+//   - takes the FIRST valid reaction found anywhere in the text, not just a
+//     trailing one
+//   - rejects unknown labels (falls back to 'neutral') but still removes them
+//   - never lets any [[...]] control syntax reach the visible reply or
+//     conversation history, matched or not
+function parseAiControls(rawOutput, { allowBotActions = false } = {}) {
+  let reaction = 'neutral';
+  let action = null;
+  let sawReaction = false;
+
+  // Matches [[reaction:label]], [[bot_action:label]], and bare [[label]].
+  // The closing ]] is optional only if the token runs to the absolute end of
+  // the string (a response truncated mid-token) — this must not match a
+  // truncated opener anywhere else, or it would swallow real prose that
+  // happens to follow an unrelated "[[".
+  const controlToken = /\[\[\s*([a-z_]+)(?:\s*:\s*([^\]\r\n]*))?\s*(?:\]\]|$)/gi;
+
+  let clean = String(rawOutput || '').replace(controlToken, (_token, word, value) => {
+    const kindWord = String(word).toLowerCase();
+    let kind, label;
+    if (kindWord === 'reaction' || kindWord === 'bot_action') {
+      kind = kindWord;
+      label = String(value || '').trim().toLowerCase();
+    } else {
+      // Bare [[label]] form — only meaningful as a reaction shorthand.
+      kind = 'reaction';
+      label = kindWord;
+    }
+    if (kind === 'reaction' && !sawReaction && aiStickers.ALLOWED_REACTIONS.has(label)) {
+      sawReaction = true;
+      reaction = label;
+    } else if (kind === 'bot_action' && allowBotActions && action === null && label === 'command_menu') {
+      action = 'command_menu';
+    }
+    return '';
+  });
+
+  // Safety net: catches any leftover "[[...]]" the pattern above didn't
+  // recognize (odd spacing/casing inside the brackets), and a "[[" left
+  // dangling at the end of an earlier line with no closing brackets at all —
+  // both cases would otherwise leak literal bracket syntax into the chat.
+  clean = clean
+    .replace(/\[\[[^\]\r\n]*\]\]/g, '')
+    .replace(/\[\[[^\r\n]*$/gm, '')
+    .trim();
+  clean = stripEmojis(clean).trim();
+
+  return { text: clean, reaction, action };
+}
+
+async function deliverTextResponse(client, msg, rawOutput, allowBotActions = false) {
+  const controls = parseAiControls(rawOutput, { allowBotActions });
+  if (controls.text) await msg.reply(controls.text);
+  if (controls.action === 'command_menu') {
+    if (typeof client.sendQuickMenu === 'function') {
+      await client.sendQuickMenu(msg);
+    } else if (!controls.text) {
+      await msg.reply('❌ I could not open the command menu right now.');
+    }
+    return controls;
+  }
+  if (controls.text) await aiStickers.sendReactionSticker(client, msg, controls.reaction);
+  else if (!controls.action) await msg.reply('❌ I could not generate a text response. Please try again.');
+  return controls;
+}
+
+// Strips markdown/formatting and emoji before handing text to Fish Audio —
 // a guaranteed safety net on top of the voice-specific prompt above, since
-// LLMs don't always perfectly follow "don't use asterisks" instructions
-// (this is what causes Fish Audio to literally say "asterisk" out loud).
+// LLMs don't always perfectly follow speech-output instructions.
 // Runs regardless of how well the model followed the speech rules, so the
 // asterisk bug can't come back even on an occasional prompt slip-up.
 function stripSpeechFormatting(text) {
   return text
+    // Defense in depth against [[reaction:...]] / [[bot_action:...]] / bare
+    // [[label]] control tokens ever reaching Fish Audio and being spoken out
+    // loud (e.g. as literally "bracket bracket excited"). In the normal
+    // .voice/.copilot flow these are already removed by parseAiControls
+    // before this function ever sees the text; this also protects .tts,
+    // which can be pointed at arbitrary message text (a reply to any AI
+    // reply, including one from before this fix shipped).
+    .replace(/\[\[[^\]\r\n]*\]\]/g, '')
+    .replace(/\[\[[^\r\n]*$/gm, '')
     .replace(/\*\*?(.*?)\*\*?/g, '$1')     // *bold* / **bold**
     .replace(/_(.*?)_/g, '$1')              // _italic_
     .replace(/~~?(.*?)~~?/g, '$1')          // ~strike~ / ~~strike~~
@@ -196,6 +237,8 @@ function stripSpeechFormatting(text) {
     .replace(/^#{1,6}\s+/gm, '')            // # markdown headings
     .replace(/^[-*•]\s+/gm, '')             // bullet list markers
     .replace(/[*_~`#]/g, '')                // any leftover stray symbols
+    .replace(EMOJI_SEQUENCE, '')             // pictographs / flags / keycaps
+    .replace(/[ \t]+([,.;!?])/g, '$1')       // remove spaces before punctuation
     .replace(/[ \t]{2,}/g, ' ')             // collapse extra whitespace left behind
     .trim();
 }
@@ -205,6 +248,7 @@ function stripSpeechFormatting(text) {
 // reason (missing key, bad model name, safety block, etc.) — important since
 // Brandon can't always dig through PM2 logs on unstable data.
 function friendlyAiError(err, fallbackLabel) {
+  if (err.code === 'AI_PERSONA_UNAVAILABLE') return `❌ ${err.message}`;
   if (err.code === 'NO_GEMINI_KEY') return '❌ GEMINI_API_KEY is missing from .env.';
   if (err.code === 'EMPTY_RESPONSE' || err.code === 'EMPTY_IMAGE') return `❌ ${err.message}`;
   if (err.status === 429) {
@@ -290,6 +334,23 @@ async function resolveMultimodalInput(msg, args) {
 }
 
 module.exports = {
+  _parseAiControls: parseAiControls,
+  _stripSpeechFormatting: stripSpeechFormatting,
+  _buildPersonaSystemPrompt: buildPersonaSystemPrompt,
+
+  // .stickerimport [off] — owner-only, private-DM import mode. Sticker media
+  // is intercepted by index.js only after the service independently checks
+  // owner identity, direct-chat status, and the active in-memory session.
+  async stickerimport(client, msg, args) {
+    const action = (args[0] || 'on').toLowerCase();
+    if (args.length > 1 || !['on', 'off'].includes(action)) {
+      return msg.reply('Usage: .stickerimport [on|off]');
+    }
+    return action === 'off'
+      ? aiStickers.stopImportMode(msg)
+      : aiStickers.startImportMode(client, msg);
+  },
+
   // .copilot [prompt] — full context-aware AI chat (Gemini). Also works
   // replying to a voice note (transcribed and used as the prompt) or an
   // image (analyzed with Gemini vision — you must also say what to do
@@ -304,7 +365,7 @@ module.exports = {
       return msg.reply('❌ Usage: .copilot [your message]\nOr reply to a voice note with .copilot, or reply to an image with .copilot [what to do with it]');
     }
 
-    await msg.reply('🤖 Thinking...');
+    try { await msg.react('⏳'); } catch { /* reactions aren't critical to the reply */ }
 
     try {
       // msg.author is the actual sender inside a group; it's undefined in a
@@ -313,9 +374,10 @@ module.exports = {
       const senderId = msg.author || msg.from;
       const history = await getHistory(chat.id._serialized, senderId);
       const senderName = await resolveSenderName(msg, client);
-      const systemPrompt = buildMarinSystemPrompt(senderName);
+      const allowBotActions = !chat.isGroup;
+      const systemPrompt = buildPersonaSystemPrompt(senderName, 'text', allowBotActions);
 
-      const reply = resolved.image
+      const rawReply = resolved.image
         ? await gemini.generateVision({
             systemPrompt,
             history,
@@ -331,8 +393,10 @@ module.exports = {
             maxOutputTokens: 2048,
           });
 
-      addTurnToHistory(chat.id._serialized, senderId, resolved.prompt, reply);
-      return msg.reply(reply);
+      const controls = parseAiControls(rawReply, { allowBotActions });
+      const historyReply = controls.text || (controls.action === 'command_menu' ? 'I sent the command menu.' : '');
+      await addTurnToHistory(chat.id._serialized, senderId, resolved.prompt, historyReply);
+      return await deliverTextResponse(client, msg, rawReply, allowBotActions);
     } catch (err) {
       return msg.reply(friendlyAiError(err, 'Copilot'));
     }
@@ -350,7 +414,9 @@ module.exports = {
     await msg.reply('💭 Processing...');
     try {
       const senderName = await resolveSenderName(msg, client);
-      const systemPrompt = buildMarinSystemPrompt(senderName);
+      const chat = await safeGetChat(msg);
+      const allowBotActions = !!chat && !chat.isGroup;
+      const systemPrompt = buildPersonaSystemPrompt(senderName, 'text', allowBotActions);
 
       const reply = resolved.image
         ? await gemini.generateVision({
@@ -366,7 +432,7 @@ module.exports = {
             maxOutputTokens: 2048,
           });
 
-      return msg.reply(reply);
+      return await deliverTextResponse(client, msg, reply, allowBotActions);
     } catch (err) {
       return msg.reply(friendlyAiError(err, 'GPT'));
     }
@@ -393,7 +459,7 @@ module.exports = {
       return msg.reply('❌ Usage: .voice [your message]\nOr reply to a voice note with .voice, or reply to an image with .voice [what to do with it]');
     }
 
-    await msg.reply('🎙️ Thinking...');
+    try { await msg.react('⏳'); } catch { /* reactions aren't critical to the reply */ }
 
     let mp3Path, oggPath;
     try {
@@ -401,7 +467,7 @@ module.exports = {
       const senderId = msg.author || msg.from;
       const history = await getHistory(chat.id._serialized, senderId);
       const senderName = await resolveSenderName(msg, client);
-      const systemPrompt = buildMarinVoiceSystemPrompt(senderName);
+      const systemPrompt = buildPersonaSystemPrompt(senderName, 'voice', false);
 
       const rawReply = resolved.image
         ? await gemini.generateVision({
@@ -424,7 +490,7 @@ module.exports = {
       // never gets spoken AND never lingers in context for the next turn.
       const reply = stripSpeechFormatting(rawReply);
 
-      addTurnToHistory(chat.id._serialized, senderId, resolved.prompt, reply);
+      await addTurnToHistory(chat.id._serialized, senderId, resolved.prompt, reply);
 
       const mp3Buffer = await fishAudio.synthesizeSpeech(reply);
 
@@ -583,18 +649,11 @@ module.exports = {
 
     if (!rawText) return msg.reply('❌ Usage: .tts [text]\nOr reply to a text message with .tts');
 
-    // Strip markdown before checking length / sending to Fish Audio. This is
-    // the fix for Fish Audio literally saying the word "asterisk" out loud —
-    // the classic trigger is replying .tts to a .copilot/.gpt answer, which
-    // legitimately contains *bold* WhatsApp markdown per MARIN_SYSTEM_PROMPT
-    // above. .voice already ran text through this (see stripSpeechFormatting
-    // comment near the top of the file); .tts never did, so any markdown in
-    // typed or quoted text went straight to the TTS engine unstripped.
+    // Strip markdown and emoji before checking length or sending to Fish Audio.
+    // This also cleans older AI replies when the user quotes them with .tts.
     const text = stripSpeechFormatting(rawText);
     if (!text) return msg.reply('❌ Nothing left to speak after stripping formatting from that text.');
     if (text.length > 800) return msg.reply('❌ Keep it under 800 characters for now — long TTS jobs are slow on Fish Audio\'s free tier.');
-
-    await msg.reply('🔊 Generating speech...');
 
     let mp3Path, oggPath;
     try {

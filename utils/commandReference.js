@@ -85,7 +85,7 @@ const COMMAND_REFERENCE = [
   {
     emoji: '💰',
     title: 'ECONOMY',
-    note: "New accounts must complete registration before using any other command — set your name, date of birth, bio, and profile picture via `.setname` / `.setdob` / `.bio` / `.setpic`, in any order (`.edit` shows what's left). You must be 18+ to register — an under-18 `.setdob` is denied and locks that number out of retrying `.setdob` for 30 days.",
+    note: "New accounts must start registration with `.reg`, then complete their name, date of birth, bio, and profile picture via `.setname` / `.setdob` / `.bio` / `.setpic`, in any order (`.edit` shows what's left). You must be 18+ to register — an under-18 `.setdob` is denied and locks that number out of retrying `.setdob` for 30 days.",
     items: [
       { cmd: '.balance / .bal', desc: 'Check your wallet, bank, and orbs' },
       { cmd: '.orbs', desc: 'Check your orbs balance' },
@@ -99,6 +99,7 @@ const COMMAND_REFERENCE = [
       { cmd: '.richg', desc: 'Richest users in this group' },
       { cmd: '.profile / .p', desc: 'View your profile card' },
       { cmd: '.edit', desc: 'Profile dashboard — your current name/bio/DOB/age/picture status (DOB shown in DM only), and the commands to update each' },
+      { cmd: '.reg', desc: 'Start or resume private profile registration; account activates after all required steps are complete' },
       { cmd: '.setname [name]', desc: 'Set your display name on your profile' },
       { cmd: '.setdob [DD/MM/YYYY]', desc: 'Set your date of birth — age is calculated automatically; 18+ required' },
       { cmd: '.bio [text] / .setbio', desc: 'Set your profile bio' },
@@ -238,14 +239,15 @@ const COMMAND_REFERENCE = [
     emoji: '🤖',
     title: 'AI',
     items: [
-      { cmd: '.copilot [msg]', desc: 'Full context-aware AI chat as Marin (Gemini) — text reply' },
-      { cmd: '.gpt [msg]', desc: 'Single-turn AI question (Gemini) — text reply' },
+      { cmd: '.copilot [msg]', desc: 'Full context-aware AI chat as the active persona (Gemini) — text reply without emojis' },
+      { cmd: '.gpt [msg]', desc: 'Single-turn AI question as the selected persona (Gemini) — text reply' },
       { cmd: '.voice [msg]', desc: 'Same AI chat as .copilot, replied as a spoken voice note (Fish Audio TTS)' },
+      { cmd: '.stickerimport [on|off]', desc: 'Owner only, private DM: add WebP stickers once to the shared Cloudinary/Mongo AI library used by every persona' },
       { cmd: '.imagine [prompt]', desc: 'AI image generation (Gemini 2.5 Flash Image)' },
       { cmd: '.upscale', desc: 'Upscale a replied image' },
       { cmd: '.translate [lang] [text] / .tt', desc: 'Translate text' },
       { cmd: '.transcribe / .tb', desc: 'Transcribe a replied voice note to text' },
-      { cmd: '.tts [text]', desc: 'Turn text into a spoken voice note (reply to a message to use its text)' },
+      { cmd: '.tts [text]', desc: 'Turn text into a voice note; only the reaction and final audio are sent (reply to a message to use its text)' },
     ],
   },
   {

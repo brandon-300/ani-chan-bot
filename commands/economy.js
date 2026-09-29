@@ -232,6 +232,24 @@ const ROAST_LINES = [
 ];
 
 module.exports = {
+  // .reg — begin or resume the existing profile-registration flow. It does
+  // not activate an account; the current four verified profile steps do that.
+  async reg(client, msg, args) {
+    if (args.length) return msg.reply('Usage: .reg');
+    const chat = await safeGetChat(msg).catch(() => null);
+    if (!chat || chat.isGroup) return msg.reply('❌ Start registration in a private DM with the bot.');
+    const contact = await msg.getContact();
+    const user = await User.findOrCreate(contact.id._serialized, contact.pushname);
+    if (user.registration?.status === 'active') {
+      return msg.reply('✅ Your account is already active. Send a message here to chat with Copilot, or use .menu to see commands.');
+    }
+    return msg.reply(
+      `📝 *Registration started*\n\n` +
+      `Complete these existing profile steps in any order. Your account activates only after all four are complete:\n\n` +
+      `${buildRegistrationProgressText(user)}\n\n` +
+      `You must be ${MIN_REGISTRATION_AGE}+ to register.`
+    );
+  },
   // .balance
   async balance(client, msg, args) {
     const contact = await msg.getContact();

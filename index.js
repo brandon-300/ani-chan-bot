@@ -6,7 +6,9 @@ const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
 const { safeGetQuotedMessage, safeGetChat, safeGetContact, resolveSenderName, withRetry, decodeIdKey, isOwner, isMod, buildRegistrationIntroText, buildRegistrationProgressText } = require('./utils/helpers');
-const { BOT_NAME, MENU_IMAGE_URL, AI_CALL_NAMES } = require('./utils/config');
+const { BOT_NAME, MENU_IMAGE_URL, BOT_PREFIX, AI_CALL_NAMES_OVERRIDE } = require('./utils/config');
+const { getActivePersonaSafe } = require('./utils/persona');
+const aiStickers = require('./utils/aiStickers');
 const { instrumentHttpClients, wrapWithUsageTracking } = require('./utils/usageTracking');
 const { tryHandleQuizAnswer } = require('./commands/games/quiz');
 const AiConversation = require('./models/AiConversation');
@@ -86,6 +88,12 @@ async function connectMongo() {
     await mongoose.connect(process.env.MONGO_URI, mongoOptions);
     console.log('✅ MongoDB connected');
 
+    // Sticker metadata is rebuilt from Mongo only after the connection is
+    // live. This is best-effort and must never block WhatsApp/non-AI startup.
+    aiStickers.initialize().catch(err => {
+      console.error('AI sticker metadata startup failed (non-fatal):', err.message);
+    });
+
     // One-time self-healing schema migration: AiConversation used to be
     // keyed by chatId alone (unique), which meant every member of a group
     // shared one AI conversation. It's now keyed by (chatId, senderId).
@@ -148,7 +156,7 @@ if (process.env.BOT_NUMBER) {
 
 const client = new Client(clientOptions);
 
-const PREFIX = process.env.BOT_PREFIX || '.';
+const PREFIX = BOT_PREFIX;
 
 const commands = {};
 const commandDir = path.join(__dirname, 'commands');
@@ -299,6 +307,10 @@ async function sendQuickMenu(msg) {
     await msg.reply(menu);
   }
 }
+
+// The AI may request the real source-of-truth menu through this callback; it
+// never invents or maintains a second command list.
+client.sendQuickMenu = (msg) => sendQuickMenu(msg);
 
 let reconnectTimer = null;
 let cardDropsStarted = false;
@@ -519,6 +531,7 @@ client.on('error', (err) => {
 
 client.on('ready', () => {
   whatsappStarting = false;
+  aiStickers.initialize().catch(err => console.error('AI sticker library startup failed:', err.message));
 
   console.log(`
 ╭━━★彡 ${BOT_NAME} is ONLINE 彡★━━╮
@@ -710,7 +723,7 @@ const HEAVY_COMMANDS = new Set([
 // blocked by the same gate that guards everything else. `command` here has
 // already gone through the aliases map by the time this runs (setbio ->
 // bio), so only the canonical names need listing.
-const REGISTRATION_BYPASS_COMMANDS = new Set(['setname', 'setdob', 'bio', 'setpic']);
+const REGISTRATION_BYPASS_COMMANDS = new Set(['reg', 'setname', 'setdob', 'bio', 'setpic']);
 
 // Checks whether `command` should be allowed to run for whoever sent `msg`.
 // Returns { blocked, senderId, wasActive }:
@@ -878,13 +891,29 @@ const THIRD_PERSON_PREDICATES = new Set([
   'wants', 'wanted', 'needs', 'needed', 'being',
 ]);
 
+function isCommandMenuRequest(rawBody) {
+  const text = String(rawBody || '').toLowerCase().replace(/[’]/g, "'").trim();
+  if (!text) return false;
+  return [
+    /\b(?:what|which)\s+(?:are|r)\s+(?:your|the)\s+commands?\b/,
+    /\b(?:show|list|send|give|display)\s+(?:me\s+)?(?:the\s+)?(?:bot'?s?\s+)?commands?\b/,
+    /\bwhat\s+can\s+i\s+(?:use|do)(?:\s+(?:with\s+)?(?:this|the)\s+bot)?\b/,
+    /\bwhat\s+(?:features|functions)\s+(?:does|can)\s+(?:this\s+)?bot\b/,
+  ].some(pattern => pattern.test(text));
+}
+
 function isCallingBotByName(rawBody) {
   const body = (rawBody || '').trim();
   if (!body) return false;
 
   const stripped = body.replace(GREETING_PREFIX_RE, '');
 
-  for (const name of AI_CALL_NAMES) {
+  // Resolve names at message time rather than freezing an eagerly-loaded
+  // persona at module import. A broken persona uses only an explicit env
+  // override (if supplied); otherwise group wake names are empty.
+  const persona = getActivePersonaSafe();
+  const callNames = persona ? persona.callNames : (AI_CALL_NAMES_OVERRIDE || []);
+  for (const name of callNames) {
     const escaped = name.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+');
     if (!escaped) continue;
 
@@ -937,6 +966,14 @@ client.on('message', (msg) => {
 
     patchQuotedReply(msg);
 
+    if (msg.type === 'sticker') {
+      const imported = await aiStickers.handleIncomingSticker(client, msg).catch(err => {
+        console.error('AI sticker import dispatch failed:', err.message);
+        return false;
+      });
+      if (imported) return;
+    }
+
     // ── Anime Quiz answers ───────────────────────────────────────────────
     // A bare "1"-"4" typed during an active .quiz is NOT a command (no
     // prefix) and is very often also a quoted reply to the bot's own quiz
@@ -988,53 +1025,39 @@ client.on('message', (msg) => {
       const quoted = msg.hasQuotedMsg ? await safeGetQuotedMessage(msg).catch(() => null) : null;
 
       if (quoted && quoted.fromMe) {
-        // ── Auto .copilot / .voice on replies to the bot ──────────────────
-        // Replying directly to a message the bot sent — with text, an
-        // image, or a voice note/audio file — is now treated as an implicit
-        // AI command, no ".copilot"/".gpt" typing required:
-        //   - Reply to a VOICE NOTE or AUDIO FILE the bot sent -> .voice (stays spoken)
-        //   - Reply to anything else the bot sent -> .copilot
-        // Any other reply type (sticker, video, document, etc.) is ignored —
-        // no auto-command, no menu.
+        // Existing reply-to-bot behavior stays ahead of the plain-DM router.
         const replyKind = classifyReplyKind(msg);
         if (replyKind === 'other') return;
-
         const typed = (msg.body || '').trim();
-        // A voice-note reply has no caption/body — resolveMultimodalInput()
-        // in ai.js handles an empty typed value fine there (it just uses the
-        // transcript as the whole prompt). An image reply DOES need some
-        // text ("what should I do with this image"), so give it a generic
-        // default instead of erroring out when the person sent it uncaptioned.
         args = typed
           ? typed.split(/\s+/)
           : (replyKind === 'image' ? ['Take', 'a', 'look', 'and', 'respond', 'naturally.'] : []);
-
         command = isVoiceNoteMessage(quoted) ? 'voice' : 'copilot';
       } else {
-        // ── AI wake-word: called by name in plain text ────────────────────
-        // Two shapes, both routed to .copilot so they share the same
-        // conversation memory as every other way of talking to the AI:
-        //   - No quoted message: the message body itself is the prompt
-        //     ("Marin, what anime should I watch").
-        //   - Replying to someone ELSE's message (quoted exists but isn't
-        //     from the bot — the quoted.fromMe case above already claimed
-        //     that branch) while calling the bot's name: fold the quoted
-        //     message's text in as context ("Hi Marin, see what this guy
-        //     is saying" while replying to someone's message).
-        // Media-only replies with no caption text are deliberately excluded
-        // here (isCallingBotByName requires actual text to detect a name
-        // in) — that's what the reply-to-bot branch above is for.
-        if (!isCallingBotByName(body)) return;
-
-        const quotedText = quoted ? (quoted.body || '').trim() : '';
-        const prompt = quotedText
-          ? `${body}\n\n(They're replying to this message: "${quotedText}")`
-          : body;
-        // A single-element array rather than a whitespace split — this can
-        // contain the quoted-message context above with its own line
-        // breaks, which ai.js's `args.join(' ')` would otherwise collapse.
-        args = [prompt];
-        command = 'copilot';
+        const chat = await safeGetChat(msg).catch(() => null);
+        if (chat && chat.isGroup === false && !String(chat.id?._serialized || '').endsWith('@g.us')) {
+          // Only registered private-chat users reach this command later: the
+          // existing registration gate still runs before handler execution.
+          if (isVoiceNoteMessage(msg)) {
+            command = 'voice';
+            args = [];
+          } else if (msg.type === 'chat' && !msg.hasMedia && body.trim()) {
+            command = isCommandMenuRequest(body) ? 'menu' : 'copilot';
+            args = [body.trim()];
+          } else {
+            return;
+          }
+        } else {
+          // Group behavior remains wake-word/reply-only; plain group text
+          // still never routes into Copilot.
+          if (!isCallingBotByName(body)) return;
+          const quotedText = quoted ? (quoted.body || '').trim() : '';
+          const prompt = quotedText
+            ? `${body}\n\n(They're replying to this message: "${quotedText}")`
+            : body;
+          args = [prompt];
+          command = 'copilot';
+        }
       }
     } else {
       args = body.slice(PREFIX.length).trim().split(/\s+/);

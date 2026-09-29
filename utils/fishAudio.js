@@ -1,20 +1,25 @@
 // ─── Fish Audio TTS wrapper ─────────────────────────────────────────────────
-// Calls Fish Audio's official REST API (api.fish.audio) directly over axios
-// — no new npm dependency needed. Returns an mp3 Buffer; converting that to
-// an ogg/opus voice note (what WhatsApp needs for a playable .ptt message)
-// is handled in commands/ai.js using the same ffmpeg pattern already used
-// by .tovn in commands/converter.js.
+// Calls Fish Audio's REST API directly over axios. The API key/model are
+// process-wide; voice.referenceId belongs to each persona. FISH_VOICE_ID is
+// only a final emergency override for operators who intentionally force one
+// voice across the whole process.
 const axios = require('axios');
+const { FISH_VOICE_ID, FISH_MODEL, FISH_REQUEST_TIMEOUT_MS } = require('./config');
+const { getActivePersonaSafe } = require('./persona');
 
 const FISH_API_KEY = process.env.FISH_API_KEY;
-const FISH_VOICE_ID = process.env.FISH_VOICE_ID; // Fish Audio calls this "reference_id"
 
-// s2.1-pro-free is Fish Audio's free-tier model slug as of when this was
-// written. If Fish Audio renames/retires it, override FISH_MODEL in .env —
-// no code change needed. Check your usable models at https://fish.audio
-const FISH_MODEL = process.env.FISH_MODEL || 's2.1-pro-free';
-
-const REQUEST_TIMEOUT_MS = 45000;
+function resolveVoiceId(voiceId, persona = null) {
+  const activePersona = persona || getActivePersonaSafe();
+  const selected = voiceId || activePersona?.voice?.referenceId || FISH_VOICE_ID;
+  if (!selected) {
+    const label = activePersona?.displayName || 'the active persona';
+    const err = new Error(`No Fish Audio voice is configured for ${label}. Set voice.referenceId in that persona's meta.json, or set FISH_VOICE_ID only as a process-wide emergency override.`);
+    err.code = 'NO_FISH_VOICE';
+    throw err;
+  }
+  return selected;
+}
 
 function assertConfig() {
   if (!FISH_API_KEY) {
@@ -22,19 +27,11 @@ function assertConfig() {
     err.code = 'NO_FISH_KEY';
     throw err;
   }
-  if (!FISH_VOICE_ID) {
-    const err = new Error(
-      'FISH_VOICE_ID is not set in .env — pick a voice at https://fish.audio (or your own cloned voice) and copy its reference_id into FISH_VOICE_ID'
-    );
-    err.code = 'NO_FISH_VOICE';
-    throw err;
-  }
 }
 
 function extractApiErrorMessage(err) {
   // Fish Audio returns binary audio on success, so on failure the body may
-  // come back as a Buffer even though it's actually JSON text — decode it
-  // before trying to read a message out of it.
+  // come back as a Buffer even though it is actually JSON text.
   const data = err.response?.data;
   if (Buffer.isBuffer(data)) {
     try {
@@ -47,8 +44,12 @@ function extractApiErrorMessage(err) {
   return data?.message || data?.error || err.message || 'Unknown Fish Audio API error';
 }
 
-// Returns a Buffer containing mp3 audio.
-async function synthesizeSpeech(text) {
+// Returns Fish Audio's MP3 bytes directly. `voiceId` is an optional per-call
+// override; otherwise use the persona's own reference before the global
+// fallback. No pitch/effect processing is added; loudness normalization is
+// disabled so the generated reference voice is not post-leveled.
+async function synthesizeSpeech(text, { voiceId } = {}) {
+  const referenceId = resolveVoiceId(voiceId);
   assertConfig();
 
   try {
@@ -56,9 +57,10 @@ async function synthesizeSpeech(text) {
       'https://api.fish.audio/v1/tts',
       {
         text,
-        reference_id: FISH_VOICE_ID,
+        reference_id: referenceId,
         format: 'mp3',
-        normalize: true,
+        normalize: true, // Text normalization for numbers/pronunciation, not an audio effect.
+        prosody: { normalize_loudness: false },
       },
       {
         headers: {
@@ -67,7 +69,7 @@ async function synthesizeSpeech(text) {
           model: FISH_MODEL,
         },
         responseType: 'arraybuffer',
-        timeout: REQUEST_TIMEOUT_MS,
+        timeout: FISH_REQUEST_TIMEOUT_MS,
       }
     );
 
@@ -81,4 +83,4 @@ async function synthesizeSpeech(text) {
   }
 }
 
-module.exports = { synthesizeSpeech };
+module.exports = { synthesizeSpeech, _resolveVoiceId: resolveVoiceId };

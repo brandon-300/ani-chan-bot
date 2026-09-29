@@ -22,9 +22,9 @@ function isCloudConfigured() {
   return configured;
 }
 
-// Uploads a local file to Cloudinary and returns { url, publicId }. Store
-// both — url is what you send back to WhatsApp (MessageMedia.fromUrl),
-// publicId is what you need later to overwrite or delete it.
+// Uploads a local file to Cloudinary and returns { url, publicId, version }.
+// Store the secure URL and version as metadata; publicId is used for later
+// overwrite/delete operations.
 //
 // folder groups uploads by feature (e.g. 'anichan/profile_pics'). Passing
 // the same publicId on a later call overwrites the previous file in place
@@ -40,7 +40,7 @@ async function uploadToCloud(filePath, { folder, publicId, resourceType = 'image
     overwrite: true,
     resource_type: resourceType,
   });
-  return { url: result.secure_url, publicId: result.public_id };
+  return { url: result.secure_url, publicId: result.public_id, version: result.version };
 }
 
 // Deletes a previously-uploaded file by its full publicId (as returned from
@@ -60,18 +60,20 @@ async function deleteFromCloud(publicId, resourceType = 'image') {
 // and would otherwise have to write a throwaway temp file just to hand a
 // path to the SDK. cloudinary.uploader.upload_stream() accepts a writable
 // stream instead, so the buffer goes straight to Cloudinary — no temp file
-// created, nothing to clean up on disk, one less filesystem write on a
-// phone-class device.
-async function uploadBufferToCloud(buffer, { folder, publicId, resourceType = 'image' } = {}) {
+// created, nothing to clean up on disk. The optional format setting lets
+// sticker imports guarantee the Cloudinary asset format is WebP.
+async function uploadBufferToCloud(buffer, { folder, publicId, resourceType = 'image', format } = {}) {
   if (!configured) {
     throw new Error('Cloudinary is not configured — set CLOUDINARY_URL (or CLOUDINARY_CLOUD_NAME/API_KEY/API_SECRET) in .env');
   }
+  const uploadOptions = { folder, public_id: publicId, overwrite: true, resource_type: resourceType };
+  if (format) uploadOptions.format = format;
   return new Promise((resolve, reject) => {
     const stream = cloudinary.uploader.upload_stream(
-      { folder, public_id: publicId, overwrite: true, resource_type: resourceType },
+      uploadOptions,
       (err, result) => {
         if (err) return reject(err);
-        resolve({ url: result.secure_url, publicId: result.public_id });
+        resolve({ url: result.secure_url, publicId: result.public_id, version: result.version });
       }
     );
     stream.end(buffer);
