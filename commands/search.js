@@ -225,6 +225,10 @@ module.exports = {
       return msg.reply(`${prefix}🤖 *AI best guess* (not a confirmed source):\n${identification}`);
     } catch (err) {
       console.error('[sauce] Gemini fallback failed:', err.message);
+      if (err.code === 'GEMINI_BUSY') {
+        // Sticker analysis currently owns the Gemini quota (utils/geminiGate.js).
+        return msg.reply("🔍 SauceNAO couldn't confirm a source for this image, and the AI fallback is unavailable right now. Please try again later.");
+      }
       if (sauceResult?.bestSimilarity) {
         return msg.reply(
           `❌ No confident match found.\n📉 Closest SauceNAO result was only ${sauceResult.bestSimilarity}% similar, so it's likely wrong and wasn't shown.\n💡 Try a clearer, uncropped, or higher-resolution image.`

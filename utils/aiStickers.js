@@ -18,9 +18,12 @@ const {
   AI_STICKER_MATCH_THRESHOLD,
   AI_STICKER_MIN_PERSONA_FIT,
   AI_STICKER_ANALYSIS_DELAY_MS,
+  AI_STICKER_QUOTA_COOLDOWN_MS,
+  AI_STICKER_QUOTA_MAX_COOLDOWN_MS,
 } = require('./config');
 const { getActivePersonaSafe, listPersonaIds, loadPersona } = require('./persona');
 const logger = require('./logger');
+const geminiGate = require('./geminiGate');
 
 const ALLOWED_REACTIONS = new Set([
   'amused', 'happy', 'laughing', 'love', 'excited', 'sad', 'angry', 'confused',
@@ -49,6 +52,19 @@ const recentAnimeByChat = new Map();
 const analysisQueue = [];
 const queuedAnalysis = new Set();
 let analysisBusy = false;
+// Quota pause: when Gemini says the quota is used up, the worker stops, puts the
+// current task back at the front of the queue and arms this timer to resume.
+let quotaResumeTimer = null;
+let quotaResumeAt = 0;
+let quotaStreak = 0;
+
+// While the queue has work — running, sleeping between tasks, or paused waiting
+// for quota — Gemini belongs to it. utils/geminiGate.js reads this to make
+// Gemini-backed commands reply "unavailable" instead of competing for quota.
+function analysisReservesGemini() {
+  return analysisBusy || analysisQueue.length > 0 || quotaResumeTimer !== null;
+}
+geminiGate.setReservationProvider(analysisReservesGemini);
 
 function makeError(message, code) {
   const err = new Error(message);
@@ -233,8 +249,51 @@ function enqueueAnalysis(personaId, hash) {
   setImmediate(runAnalysisQueue);
 }
 
+// Gemini reports an exhausted quota (or a rate limit) as HTTP 429; the message
+// text is the fallback for wrappers that lose the status code.
+function isQuotaError(err) {
+  if (!err) return false;
+  if (err.status === 429) return true;
+  return /\b429\b|quota|resource[_ ]exhausted|rate[ -]?limit/i.test(String(err.message || err));
+}
+
+// Gemini often says "Please retry in 23.4s" for per-minute limits. Daily-quota
+// messages have no plain-seconds hint, so this returns null for them.
+function parseRetryDelayMs(message) {
+  const match = /retry in (\d+(?:\.\d+)?)s\b/i.exec(String(message || ''));
+  return match ? Math.ceil(Number(match[1]) * 1000) : null;
+}
+
+function quotaCooldownMs(retryHintMs) {
+  const maxMs = Math.max(AI_STICKER_QUOTA_COOLDOWN_MS, AI_STICKER_QUOTA_MAX_COOLDOWN_MS);
+  if (retryHintMs) return Math.min(maxMs, Math.max(15000, retryHintMs + 5000));
+  const escalated = AI_STICKER_QUOTA_COOLDOWN_MS * (2 ** Math.max(0, quotaStreak - 1));
+  return Math.min(maxMs, escalated);
+}
+
+function pauseForQuota(retryHintMs, remaining) {
+  quotaStreak += 1;
+  const cooldownMs = quotaCooldownMs(retryHintMs);
+  quotaResumeAt = Date.now() + cooldownMs;
+  if (quotaResumeTimer) clearTimeout(quotaResumeTimer);
+  quotaResumeTimer = setTimeout(() => {
+    quotaResumeTimer = null;
+    quotaResumeAt = 0;
+    logger.write('INFO', 'background.ai_sticker_analysis.quota_resume', { queued: analysisQueue.length });
+    runAnalysisQueue();
+  }, cooldownMs);
+  // Never keep the process alive just for this timer.
+  if (typeof quotaResumeTimer.unref === 'function') quotaResumeTimer.unref();
+  logger.write('WARN', 'background.ai_sticker_analysis.quota_pause', {
+    cooldownMs,
+    resumeAt: new Date(quotaResumeAt),
+    streak: quotaStreak,
+    remaining,
+  });
+}
+
 async function runAnalysisQueue() {
-  if (analysisBusy) return;
+  if (analysisBusy || quotaResumeTimer) return;
   analysisBusy = true;
   logger.write('INFO', 'background.ai_sticker_analysis.worker.start', { queued: analysisQueue.length });
   try {
@@ -242,15 +301,31 @@ async function runAnalysisQueue() {
       const task = analysisQueue.shift();
       const key = analysisKey(task.personaId, task.hash);
       const operation = logger.start('background.ai_sticker_analysis.task', { personaId: task.personaId, hash: task.hash, remaining: analysisQueue.length });
+      let requeued = false;
+      let retryHintMs = null;
       try {
         const result = await analyzeSticker(task.personaId, task.hash);
-        if (result?.failed) operation.finish('failed', { error: new Error(result.error) });
-        else operation.finish('success', { reactions: result?.reactions || [] });
+        if (result?.quota) {
+          retryHintMs = result.retryHintMs || null;
+          // Not this sticker's fault: keep it queued (at the front) and wait
+          // for the quota instead of marking it failed.
+          operation.finish('failed', { error: new Error(result.error) });
+          analysisQueue.unshift(task);
+          requeued = true;
+        } else {
+          quotaStreak = 0;
+          if (result?.failed) operation.finish('failed', { error: new Error(result.error) });
+          else operation.finish('success', { reactions: result?.reactions || [] });
+        }
       } catch (err) {
         operation.finish('failed', { error: err });
         logger.error('background.ai_sticker_analysis.task.unhandled', err, { personaId: task.personaId, hash: task.hash });
       } finally {
-        queuedAnalysis.delete(key);
+        if (!requeued) queuedAnalysis.delete(key);
+      }
+      if (requeued) {
+        pauseForQuota(retryHintMs, analysisQueue.length);
+        break;
       }
       if (analysisQueue.length && AI_STICKER_ANALYSIS_DELAY_MS > 0) {
         logger.write('INFO', 'background.ai_sticker_analysis.delay', { delayMs: AI_STICKER_ANALYSIS_DELAY_MS, remaining: analysisQueue.length });
@@ -260,7 +335,7 @@ async function runAnalysisQueue() {
   } finally {
     analysisBusy = false;
     logger.write('INFO', 'background.ai_sticker_analysis.worker.idle', { queued: analysisQueue.length });
-    if (analysisQueue.length) setImmediate(runAnalysisQueue);
+    if (analysisQueue.length && !quotaResumeTimer) setImmediate(runAnalysisQueue);
   }
 }
 
@@ -344,6 +419,7 @@ async function analyzeSticker(sourcePersona, hash) {
       base64Image: image.toString('base64'),
       mimeType: 'image/webp',
       maxOutputTokens: 512,
+      bypassGate: true,
     });
     const classification = parseClassification(result);
     if (!classification.emotions.length && !classification.moods.length && !classification.uses.length && !classification.reactions.length && !classification.notes) {
@@ -368,6 +444,13 @@ async function analyzeSticker(sourcePersona, hash) {
     return classification;
   } catch (err) {
     const analysisError = String(err.message || err).slice(0, 300);
+    if (isQuotaError(err)) {
+      // Quota problems are temporary and say nothing about this sticker, so do
+      // NOT write a failed status (that could overwrite an earlier good
+      // analysis). The worker re-queues the task and waits.
+      logger.write('WARN', 'background.ai_sticker_analysis.quota_hit', { personaId, hash, error: analysisError });
+      return { failed: true, quota: true, error: analysisError, retryHintMs: parseRetryDelayMs(err.message) };
+    }
     try {
       const existing = document || await findSticker({ personaId: SHARED_LIBRARY_KEY, hash }) || await findSticker({ hash });
       if (existing) {
@@ -911,6 +994,11 @@ function _setAdaptersForTests({ Model, storage, mongoConnected } = {}) {
   analysisQueue.length = 0;
   queuedAnalysis.clear();
   analysisBusy = false;
+  if (quotaResumeTimer) clearTimeout(quotaResumeTimer);
+  quotaResumeTimer = null;
+  quotaResumeAt = 0;
+  quotaStreak = 0;
+  geminiGate.setReservationProvider(analysisReservesGemini);
 }
 
 module.exports = {
@@ -925,6 +1013,16 @@ module.exports = {
   _analyzeSticker: analyzeSticker,
   _persistStickerRecord: persistStickerRecord,
   _setAdaptersForTests,
+  _isQuotaError: isQuotaError,
+  _parseRetryDelayMs: parseRetryDelayMs,
+  _getAnalysisState: () => ({
+    busy: analysisBusy,
+    queued: analysisQueue.length,
+    pausedForQuota: quotaResumeTimer !== null,
+    resumeAt: quotaResumeAt,
+    quotaStreak,
+  }),
+  _enqueueAnalysis: enqueueAnalysis,
   _getImportSessions: () => importSessions,
   getSentStickerContext,
   _scoreStickerAnalysis: scoreStickerAnalysis,

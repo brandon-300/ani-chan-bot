@@ -11,6 +11,7 @@ const { getActivePersonaSafe } = require('./utils/persona');
 const aiStickers = require('./utils/aiStickers');
 const { instrumentHttpClients, wrapWithUsageTracking } = require('./utils/usageTracking');
 const logger = require('./utils/logger');
+const geminiGate = require('./utils/geminiGate');
 const { tryHandleQuizAnswer } = require('./commands/games/quiz');
 const AiConversation = require('./models/AiConversation');
 const GroupActivity = require('./models/GroupActivity');
@@ -1181,6 +1182,24 @@ client.on('message', (msg) => {
     });
     if (registrationCheck.blocked) {
       logger.write('INFO', 'registration.blocked', { command, senderId: registrationCheck.senderId, reason: 'incomplete_registration' });
+      return;
+    }
+
+    // ── Gemini reservation gate ────────────────────────────────────────────
+    // While the background sticker-analysis queue is working (or paused for
+    // Gemini quota) it owns the shared Gemini quota, so Gemini-backed commands
+    // answer immediately with "unavailable" instead of competing with it. This
+    // sits after the registration gate and before any task/queue bookkeeping,
+    // so nothing has to be unwound. Implicit routes (DM chat, reply-to-bot,
+    // wake-word) set `command` to copilot/voice above, so they are covered too.
+    // Which commands count, and the text, come from utils/config.js.
+    if (geminiGate.shouldBlockCommand(command)) {
+      logger.write('INFO', 'gemini.gate.blocked', { command, from: msg.from });
+      try {
+        await msg.reply(geminiGate.BUSY_MESSAGE);
+      } catch (replyErr) {
+        logger.error('gemini.gate.reply_failed', replyErr, { command });
+      }
       return;
     }
 

@@ -9,6 +9,7 @@
 // and GEMINI_IMAGE_MODEL below). Defaults target the free tier as of when
 // this was written.
 const axios = require('axios');
+const geminiGate = require('./geminiGate');
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
@@ -120,6 +121,7 @@ function buildGenerationConfig(maxOutputTokens) {
 // more generous free-tier request quota. Optional and defaults to
 // TEXT_MODEL, so every existing call site (ai.js, etc.) is unaffected.
 async function generateText({ systemPrompt, history = [], prompt, maxOutputTokens = 2048, model = TEXT_MODEL }) {
+  geminiGate.assertAvailable();
   assertKey();
 
   const contents = history.map(h => ({
@@ -164,7 +166,10 @@ async function generateText({ systemPrompt, history = [], prompt, maxOutputToken
 // any) stays plain text, same shape/mapping as generateText — only the
 // newest turn carries the image, since Gemini doesn't need the image
 // re-sent on every follow-up message to keep the thread coherent.
-async function generateVision({ systemPrompt, history = [], prompt, base64Image, mimeType, images = [], maxOutputTokens = 2048 }) {
+// bypassGate is set only by the background sticker-analysis queue, the one
+// caller allowed to use Gemini while it is reserved (see utils/geminiGate.js).
+async function generateVision({ systemPrompt, history = [], prompt, base64Image, mimeType, images = [], maxOutputTokens = 2048, bypassGate = false }) {
+  geminiGate.assertAvailable({ bypass: bypassGate });
   assertKey();
 
   const visionImages = images.length ? images : (base64Image ? [{ base64: base64Image, mimeType }] : []);
@@ -224,6 +229,7 @@ async function generateVision({ systemPrompt, history = [], prompt, base64Image,
 // normal generateContent response (not a separate images.generate endpoint
 // like OpenAI/DALL-E used).
 async function generateImage(prompt) {
+  geminiGate.assertAvailable();
   assertKey();
 
   const body = {
@@ -272,6 +278,7 @@ async function generateImage(prompt) {
 // transcription endpoint or file upload needed for short voice notes
 // (WhatsApp voice notes are almost always well under the ~20MB inline limit).
 async function transcribeAudio({ base64Audio, mimeType }) {
+  geminiGate.assertAvailable();
   assertKey();
 
   const body = {

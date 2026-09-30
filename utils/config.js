@@ -144,6 +144,28 @@ const AI_STICKER_MATCH_THRESHOLD = positiveEnvInt('AI_STICKER_MATCH_THRESHOLD', 
 const AI_STICKER_MIN_PERSONA_FIT = Math.max(0, Math.min(1, Number(process.env.AI_STICKER_MIN_PERSONA_FIT ?? 0.6) || 0.6));
 const AI_STICKER_ANALYSIS_DELAY_MS = envInt('AI_STICKER_ANALYSIS_DELAY_MS', 8000);
 
+// ─── Gemini quota protection ────────────────────────────────────────────────
+// When Gemini reports the quota is used up, the background sticker-analysis
+// queue pauses instead of failing every remaining sticker. It waits this long
+// before trying again (doubling after each consecutive quota failure, up to the
+// max), unless Gemini's own "retry in Ns" hint asks for a shorter wait.
+const AI_STICKER_QUOTA_COOLDOWN_MS = positiveEnvInt('AI_STICKER_QUOTA_COOLDOWN_MS', 30 * 60 * 1000);
+const AI_STICKER_QUOTA_MAX_COOLDOWN_MS = positiveEnvInt('AI_STICKER_QUOTA_MAX_COOLDOWN_MS', 2 * 60 * 60 * 1000);
+
+// While sticker analysis is running (or paused for quota) it owns the Gemini
+// quota, so Gemini-backed commands reply "unavailable" instead of competing
+// with it. Set GEMINI_PAUSE_DURING_STICKER_ANALYSIS=false to turn that off.
+const GEMINI_PAUSE_DURING_STICKER_ANALYSIS = envBool('GEMINI_PAUSE_DURING_STICKER_ANALYSIS', true);
+// Commands (after alias resolution) that call Gemini. Override with a
+// comma-separated GEMINI_COMMANDS list if a command is added or removed.
+// .sauce is deliberately NOT here: it works through SauceNAO and only its
+// optional Gemini fallback is paused (see commands/search.js).
+const GEMINI_COMMANDS = process.env.GEMINI_COMMANDS === undefined
+  ? ['copilot', 'gpt', 'voice', 'imagine', 'translate', 'transcribe']
+  : process.env.GEMINI_COMMANDS.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+const GEMINI_BUSY_MESSAGE = (process.env.GEMINI_BUSY_MESSAGE || '').trim()
+  || '⏳ This command is currently unavailable. Please try again later.';
+
 module.exports = {
   BOT_NAME,
   BOT_PREFIX,
@@ -171,4 +193,9 @@ module.exports = {
   AI_STICKER_MATCH_THRESHOLD,
   AI_STICKER_MIN_PERSONA_FIT,
   AI_STICKER_ANALYSIS_DELAY_MS,
+  AI_STICKER_QUOTA_COOLDOWN_MS,
+  AI_STICKER_QUOTA_MAX_COOLDOWN_MS,
+  GEMINI_PAUSE_DURING_STICKER_ANALYSIS,
+  GEMINI_COMMANDS,
+  GEMINI_BUSY_MESSAGE,
 };
