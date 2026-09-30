@@ -5,3 +5,10 @@ node_modules/
 backups/
 *.bak
 *.log
+imports/anime-stickers/*.wastickers
+imports/anime-stickers/processed/
+imports/anime-stickers/.screening-cache.json
+imports/anime-stickers/**/*.webp
+imports/anime-stickers/**/*.png
+imports/anime-stickers/**/*.jpg
+imports/anime-stickers/**/*.jpeg

@@ -28,6 +28,10 @@ const ALLOWED_REACTIONS = new Set([
   'disbelief', 'worried', 'supportive', 'neutral',
 ]);
 const SHARED_LIBRARY_KEY = 'shared';
+const UNKNOWN_ANIME_ID = 'unknown-anime';
+const RECENT_ANIME_WINDOW = 5;
+const MAX_TRACKED_CHATS = 500;
+const MAX_ANIME_REPEAT_PENALTY = 4;
 
 // The only durable sticker state is Cloudinary + MongoDB. This cache contains
 // metadata only and is rebuilt from Mongo after connection/startup; image bytes
@@ -41,6 +45,7 @@ const indexLoaders = new Map();
 const importsInFlight = new Map();
 const importSessions = new Map();
 const recentByChat = new Map();
+const recentAnimeByChat = new Map();
 const analysisQueue = [];
 const queuedAnalysis = new Set();
 let analysisBusy = false;
@@ -334,8 +339,8 @@ async function analyzeSticker(sourcePersona, hash) {
 
     const image = await fetchImageBuffer(document.cloudinaryUrl);
     const result = await gemini.generateVision({
-      systemPrompt: `You are analyzing a WhatsApp reaction sticker for the specific character ${persona.displayName}. Personality: ${persona.personality} Conversational and reaction behavior: ${persona.text}`,
-      prompt: `Analyze this sticker as a reaction that ${persona.displayName} would realistically use in conversation, following both the character personality and the stated conversational/reaction behavior. Return only JSON with arrays emotions, moods, uses, reactions, a string intensity, personaFit from 0 to 1, and a short note no longer than 160 characters. Allowed reaction labels: ${[...ALLOWED_REACTIONS].join(', ')}. Keep labels short and lowercase. Interpret the image through this character's personality and behavior, not as a neutral generic sticker.`,
+      systemPrompt: `You are analyzing a ${document.animeName || 'unknown anime'} reaction sticker for the specific character ${persona.displayName}. Personality: ${persona.personality} Conversational and reaction behavior: ${persona.text}`,
+      prompt: `The sticker belongs to anime ${document.animeName || 'unknown anime'} and may contain these characters: ${(document.characters || []).join(', ') || 'unknown'}. Existing generic metadata: ${JSON.stringify(document.genericAnalysis || {})}. Analyze this sticker as a reaction that ${persona.displayName} would realistically use in conversation, following both the character personality and the stated conversational/reaction behavior. Return only JSON with arrays emotions, moods, uses, reactions, a string intensity, personaFit from 0 to 1, and a short note no longer than 160 characters. Allowed reaction labels: ${[...ALLOWED_REACTIONS].join(', ')}. Keep labels short and lowercase. Interpret the image through this character's personality and behavior, not as a neutral generic sticker.`,
       base64Image: image.toString('base64'),
       mimeType: 'image/webp',
       maxOutputTokens: 512,
@@ -722,11 +727,32 @@ async function handleIncomingSticker(client, msg) {
   }
 }
 
-function rememberRecent(chatId, hash) {
+function isKnownAnime(animeId) {
+  return Boolean(animeId) && animeId !== UNKNOWN_ANIME_ID;
+}
+
+// Small, escalating penalty so one anime does not dominate a chat. It only
+// re-orders candidates that already passed the hard persona-fit and reaction
+// gates in selectSticker(); it can never make a weak sticker eligible.
+function animeRepeatPenalty(recentAnime, animeId) {
+  if (!isKnownAnime(animeId)) return 0;
+  const count = recentAnime.filter(id => id === animeId).length;
+  if (!count) return 0;
+  return Math.min(MAX_ANIME_REPEAT_PENALTY, 1 + (count - 1) * 2);
+}
+
+function rememberRecent(chatId, hash, animeId) {
   const key = String(chatId || 'unknown-chat');
   recentByChat.delete(key);
   recentByChat.set(key, hash);
-  while (recentByChat.size > 500) recentByChat.delete(recentByChat.keys().next().value);
+  while (recentByChat.size > MAX_TRACKED_CHATS) recentByChat.delete(recentByChat.keys().next().value);
+
+  if (isKnownAnime(animeId)) {
+    const recentAnime = (recentAnimeByChat.get(key) || []).concat(animeId).slice(-RECENT_ANIME_WINDOW);
+    recentAnimeByChat.delete(key);
+    recentAnimeByChat.set(key, recentAnime);
+    while (recentAnimeByChat.size > MAX_TRACKED_CHATS) recentAnimeByChat.delete(recentAnimeByChat.keys().next().value);
+  }
 }
 
 function chooseCandidate(candidates, recentHash) {
@@ -783,21 +809,35 @@ async function selectSticker(reaction, chatId, persona = null) {
 
   const exactCandidates = candidates.filter(candidate => candidate.exactReaction);
   const preferredCandidates = exactCandidates.length ? exactCandidates : candidates;
-  const bestScore = Math.max(...preferredCandidates.map(candidate => candidate.score));
-  const best = preferredCandidates.filter(candidate => candidate.score === bestScore);
-  const recentHash = recentByChat.get(String(chatId || 'unknown-chat'));
+  const chatKey = String(chatId || 'unknown-chat');
+  const recentHash = recentByChat.get(chatKey);
+  const recentAnime = recentAnimeByChat.get(chatKey) || [];
+  const adjusted = preferredCandidates.map(candidate => ({
+    candidate,
+    adjustedScore: candidate.score - animeRepeatPenalty(recentAnime, candidate.entry.animeId),
+  }));
+  const bestAdjusted = Math.max(...adjusted.map(item => item.adjustedScore));
+  const best = adjusted.filter(item => item.adjustedScore === bestAdjusted).map(item => item.candidate);
   const nonRecent = best.filter(candidate => candidate.entry.hash !== recentHash);
-  const selected = (nonRecent.length ? nonRecent : best)[Math.floor(Math.random() * (nonRecent.length || best.length))];
+  const pool = nonRecent.length ? nonRecent : best;
+  const selected = pool[Math.floor(Math.random() * pool.length)];
   if (!selected) return null;
-  rememberRecent(chatId, selected.entry.hash);
+  rememberRecent(chatId, selected.entry.hash, selected.entry.animeId);
   logger.write('INFO', 'sticker.selection.picked', {
     reaction,
     personaId: activePersona.id,
     hash: String(selected.entry.hash || '').slice(0, 8),
+    anime: selected.entry.animeId || null,
     match: selected.exactReaction ? 'exact reaction' : 'strong score',
     score: selected.score,
   });
   return { entry: selected.entry, analysis: selected.analysis, persona: activePersona, score: selected.score };
+}
+
+async function findSharedStickersByAnime(animeId) {
+  const records = await loadSharedStickers();
+  if (!animeId) return records;
+  return records.filter(record => record.animeId === animeId);
 }
 
 async function rememberSentSticker(message, chatId, selected, reaction) {
@@ -867,6 +907,7 @@ function _setAdaptersForTests({ Model, storage, mongoConnected } = {}) {
   importsInFlight.clear();
   importSessions.clear();
   recentByChat.clear();
+  recentAnimeByChat.clear();
   analysisQueue.length = 0;
   queuedAnalysis.clear();
   analysisBusy = false;
@@ -887,4 +928,5 @@ module.exports = {
   _getImportSessions: () => importSessions,
   getSentStickerContext,
   _scoreStickerAnalysis: scoreStickerAnalysis,
+  findSharedStickersByAnime,
 };

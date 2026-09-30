@@ -6,6 +6,8 @@
   "scripts": {
     "start": "node index.js",
     "pm2": "pm2 start index.js --name ani-chan-bot",
+    "stickers:reset": "node scripts/reset-ai-sticker-library.js",
+    "stickers:import": "node scripts/import-anime-sticker-packs.js",
     "postinstall": "patch-package"
   },
   "dependencies": {

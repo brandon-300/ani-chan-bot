@@ -18,7 +18,7 @@ delete process.env.FISH_API_KEY;
 
 const { loadPersona } = require('../utils/persona');
 const aiStickers = require('../utils/aiStickers');
-const { _parseAiControls, _stripSpeechFormatting, _buildPersonaSystemPrompt } = require('../commands/ai');
+const { _parseAiControls, _stripSpeechFormatting, _buildPersonaSystemPrompt, _deliverTextResponse } = require('../commands/ai');
 const AiSticker = require('../models/AiSticker');
 const axios = require('axios');
 const gemini = require('../utils/gemini');
@@ -148,6 +148,11 @@ test('persona prompts/call names are loaded per character and Mongo enforces per
   const compound = AiSticker.schema.indexes().find(([, options]) => options.unique);
   assert.deepEqual(compound[0], { personaId: 1, hash: 1 });
   assert.equal(compound[1].unique, true);
+  assert.ok(AiSticker.schema.path('animeId'));
+  assert.ok(AiSticker.schema.path('animeName'));
+  assert.ok(AiSticker.schema.path('characters'));
+  assert.ok(AiSticker.schema.path('sourcePackName'));
+  assert.ok(AiSticker.schema.path('genericAnalysis'));
 });
 
 test('Karane and Rias load independently with their supplied Fish Audio IDs and persona-specific prompts', () => {
@@ -218,6 +223,41 @@ test('AI control tags are removed, malformed controls are stripped, and menu act
   assert.equal(malformed.text, 'Useful answer');
   const emojiReply = _parseAiControls('Hey Brandon! ✨💖 [[reaction:happy]]');
   assert.equal(emojiReply.text, 'Hey Brandon!');
+});
+
+test('sticker replies choose exactly one response mode and fall back to text when sticker selection fails', async () => {
+  const originalSend = aiStickers.sendReactionSticker;
+  const calls = [];
+  aiStickers.sendReactionSticker = async (_client, _msg, reaction) => {
+    calls.push(reaction);
+    return reaction !== 'angry';
+  };
+  const makeMsg = () => ({ replies: [], async reply(text) { this.replies.push(text); } });
+  try {
+    const textOnly = makeMsg();
+    await _deliverTextResponse({}, textOnly, 'Text reply [[response_mode:text]] [[reaction:happy]]', false, { stickerReply: true });
+    assert.deepEqual(textOnly.replies, ['Text reply']);
+
+    const stickerOnly = makeMsg();
+    await _deliverTextResponse({}, stickerOnly, 'Ignored text [[response_mode:sticker]] [[reaction:happy]]', false, { stickerReply: true });
+    assert.deepEqual(stickerOnly.replies, []);
+
+    const failedSticker = makeMsg();
+    await _deliverTextResponse({}, failedSticker, 'Fallback text [[response_mode:sticker]] [[reaction:angry]]', false, { stickerReply: true });
+    assert.deepEqual(failedSticker.replies, ['Fallback text']);
+
+    const noMode = makeMsg();
+    await _deliverTextResponse({}, noMode, 'Normal text [[reaction:happy]]', false, { stickerReply: true });
+    assert.deepEqual(noMode.replies, ['Normal text']);
+    assert.deepEqual(calls, ['happy', 'angry']);
+  } finally {
+    aiStickers.sendReactionSticker = originalSend;
+  }
+});
+
+test('index reply routing does not seed Interpret-this-sticker for sticker-only replies', () => {
+  const indexSource = fs.readFileSync(path.join(__dirname, '..', 'index.js'), 'utf8');
+  assert.doesNotMatch(indexSource, /replyKind\s*===\s*['"]sticker['"][\s\S]{0,180}Interpret this sticker/i);
 });
 
 test('TTS strips emoji from direct or quoted text and does not send speech progress text', () => {
@@ -344,10 +384,22 @@ test('selector rebuilds metadata from Mongo and uses Cloudinary URLs, with exact
   aiStickers._setAdaptersForTests({ Model: memoryModel, storage: cloudinaryMock, mongoConnected: () => true });
   await aiStickers.initialize(persona);
 
+  memoryModel.set({ ...memoryModel.get('shared', importedHash), animeId: 'naruto', animeName: 'Naruto', sourcePackName: 'Naruto Reactions' });
+  aiStickers._setAdaptersForTests({ Model: memoryModel, storage: cloudinaryMock, mongoConnected: () => true });
+  assert.equal((await aiStickers.findSharedStickersByAnime('naruto')).some(entry => entry.hash === importedHash), true);
+
   const exact = await aiStickers._selectSticker('amused', 'chat-one', persona);
   assert.equal(exact.entry.hash, importedHash);
   assert.match(exact.entry.cloudinaryUrl, /^https:\/\//);
   assert.equal(exact.persona.id, 'marin');
+
+  memoryModel.set({
+    ...memoryModel.get('shared', importedHash),
+    personaAnalyses: [{ personaId: 'marin', analysisVersion: 1, personaVersion: '', analysisStatus: 'classified', emotions: [], moods: [], uses: [], reactions: ['angry'], intensity: 'high', personaFit: 0.1 }],
+  });
+  aiStickers._setAdaptersForTests({ Model: memoryModel, storage: cloudinaryMock, mongoConnected: () => true });
+  await aiStickers.initialize(persona);
+  assert.equal(await aiStickers._selectSticker('angry', 'chat-fit-gate', persona), null, 'poor persona fit must reject even an exact reaction');
 
   const genericClassified = await aiStickers._selectSticker('neutral', 'chat-two', persona);
   assert.equal(genericClassified, null, 'a classified sticker without a strong persona match must not be sent');

@@ -1,0 +1,12 @@
+[
+  { "file": "Naruto.wastickers", "animeId": "naruto", "animeName": "Naruto", "sourcePackName": "Naruto Reactions", "sourceUrl": "", "characters": ["Naruto Uzumaki", "Sasuke Uchiha"] },
+  { "file": "OnePiece.wastickers", "animeId": "one-piece", "animeName": "One Piece", "sourcePackName": "One Piece Reactions", "sourceUrl": "", "characters": ["Monkey D. Luffy", "Roronoa Zoro"] },
+  { "file": "JujutsuKaisen.wastickers", "animeId": "jujutsu-kaisen", "animeName": "Jujutsu Kaisen", "sourcePackName": "Jujutsu Kaisen Reactions", "sourceUrl": "", "characters": ["Gojo Satoru", "Yuji Itadori"] },
+  { "file": "DragonBall.wastickers", "animeId": "dragon-ball", "animeName": "Dragon Ball", "sourcePackName": "Dragon Ball Reactions", "sourceUrl": "", "characters": ["Son Goku", "Vegeta"] },
+  { "file": "DemonSlayer.wastickers", "animeId": "demon-slayer", "animeName": "Demon Slayer", "sourcePackName": "Demon Slayer Reactions", "sourceUrl": "", "characters": ["Tanjiro Kamado", "Nezuko Kamado"] },
+  { "file": "SoloLeveling.wastickers", "animeId": "solo-leveling", "animeName": "Solo Leveling", "sourcePackName": "Solo Leveling Reactions", "sourceUrl": "", "characters": ["Sung Jinwoo"] },
+  { "file": "ClassroomOfTheElite.wastickers", "animeId": "classroom-of-the-elite", "animeName": "Classroom of the Elite", "sourcePackName": "Classroom of the Elite Reactions", "sourceUrl": "", "characters": ["Kiyotaka Ayanokoji"] },
+  { "file": "ChainsawMan.wastickers", "animeId": "chainsaw-man", "animeName": "Chainsaw Man", "sourcePackName": "Chainsaw Man Reactions", "sourceUrl": "", "characters": ["Denji", "Power"] },
+  { "file": "SpyXFamily.wastickers", "animeId": "spy-x-family", "animeName": "Spy × Family", "sourcePackName": "Spy × Family Reactions", "sourceUrl": "", "characters": ["Anya Forger", "Loid Forger"] },
+  { "file": "Bleach.wastickers", "animeId": "bleach", "animeName": "Bleach", "sourcePackName": "Bleach Reactions", "sourceUrl": "", "characters": ["Ichigo Kurosaki", "Rukia Kuchiki"] }
+]
