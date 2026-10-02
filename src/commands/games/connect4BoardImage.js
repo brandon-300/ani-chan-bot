@@ -4,12 +4,11 @@
 // Classic blue board with punched-out slots; a thin ring is drawn around
 // the most recently dropped piece so it's easy to spot at a glance.
 
-const { encodePNG } = require('../../utils/pngEncoder');
-
 // ─── 5x7 bitmap font — digits 1-7 only (column numbers) ────────────────────
 // Same style/weight as the coordinate-label fonts in chessBoardImage.js and
 // tictactoeBoardImage.js, copied verbatim for 1-7 so all three boards' text
 // reads consistently.
+import { encodePNG } from './../utils/pngEncoder.js';
 const FONT = {
   '1': ['..#..', '.##..', '..#..', '..#..', '..#..', '..#..', '.###.'],
   '2': ['.###.', '#...#', '....#', '...#.', '..#..', '.#...', '#####'],

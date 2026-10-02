@@ -59,12 +59,11 @@
 // established fallback chain (raw AniList image -> text-only) that this
 // slots in ahead of, unchanged.
 
-const axios = require('axios');
-const { CardCatalogue } = require('../models/Card');
-const { TIER_ORDER, cleanDescription } = require('./helpers');
-const { BOT_NAME } = require('./config');
-const { uploadBufferToCloud, isCloudConfigured } = require('./cloudinary');
-
+import axios from 'axios';
+import { BOT_NAME } from './config.js';
+import { CardCatalogue } from './models/Card.js';
+import { TIER_ORDER, cleanDescription } from './helpers.js';
+import { uploadBufferToCloud, isCloudConfigured } from './cloudinary.js';
 const CARD_RENDER_VERSION = 4; // v4: narrower inset artwork + blurred backdrop fills the letterbox gutters instead of a flat gradient — bump this, and only this, for future visual changes
 
 // ─── Fixed canvas + layout (all bands sum exactly to INNER_H — see math below) ─

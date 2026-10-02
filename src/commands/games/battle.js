@@ -1,12 +1,3 @@
-const { MessageMedia } = require('whatsapp-web.js');
-const { rand, safeGetChat, resolveNameById } = require('../../utils/helpers');
-const { chooseAction } = require('./battleEngine');
-const { renderBoardImage } = require('./battleBoardImage');
-const { BOT_NAME } = require('../../utils/config');
-const { isChatBusy, claim, release } = require('./activeGame');
-const Guild = require('../../models/Guild');
-const { _formatQuestCompletionNote } = require('../guilds');
-const GameSession = require('../../models/GameSession');
 
 // Persists this battle's current state to Mongo — fire-and-forget, since
 // the in-memory battleGames Map (below) stays authoritative while the bot
@@ -15,6 +6,15 @@ const GameSession = require('../../models/GameSession');
 // and connect4.js's saveC4Session/deleteC4Session — battle has no
 // turnTimer to strip out here, since (unlike Tic Tac Toe/Connect 4) it has
 // no per-turn auto-skip timeout at all.
+import GameSession from './../models/GameSession.js';
+import Guild from './../models/Guild.js';
+import { BOT_NAME } from './../utils/config.js';
+import { MessageMedia } from '../services/media.js';
+import { _formatQuestCompletionNote } from './guilds.js';
+import { chooseAction } from './battleEngine.js';
+import { isChatBusy, claim, release } from './activeGame.js';
+import { rand, safeGetChat, resolveNameById } from './../utils/helpers.js';
+import { renderBoardImage } from './battleBoardImage.js';
 function saveBattleSession(chatId, game) {
   GameSession.findOneAndUpdate(
     { chatId },

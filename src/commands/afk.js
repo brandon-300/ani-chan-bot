@@ -1,5 +1,3 @@
-const { formatCooldown, resolveNameById } = require('../utils/helpers');
-const User = require('../models/User');
 
 // AFK is a property of the person, not a specific chat — keyed by WhatsApp
 // id, not chatId, so it follows them across groups/DMs the same way a
@@ -15,6 +13,8 @@ const User = require('../models/User');
 // before. Mongo is only written to on the low-frequency .afk/welcome-back
 // events, and only read back once at boot (_initAfk) to rehydrate this Map
 // after a restart.
+import User from './models/User.js';
+import { formatCooldown, resolveNameById } from './utils/helpers.js';
 const afkUsers = new Map(); // id -> { reason, since }
 
 // Called once from index.js on bot startup — same pattern as

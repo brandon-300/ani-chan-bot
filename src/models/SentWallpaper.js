@@ -1,5 +1,5 @@
-const mongoose = require('mongoose');
 
+import mongoose from 'mongoose';
 const SentWallpaperSchema = new mongoose.Schema({
   chatId: { type: String, required: true },
   wallpaperId: { type: String, required: true },

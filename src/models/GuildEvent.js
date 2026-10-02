@@ -1,4 +1,3 @@
-const mongoose = require('mongoose');
 
 // A record of an owner-triggered, one-off celebration affecting every
 // guild at once (e.g. "Anniversary Event — 50,000 bonus coins for every
@@ -14,6 +13,7 @@ const mongoose = require('mongoose');
 // that tested code path at all. history is kept (not just applied and
 // forgotten) purely so .guild info can mention a recent event for a few
 // days afterward.
+import mongoose from 'mongoose';
 const GuildEventSchema = new mongoose.Schema({
   message: { type: String, required: true },
   coinsPerGuild: { type: Number, required: true },

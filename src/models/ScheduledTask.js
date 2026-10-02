@@ -1,4 +1,3 @@
-const mongoose = require('mongoose');
 
 // One collection backing the whole app's persistent scheduler
 // (utils/scheduler.js) instead of a separate setTimeout/setInterval — and a
@@ -15,6 +14,7 @@ const mongoose = require('mongoose');
 // still keeps the collection small in the common case: a successful task
 // (the overwhelming majority) is deleted just as before, one write later
 // than it used to be.
+import mongoose from 'mongoose';
 const ScheduledTaskSchema = new mongoose.Schema({
   // What kind of task this is. The scheduler looks up the handler that was
   // registered for this type via scheduler.registerHandler(type, fn) —

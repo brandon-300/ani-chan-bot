@@ -1,4 +1,3 @@
-const Guild = require('../models/Guild');
 
 // Same convention as utils/achievements.js's personal ACHIEVEMENTS list:
 // only reachable, honestly-checkable achievements against fields that
@@ -9,6 +8,7 @@ const Guild = require('../models/Guild');
 //
 // To add a new one later: just append an entry here. Nothing else needs to
 // change — checkGuildAchievements() picks it up automatically.
+import Guild from './models/Guild.js';
 const GUILD_ACHIEVEMENTS = [
   {
     id: 'first_quest',

@@ -1,4 +1,3 @@
-const mongoose = require('mongoose');
 
 // Persists .copilot/.voice's per-chat, per-user conversation memory in
 // Mongo instead of the old in-memory chatHistory Map in commands/ai.js.
@@ -15,6 +14,7 @@ const mongoose = require('mongoose');
 // idle cleanup — the database does it natively. (That background sweep
 // runs roughly once a minute, not instantly on the second — fine for a
 // 30-minute idle window.)
+import mongoose from 'mongoose';
 const AiConversationSchema = new mongoose.Schema({
   chatId: { type: String, required: true },
   // Who this specific conversation belongs to. In a DM, chatId alone was

@@ -1,6 +1,6 @@
-const mongoose = require('mongoose');
 
 // ─── Master Card Catalogue ────────────────────────────────────────────────────
+import mongoose from 'mongoose';
 const CardCatalogueSchema = new mongoose.Schema({
   cardId: {
     type: String,

@@ -1,3 +1,4 @@
+import { AI_MESSAGE_MEMORY_MS, AI_MESSAGE_MEMORY_MAX } from './config.js';
 'use strict';
 
 // ─── Ledger of messages the AI itself sent ──────────────────────────────────
@@ -8,8 +9,6 @@
 //
 // In-memory only, bounded by size and age: after a restart, reactions to older
 // messages are simply ignored. Nothing here touches the network or MongoDB.
-
-const { AI_MESSAGE_MEMORY_MS, AI_MESSAGE_MEMORY_MAX } = require('./config');
 
 const entries = new Map(); // serialized message id -> { kind, at, reactedAt }
 let clock = () => Date.now();

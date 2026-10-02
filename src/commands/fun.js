@@ -1,16 +1,16 @@
-const { MessageMedia } = require('whatsapp-web.js');
-const ffmpeg = require('fluent-ffmpeg');
-const fs = require('fs');
-const path = require('path');
-const os = require('os');
-const { pick, rand, mentionName, safeGetChat, safeGetQuotedMessage } = require('../utils/helpers');
-const { BOT_NAME } = require('../utils/config');
-const { renderMemeImage, renderAnimatedMemeFrames } = require('../utils/memeRender');
 
 // ─── Local media helpers for .meme (image/sticker in -> image/sticker out) ───
 // Same small helpers already used the same way in commands/converter.js —
 // kept local here rather than shared, matching this project's existing
 // pattern of each command file owning its own tiny media-plumbing helpers.
+import ffmpeg from 'fluent-ffmpeg';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import { BOT_NAME } from './utils/config.js';
+import { MessageMedia } from '../services/media.js';
+import { pick, rand, mentionName, safeGetChat, safeGetQuotedMessage } from './utils/helpers.js';
+import { renderMemeImage, renderAnimatedMemeFrames } from './utils/memeRender.js';
 const TMP = os.tmpdir();
 
 function tmpFile(ext) {

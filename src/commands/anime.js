@@ -1,14 +1,13 @@
 // commands/anime.js — SFW anime image commands
 // All NSFW commands live in commands/nsfw.js (enabled per-group with .nsfw on).
 
-const axios = require('axios');
-const { MessageMedia } = require('whatsapp-web.js');
-const { fetchRandomImage } = require('../utils/danbooru');
-
 // Build tag-set variants: for each tag combo, try general first, then sensitive.
 // Anonymous Danbooru searches allow max 2 tags, so each combo must be ONE tag
 // (plus the rating: meta-tag). Animated/comic filtering happens client-side
 // in utils/danbooru.js after the response comes back.
+import axios from 'axios';
+import { MessageMedia } from '../services/media.js';
+import { fetchRandomImage } from './utils/danbooru.js';
 function sfwSets(...tagCombos) {
   const sets = [];
   for (const tags of tagCombos.filter(Boolean)) {

@@ -7,8 +7,7 @@
 // small, correct image (signature + IHDR + one IDAT + IEND, filter type
 // "None" on every scanline). It is not a general-purpose PNG library.
 
-const zlib = require('zlib');
-
+import zlib from 'zlib';
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
 // ─── CRC32 (required for PNG chunk framing) ───────────────────────────────────

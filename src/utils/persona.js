@@ -1,7 +1,7 @@
-const fs = require('fs');
-const path = require('path');
-const { AI_PERSONA, AI_CALL_NAMES_OVERRIDE, PERSONAS_DIR } = require('./config');
 
+import fs from 'fs';
+import path from 'path';
+import { AI_PERSONA, AI_CALL_NAMES_OVERRIDE, PERSONAS_DIR } from './config.js';
 const ID_RE = /^[a-z0-9][a-z0-9_-]*$/;
 const failedPersonaLogs = new Set();
 let activePersona;

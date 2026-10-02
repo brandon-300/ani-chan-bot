@@ -1,10 +1,10 @@
-const mongoose = require('mongoose');
 
 // Minimal atomic sequence generator — same "small singleton-per-key store"
 // spirit as models/BotState.js, but typed as a Number specifically so $inc
 // stays atomic even if two documents (e.g. two .guild create calls
 // arriving close together) land in the same tick. BotState's `value` field
 // is a String, which can't be safely incremented this way.
+import mongoose from 'mongoose';
 const CounterSchema = new mongoose.Schema({
   key: { type: String, required: true, unique: true },
   value: { type: Number, default: 0 },

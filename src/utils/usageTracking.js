@@ -1,8 +1,9 @@
-const { AsyncLocalStorage } = require('async_hooks');
-const CommandUsage = require('../models/CommandUsage');
-const logger = require('./logger');
 
 // Tracks "which command is currently executing" across async boundaries.
+import CommandUsage from './models/CommandUsage.js';
+import axios from 'axios';
+import logger from './logger.js';
+import { AsyncLocalStorage } from 'async_hooks';
 const als = new AsyncLocalStorage();
 
 function runWithCommandContext(context, fn) {
@@ -45,7 +46,6 @@ function instrumentHttpClients() {
   if (instrumented) return;
   instrumented = true;
 
-  const axios = require('axios');
   axios.interceptors.request.use(config => {
     const startedAt = Date.now();
     config.__loggerStartedAt = startedAt;

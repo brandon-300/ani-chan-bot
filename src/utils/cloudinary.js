@@ -1,5 +1,5 @@
+import logger from './logger.js';
 const cloudinary = require('cloudinary').v2;
-const logger = require('./logger');
 
 // Cloudinary's SDK auto-reads a single CLOUDINARY_URL env var if it's set
 // (the format Cloudinary's own dashboard gives you: cloudinary://key:secret@

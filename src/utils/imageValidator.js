@@ -23,10 +23,10 @@
 // this script returned 200 with UA + Accept + Referer). downloadImageBuffer()
 // now derives a Referer per URL (Fandom wiki subdomain, Zerochan, Wikipedia)
 // and retries once with an even fuller browser header set on 403/429.
-const axios = require('axios');
-const crypto = require('crypto');
-const { generateVision } = require('./gemini');
 
+import axios from 'axios';
+import crypto from 'crypto';
+import { generateVision } from './gemini.js';
 const DOWNLOAD_TIMEOUT_MS = 15000;
 // Hard cap on downloaded bytes — protects Termux's limited RAM from a
 // mislabeled multi-hundred-MB "image" and keeps a single bad candidate

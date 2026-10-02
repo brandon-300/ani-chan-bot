@@ -1,6 +1,3 @@
-const axios = require('axios');
-const { MessageMedia } = require('whatsapp-web.js');
-const yts = require('yt-search');
 
 // NOTE: All downloaders require RapidAPI keys or alternative APIs.
 // Sign up at https://rapidapi.com and get keys for:
@@ -10,6 +7,9 @@ const yts = require('yt-search');
 // - Twitter/X DL: twittr-v2-fastest-twitter-x-api-150k-requests-for-15.p.rapidapi.com
 // - Facebook DL: social-media-video-downloader.p.rapidapi.com
 
+import axios from 'axios';
+import yts from 'yt-search';
+import { MessageMedia } from '../services/media.js';
 const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY;
 const RAPIDAPI_HOST_IG = 'social-media-video-downloader.p.rapidapi.com';
 const RAPIDAPI_HOST_TT = 'social-media-video-downloader.p.rapidapi.com';
@@ -140,9 +140,6 @@ function extractYtProgressiveStream(content) {
 }
 
 module.exports = {
-
-
-
 
   // .ig [url]
   async ig(client, msg, args) {

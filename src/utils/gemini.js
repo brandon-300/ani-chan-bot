@@ -8,9 +8,9 @@
 // Google renames/deprecates one (this happens often — see GEMINI_TEXT_MODEL
 // and GEMINI_IMAGE_MODEL below). Defaults target the free tier as of when
 // this was written.
-const axios = require('axios');
-const geminiGate = require('./geminiGate');
 
+import axios from 'axios';
+import geminiGate from './geminiGate.js';
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
 

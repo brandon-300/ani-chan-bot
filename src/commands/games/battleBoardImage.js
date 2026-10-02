@@ -15,12 +15,11 @@
 // render correctly. Names stay in the caption text under the image, same
 // as every other detail besides HP numbers.
 
-const { encodePNG } = require('../../utils/pngEncoder');
-
 // ─── 5x7 bitmap font — digits 0-9 plus + / - ───────────────────────────────
 // Same style/weight as the other three board renderers' fonts (1-9 copied
 // verbatim); 0 and the two sign glyphs are new here since HP values and
 // damage/heal deltas need them and none of the other boards did.
+import { encodePNG } from './../utils/pngEncoder.js';
 const FONT = {
   '0': ['.###.', '#...#', '#...#', '#...#', '#...#', '#...#', '.###.'],
   '1': ['..#..', '.##..', '..#..', '..#..', '..#..', '..#..', '.###.'],

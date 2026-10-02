@@ -1,7 +1,3 @@
-const mongoose = require('mongoose');
-const User = require('../models/User');
-const { OwnedCard } = require('../models/Card');
-const { formatNum, tierEmoji, cardValue, TIER_ORDER, parseAmount } = require('../utils/helpers');
 
 // Thrown inside a mongoose session.withTransaction(...) callback purely to
 // abort it with a specific, already-worded user-facing message attached —
@@ -12,6 +8,10 @@ const { formatNum, tierEmoji, cardValue, TIER_ORDER, parseAmount } = require('..
 // surrounding try/catch just below each transaction catches this specific
 // type and replies with `.message` verbatim, instead of the generic
 // "something went wrong" fallback used for a genuinely unexpected failure.
+import User from './models/User.js';
+import mongoose from 'mongoose';
+import { OwnedCard } from './models/Card.js';
+import { formatNum, tierEmoji, cardValue, TIER_ORDER, parseAmount } from './utils/helpers.js';
 class TransactionAbort extends Error {}
 
 // ─── Bank Vault ─────────────────────────────────────────────────────────────

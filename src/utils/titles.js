@@ -1,10 +1,10 @@
-const User = require('../models/User');
 
 // Ordered low -> high by the level required. Unlike achievements (a
 // checklist you keep adding to), a title is a single rank you currently
 // hold — checkTitle() always sets it to the HIGHEST tier your level
 // qualifies for. To add a new tier, just insert a row here in level order;
 // nothing else needs to change.
+import User from './models/User.js';
 const TITLES = [
   { id: 'new_adventurer',    name: 'New Adventurer',    emoji: '🌸', minLevel: 1 },
   { id: 'rookie_tamer',      name: 'Rookie Tamer',      emoji: '🎴', minLevel: 5 },

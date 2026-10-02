@@ -1,11 +1,11 @@
-const { MessageMedia } = require('whatsapp-web.js');
-const ffmpeg = require('fluent-ffmpeg');
-const fs = require('fs');
-const path = require('path');
-const os = require('os');
-const { safeGetQuotedMessage } = require('../utils/helpers');
-const { BOT_NAME } = require('../utils/config');
 
+import ffmpeg from 'fluent-ffmpeg';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import { BOT_NAME } from './utils/config.js';
+import { MessageMedia } from '../services/media.js';
+import { safeGetQuotedMessage } from './utils/helpers.js';
 const TMP = os.tmpdir();
 
 function tmpFile(ext) {

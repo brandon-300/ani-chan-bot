@@ -1,5 +1,3 @@
-const User = require('../models/User');
-const { formatCooldown, pick, rollTier, tierEmoji } = require('../utils/helpers');
 
 // ─── Pet Catalogue ──────────────────────────────────────────────────────────
 // Anime-themed companions, grouped on the exact same C/B/A/S/SS/SSS rarity
@@ -10,6 +8,8 @@ const { formatCooldown, pick, rollTier, tierEmoji } = require('../utils/helpers'
 // rarest and most expensive pets in the game, matching how godlike they are
 // in-universe. Everything else is a real anime/game companion creature,
 // ramping up in fame/power as rarity increases.
+import User from './models/User.js';
+import { formatCooldown, pick, rollTier, tierEmoji } from './utils/helpers.js';
 const PET_CATALOGUE = {
   C: [
     { emoji: '🐱', name: 'Cat', series: 'Generic Companion' },

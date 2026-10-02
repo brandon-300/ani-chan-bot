@@ -8,8 +8,6 @@
 // Google News coverage (including Netflix/Tudum, which has no first-party
 // RSS feed) lives here too, via NEWS_RSS_QUERY from utils/config.js.
 
-const { NEWS_RSS_QUERY } = require('./config');
-
 // ─── RSS source definitions ────────────────────────────────────────────────
 // Multiple official anime news sources. The order here is irrelevant at
 // runtime — commands/news.js shuffles it every run and merges all results
@@ -22,6 +20,7 @@ const { NEWS_RSS_QUERY } = require('./config');
 // widens coverage), and it only *behaves* like a safety net because its
 // broad query still returns items when a direct feed fails or has nothing
 // new. All four sources are always fetched.
+import { NEWS_RSS_QUERY } from './config.js';
 const NEWS_SOURCES = [
   {
     name: 'Crunchyroll News',

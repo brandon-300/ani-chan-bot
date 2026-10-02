@@ -1,10 +1,10 @@
-const { pick, mentionName, safeGetChat, resolveNameById } = require('../utils/helpers');
-const tictactoe = require('./games/tictactoe');
-const connect4 = require('./games/connect4');
-const chessGame = require('./games/chess');
-const battle = require('./games/battle');
-const quiz = require('./games/quiz');
 
+import battle from './games/battle.js';
+import chessGame from './games/chess.js';
+import connect4 from './games/connect4.js';
+import quiz from './games/quiz.js';
+import tictactoe from './games/tictactoe.js';
+import { pick, mentionName, safeGetChat, resolveNameById } from './utils/helpers.js';
 const GREEK_GODS = [
   { name: 'Zeus', domain: 'Sky & Thunder', symbol: '⚡' },
   { name: 'Poseidon', domain: 'Sea', symbol: '🌊' },

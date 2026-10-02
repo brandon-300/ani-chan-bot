@@ -1,5 +1,5 @@
-const mongoose = require('mongoose');
 
+import mongoose from 'mongoose';
 const AiStickerMessageSchema = new mongoose.Schema({
   messageId: { type: String, required: true, unique: true, trim: true },
   chatId: { type: String, required: true, trim: true },

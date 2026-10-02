@@ -1,7 +1,7 @@
-const util = require('util');
 
 // One process-wide logger for PM2/Termux. JSON remains available with
 // LOG_FORMAT=json; readable English is the default for humans in a terminal.
+import util from 'util';
 let sequence = 0;
 const LEVELS = { ERROR: 0, WARN: 1, INFO: 2, DEBUG: 3 };
 const configuredLevel = String(process.env.LOG_LEVEL || 'INFO').trim().toUpperCase();

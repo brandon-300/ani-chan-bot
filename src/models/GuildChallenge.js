@@ -1,4 +1,3 @@
-const mongoose = require('mongoose');
 
 // A time-boxed reputation race between two guilds — the guild-vs-guild
 // competition system. Kept as its own collection rather than embedded on
@@ -6,6 +5,7 @@ const mongoose = require('mongoose');
 // and needs one shared source of truth both sides read from — embedding
 // it on one guild would mean keeping a second, easily-out-of-sync copy on
 // the other.
+import mongoose from 'mongoose';
 const GuildChallengeSchema = new mongoose.Schema({
   challengerGuildId: { type: String, required: true },
   challengedGuildId: { type: String, required: true },

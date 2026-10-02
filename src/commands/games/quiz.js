@@ -1,11 +1,3 @@
-const { MessageMedia } = require('whatsapp-web.js');
-const logger = require('../../utils/logger');
-const { CardCatalogue } = require('../../models/Card');
-const { safeGetChat, safeGetQuotedMessage, safeGetContact, resolveNameById } = require('../../utils/helpers');
-const { isChatBusy, claim, release } = require('./activeGame');
-const Guild = require('../../models/Guild');
-const { _formatQuestCompletionNote } = require('../guilds');
-const GameSession = require('../../models/GameSession');
 
 // Persists this quiz's current state to Mongo — fire-and-forget, since the
 // in-memory quizGames Map (below) stays authoritative while the bot is
@@ -23,6 +15,14 @@ const GameSession = require('../../models/GameSession');
 //     reason as every other migrated game's turnTimer.
 // fullPool/questions/options are already plain lean() objects (see
 // startQuizMatch's CardCatalogue query), so those need no conversion.
+import GameSession from './../models/GameSession.js';
+import Guild from './../models/Guild.js';
+import logger from './../utils/logger.js';
+import { CardCatalogue } from './../models/Card.js';
+import { MessageMedia } from '../services/media.js';
+import { _formatQuestCompletionNote } from './guilds.js';
+import { isChatBusy, claim, release } from './activeGame.js';
+import { safeGetChat, safeGetQuotedMessage, safeGetContact, resolveNameById } from './../utils/helpers.js';
 function saveQuizSession(session) {
   const { client, current, scores, eliminated, ...rest } = session;
   let savedCurrent = null;

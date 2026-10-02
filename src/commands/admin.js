@@ -1,12 +1,13 @@
-const Group = require('../models/Group');
-const GroupActivity = require('../models/GroupActivity');
-const User = require('../models/User');
-const { OwnedCard } = require('../models/Card');
-const BotState = require('../models/BotState');
-const { isAdmin, botIsAdmin, mentionName, mentionTag, isOwner, safeGetChat, safeGetQuotedMessage, resolveNameById, withRetry, formatNum } = require('../utils/helpers');
-const scheduler = require('../utils/scheduler');
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+import BotState from './models/BotState.js';
+import Group from './models/Group.js';
+import GroupActivity from './models/GroupActivity.js';
+import User from './models/User.js';
+import scheduler from './utils/scheduler.js';
+import { OwnedCard } from './models/Card.js';
+import { _removeMemberFromGuild } from './guilds.js';
+import { isAdmin, botIsAdmin, mentionName, mentionTag, isOwner, safeGetChat, safeGetQuotedMessage, resolveNameById, withRetry, formatNum } from './utils/helpers.js';
 async function requireAdmin(msg) {
   const contact = await msg.getContact().catch(() => null);
   if (contact && isOwner(contact.id._serialized)) return true;
@@ -233,7 +234,6 @@ async function onLeave(client, notification) {
   // leave-messages turned on, so this runs before that check/early-return.
   for (const contact of recipients) {
     try {
-      const { _removeMemberFromGuild } = require('./guilds');
       await _removeMemberFromGuild(contact.id._serialized);
     } catch (err) {
       console.error('Guild cleanup on group_leave failed:', err.message);

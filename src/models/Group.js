@@ -1,5 +1,5 @@
-const mongoose = require('mongoose');
 
+import mongoose from 'mongoose';
 const GroupSchema = new mongoose.Schema({
   id: { type: String, required: true, unique: true },
   antilink: { type: Boolean, default: false },

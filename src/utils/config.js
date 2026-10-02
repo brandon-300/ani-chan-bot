@@ -1,5 +1,4 @@
 // ─── Central Bot Config ────────────────────────────────────────────────────
-const path = require('path');
 
 // Single source of truth for app-level configuration. Any file that needs
 // the bot's identity, the command prefix, the menu image, the Chromium path,
@@ -18,6 +17,7 @@ const path = require('path');
 // falsy), silently substituting the default. envInt distinguishes the two
 // cases: a missing/empty variable falls back, but an explicitly configured
 // value — including 0 — is used as-is.
+import path from 'path';
 function envInt(name, fallback) {
   const raw = process.env[name];
   if (raw === undefined || raw.trim() === '') return fallback;

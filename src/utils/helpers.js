@@ -1,5 +1,3 @@
-const User = require('../models/User');
-const { MIN_REGISTRATION_AGE } = require('./config');
 
 // ─── Format Numbers ───────────────────────────────────────────────────────────
 // ─── Fancy Unicode text (used by .profile, .feedback, etc.) ──────────────────
@@ -10,6 +8,8 @@ const { MIN_REGISTRATION_AGE } = require('./config');
 // Unicode block; doubleStruck has a handful of letters (C, H, N, P, Q, R, Z)
 // that live at their own legacy Letter-like Symbol codepoints instead of the
 // main block, which is just how Unicode assigned them.
+import User from './models/User.js';
+import { MIN_REGISTRATION_AGE } from './config.js';
 function boldSans(text) {
   return [...text].map(ch => {
     const code = ch.codePointAt(0);

@@ -1,14 +1,3 @@
-const { Chess } = require('chess.js');
-const logger = require('../../utils/logger');
-const { MessageMedia } = require('whatsapp-web.js');
-const { safeGetChat, resolveNameById } = require('../../utils/helpers');
-const { getBestMove } = require('./chessEngine');
-const { renderBoardImage } = require('./chessBoardImage');
-const { BOT_NAME } = require('../../utils/config');
-const { isChatBusy, claim, release } = require('./activeGame');
-const Guild = require('../../models/Guild');
-const { _formatQuestCompletionNote } = require('../guilds');
-const GameSession = require('../../models/GameSession');
 
 // Persists this game's current state to Mongo — fire-and-forget, since the
 // in-memory chessGames Map (below) stays authoritative while the bot is
@@ -35,6 +24,17 @@ const GameSession = require('../../models/GameSession');
 // while FEN behaves identically (and correctly) whether or not a skip
 // happened. A real but narrow tradeoff, not something worth more
 // complexity to fully close.
+import GameSession from './../models/GameSession.js';
+import Guild from './../models/Guild.js';
+import logger from './../utils/logger.js';
+import { BOT_NAME } from './../utils/config.js';
+import { Chess } from 'chess.js';
+import { MessageMedia } from '../services/media.js';
+import { _formatQuestCompletionNote } from './guilds.js';
+import { getBestMove } from './chessEngine.js';
+import { isChatBusy, claim, release } from './activeGame.js';
+import { renderBoardImage } from './chessBoardImage.js';
+import { safeGetChat, resolveNameById } from './../utils/helpers.js';
 function saveChessSession(chatId, game) {
   const { chess, turnTimer, ...rest } = game;
   const state = { ...rest, fen: chess.fen() };

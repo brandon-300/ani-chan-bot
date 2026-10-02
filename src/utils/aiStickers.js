@@ -1,12 +1,16 @@
-const crypto = require('crypto');
-const axios = require('axios');
-const mongoose = require('mongoose');
-const { MessageMedia } = require('whatsapp-web.js');
-const gemini = require('./gemini');
-const cloudinary = require('./cloudinary');
-const AiSticker = require('../models/AiSticker');
-const AiStickerMessage = require('../models/AiStickerMessage');
-const { safeGetChat, safeGetContact, isOwner } = require('./helpers');
+import AiSticker from './models/AiSticker.js';
+import AiStickerMessage from './models/AiStickerMessage.js';
+import aiMessageLedger from './aiMessageLedger.js';
+import axios from 'axios';
+import cloudinary from './cloudinary.js';
+import crypto from 'crypto';
+import gemini from './gemini.js';
+import geminiGate from './geminiGate.js';
+import logger from './logger.js';
+import mongoose from 'mongoose';
+import { MessageMedia } from '../services/media.js';
+import { getActivePersonaSafe, listPersonaIds, loadPersona } from './persona.js';
+import { safeGetChat, safeGetContact, isOwner } from './helpers.js';
 const {
   AI_STICKERS_ENABLED,
   AI_STICKER_AUTO_ANALYZE,
@@ -23,10 +27,6 @@ const {
   AI_STICKER_CATALOGUE_MAX,
   AI_STICKER_RECENT_EXCLUDE,
 } = require('./config');
-const { getActivePersonaSafe, listPersonaIds, loadPersona } = require('./persona');
-const logger = require('./logger');
-const geminiGate = require('./geminiGate');
-const aiMessageLedger = require('./aiMessageLedger');
 
 const ALLOWED_REACTIONS = new Set([
   'amused', 'happy', 'laughing', 'love', 'excited', 'sad', 'angry', 'confused',

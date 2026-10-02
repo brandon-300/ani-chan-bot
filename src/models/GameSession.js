@@ -1,4 +1,3 @@
-const mongoose = require('mongoose');
 
 // Persists in-progress game state (Tic Tac Toe first; Connect 4, Chess,
 // Battle, and Quiz to follow the same pattern one at a time) so a PM2
@@ -20,6 +19,7 @@ const mongoose = require('mongoose');
 // exists here. Only the chatId-unique constraint itself will need to
 // change to a real per-session id at that point; the document shape
 // itself doesn't need to be redesigned from scratch.
+import mongoose from 'mongoose';
 const GameSessionSchema = new mongoose.Schema({
   chatId: { type: String, required: true, unique: true },
   type: { type: String, required: true }, // 'ttt' today; 'c4' | 'chess' | 'battle' | 'quiz' as each migrates

@@ -1,11 +1,11 @@
-const axios = require('axios');
-const { MessageMedia } = require('whatsapp-web.js');
-const ffmpeg = require('fluent-ffmpeg');
-const fs = require('fs');
-const path = require('path');
-const os = require('os');
-const { mentionTag, safeGetQuotedMessage, safeGetContact } = require('../utils/helpers');
 
+import axios from 'axios';
+import ffmpeg from 'fluent-ffmpeg';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import { MessageMedia } from '../services/media.js';
+import { mentionTag, safeGetQuotedMessage, safeGetContact } from './utils/helpers.js';
 const TMP = os.tmpdir();
 
 function tmpFile(ext) {

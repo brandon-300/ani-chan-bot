@@ -1,11 +1,11 @@
-const Group = require('../models/Group');
-const User = require('../models/User');
-const CommandUsage = require('../models/CommandUsage');
-const BotState = require('../models/BotState');
-const fs = require('fs');
-const path = require('path');
-const { safeGetChat, isAdmin, isOwner, resolveNameById, formatCooldown, getModIds, boldSans, doubleStruck } = require('../utils/helpers');
 
+import BotState from './models/BotState.js';
+import CommandUsage from './models/CommandUsage.js';
+import Group from './models/Group.js';
+import User from './models/User.js';
+import fs from 'fs';
+import path from 'path';
+import { safeGetChat, isAdmin, isOwner, resolveNameById, formatCooldown, getModIds, boldSans, doubleStruck } from './utils/helpers.js';
 const BOT_NAME = process.env.BOT_NAME || 'Ani-Chan Bot';
 const PREFIX = process.env.BOT_PREFIX || '.';
 

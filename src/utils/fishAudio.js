@@ -10,7 +10,8 @@
 //   latency / chunk_length – sent only when explicitly configured
 // Defaults come from utils/config.js; a persona's meta.json `voice` block
 // (speed, volume, temperature, topP) overrides them for that persona only.
-const axios = require('axios');
+import axios from 'axios';
+import { getActivePersonaSafe } from './persona.js';
 const {
   FISH_VOICE_ID,
   FISH_MODEL,
@@ -22,7 +23,6 @@ const {
   FISH_LATENCY,
   FISH_CHUNK_LENGTH,
 } = require('./config');
-const { getActivePersonaSafe } = require('./persona');
 
 const FISH_API_KEY = process.env.FISH_API_KEY;
 

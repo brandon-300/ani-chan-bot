@@ -1,5 +1,3 @@
-const ScheduledTask = require('../models/ScheduledTask');
-const logger = require('./logger');
 
 // ─── Central persistent scheduler ──────────────────────────────────────────
 // One Mongo-backed timer for the whole app, instead of one setTimeout per
@@ -35,6 +33,8 @@ const logger = require('./logger');
 //   await scheduler.scheduleTask({ type: 'card_lend_return', key: `lend:${cardId}`, runAt, payload });
 //   await scheduler.cancelTask(`lend:${cardId}`); // e.g. an early .unlendcard
 
+import ScheduledTask from './models/ScheduledTask.js';
+import logger from './logger.js';
 const handlers = new Map();
 let client = null;
 let timer = null;

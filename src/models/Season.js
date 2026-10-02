@@ -1,10 +1,10 @@
-const mongoose = require('mongoose');
 
 // Global season state — ONE document total, not one per guild. Every other
 // piece of the guild system so far (quests, missions, challenges, shop) is
 // scoped to a single guild; a season is a competition BETWEEN every guild
 // at once, so the clock itself has to be shared rather than living on any
 // one Guild document.
+import mongoose from 'mongoose';
 const SeasonSchema = new mongoose.Schema({
   seasonNumber: { type: Number, required: true, unique: true },
   startedAt: { type: Number, required: true },

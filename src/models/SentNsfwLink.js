@@ -1,4 +1,3 @@
-const mongoose = require('mongoose');
 
 // ─── SentNsfwLink (.ehentai / .nhentai dedup) ──────────────────────────────
 // Every gallery link the bot actually sends is recorded here so the same
@@ -9,6 +8,7 @@ const mongoose = require('mongoose');
 // `source` distinguishes e-hentai from nhentai. `query` keeps the search the
 // link came from (informational). `title` is stored so future features can
 // show what a link was without refetching.
+import mongoose from 'mongoose';
 const SentNsfwLinkSchema = new mongoose.Schema({
   source: { type: String, required: true, enum: ['ehentai', 'nhentai'] },
   url: { type: String, required: true },

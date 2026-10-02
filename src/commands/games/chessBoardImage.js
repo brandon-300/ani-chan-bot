@@ -19,9 +19,8 @@
 // pointed crown, a pawn's ball-and-cone — visually verified before use, the
 // same way the old circle tokens and the coordinate-label bitmap font were.
 
-const { encodePNG } = require('../../utils/pngEncoder');
-
 // ─── 5x7 bitmap font — coordinate labels only (a-h, 1-8) ─────────────────────
+import { encodePNG } from './../utils/pngEncoder.js';
 const FONT = {
   '1': ['..#..', '.##..', '..#..', '..#..', '..#..', '..#..', '.###.'],
   '2': ['.###.', '#...#', '....#', '...#.', '..#..', '.#...', '#####'],

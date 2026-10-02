@@ -1,5 +1,5 @@
-const mongoose = require('mongoose');
 
+import mongoose from 'mongoose';
 const PersonaAnalysisSchema = new mongoose.Schema({
   personaId: { type: String, required: true, trim: true },
   analysisVersion: { type: Number, default: 1, min: 1 },

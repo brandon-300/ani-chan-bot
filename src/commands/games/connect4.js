@@ -1,11 +1,3 @@
-const { safeGetChat, resolveNameById } = require('../../utils/helpers');
-const logger = require('../../utils/logger');
-const { getBestMove } = require('./connect4Engine');
-const { BOT_NAME } = require('../../utils/config');
-const { isChatBusy, claim, release } = require('./activeGame');
-const Guild = require('../../models/Guild');
-const { _formatQuestCompletionNote } = require('../guilds');
-const GameSession = require('../../models/GameSession');
 
 // Persists this game's current state to Mongo — fire-and-forget, since the
 // in-memory c4Games Map (below) stays authoritative while the bot is
@@ -14,6 +6,14 @@ const GameSession = require('../../models/GameSession');
 // excluded — a restored game always gets a freshly-armed timer instead of
 // trying to resurrect the old handle (see _initC4). Same pattern as
 // tictactoe.js's saveTTTSession/deleteTTTSession.
+import GameSession from './../models/GameSession.js';
+import Guild from './../models/Guild.js';
+import logger from './../utils/logger.js';
+import { BOT_NAME } from './../utils/config.js';
+import { _formatQuestCompletionNote } from './guilds.js';
+import { getBestMove } from './connect4Engine.js';
+import { isChatBusy, claim, release } from './activeGame.js';
+import { safeGetChat, resolveNameById } from './../utils/helpers.js';
 function saveC4Session(chatId, game) {
   const { turnTimer, ...state } = game;
   GameSession.findOneAndUpdate(

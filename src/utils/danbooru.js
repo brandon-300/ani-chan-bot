@@ -1,5 +1,5 @@
-const axios = require('axios');
 
+import axios from 'axios';
 const DANBOORU_URL = 'https://danbooru.donmai.us';
 
 // Auth is optional — Danbooru works fine anonymously (\~500 reads/hour), just

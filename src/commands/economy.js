@@ -1,18 +1,3 @@
-const User = require('../models/User');
-const Guild = require('../models/Guild');
-const AgeVerification = require('../models/AgeVerification');
-const { CardCatalogue, OwnedCard } = require('../models/Card');
-const { formatNum, formatCooldown, rand, pick, tierEmoji, mentionName, mentionTag, safeGetChat, safeGetQuotedMessage, isOwner, isMod, addXP, XP_REWARDS, xpNeededForLevel, boldSans, doubleStruck, encodeIdKey, parseAmount, parseDobInput, calculateAge, isRegistrationComplete, buildRegistrationProgressText, registrationSteps } = require('../utils/helpers');
-const { BOT_NAME, MIN_REGISTRATION_AGE, AGE_VERIFICATION_LOCKOUT_DAYS } = require('../utils/config');
-const { battleGames } = require('./games');
-const { checkAchievements, formatUnlockNotice, ACHIEVEMENTS } = require('../utils/achievements');
-const { checkTitle, formatTitleUnlockNotice, titleLabel, TITLES } = require('../utils/titles');
-const { MessageMedia } = require('whatsapp-web.js');
-const ffmpeg = require('fluent-ffmpeg');
-const fs = require('fs');
-const path = require('path');
-const os = require('os');
-const { uploadToCloud, deleteFromCloud, isCloudConfigured } = require('../utils/cloudinary');
 
 // ─── Profile pictures (.setpic) ───────────────────────────────────────────────
 // Processed locally with ffmpeg (resize/recompress), then uploaded to
@@ -20,6 +5,21 @@ const { uploadToCloud, deleteFromCloud, isCloudConfigured } = require('../utils/
 // this stays well clear of the 512MB Mongo storage cap regardless of how
 // many users set a picture. Local files here are pure scratch space (input
 // download + ffmpeg output) and get deleted right after upload.
+import AgeVerification from './models/AgeVerification.js';
+import Guild from './models/Guild.js';
+import User from './models/User.js';
+import ffmpeg from 'fluent-ffmpeg';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import { BOT_NAME, MIN_REGISTRATION_AGE, AGE_VERIFICATION_LOCKOUT_DAYS } from './utils/config.js';
+import { CardCatalogue, OwnedCard } from './models/Card.js';
+import { MessageMedia } from '../services/media.js';
+import { battleGames } from './games.js';
+import { checkAchievements, formatUnlockNotice, ACHIEVEMENTS } from './utils/achievements.js';
+import { checkTitle, formatTitleUnlockNotice, titleLabel, TITLES } from './utils/titles.js';
+import { formatNum, formatCooldown, rand, pick, tierEmoji, mentionName, mentionTag, safeGetChat, safeGetQuotedMessage, isOwner, isMod, addXP, XP_REWARDS, xpNeededForLevel, boldSans, doubleStruck, encodeIdKey, parseAmount, parseDobInput, calculateAge, isRegistrationComplete, buildRegistrationProgressText, registrationSteps } from './utils/helpers.js';
+import { uploadToCloud, deleteFromCloud, isCloudConfigured } from './utils/cloudinary.js';
 const TMP = os.tmpdir();
 
 function tmpFile(ext) {

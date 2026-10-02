@@ -1,5 +1,3 @@
-const User = require('../models/User');
-const { CardCatalogue, OwnedCard } = require('../models/Card');
 
 // Each achievement's `check(ctx)` runs against a context built fresh from the
 // user's current stats. Only reachable, honestly-checkable achievements are
@@ -8,6 +6,8 @@ const { CardCatalogue, OwnedCard } = require('../models/Card');
 //
 // To add a new achievement later: just append an entry here. Nothing else
 // needs to change — checkAchievements() picks it up automatically.
+import User from './models/User.js';
+import { CardCatalogue, OwnedCard } from './models/Card.js';
 const ACHIEVEMENTS = [
   {
     id: 'first_card',

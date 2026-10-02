@@ -6,15 +6,14 @@
 //        (models/SentNsfwLink.js) and never sent again. If the site can't be
 //        reached (Cloudflare/unstable data), falls back to a plain search URL.
 
-const axios = require('axios');
-const { MessageMedia } = require('whatsapp-web.js');
-const Group = require('../models/Group');
-const User = require('../models/User');
-const SentNsfwLink = require('../models/SentNsfwLink');
-const { safeGetChat, isAdmin, isOwner, isMod, isVerifiedAdult } = require('../utils/helpers');
-const { fetchRandomImage } = require('../utils/danbooru');
-const { MIN_REGISTRATION_AGE } = require('../utils/config');
-
+import Group from './models/Group.js';
+import SentNsfwLink from './models/SentNsfwLink.js';
+import User from './models/User.js';
+import axios from 'axios';
+import { MIN_REGISTRATION_AGE } from './utils/config.js';
+import { MessageMedia } from '../services/media.js';
+import { fetchRandomImage } from './utils/danbooru.js';
+import { safeGetChat, isAdmin, isOwner, isMod, isVerifiedAdult } from './utils/helpers.js';
 const PREFIX = process.env.BOT_PREFIX || '.';
 
 const CATEGORIES = {

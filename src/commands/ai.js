@@ -1,19 +1,20 @@
-const axios = require('axios');
-const fs = require('fs');
-const path = require('path');
-const os = require('os');
-const ffmpeg = require('fluent-ffmpeg');
-const { MessageMedia } = require('whatsapp-web.js');
-const { safeGetChat, safeGetQuotedMessage, resolveSenderName } = require('../utils/helpers');
-const { BOT_NAME, FISH_EXPRESSION_TAGS, AI_VOICE_MAX_OUTPUT_TOKENS } = require('../utils/config');
-const speechText = require('../utils/speechText');
-const logger = require('../utils/logger');
-const aiMessageLedger = require('../utils/aiMessageLedger');
-const { getActivePersonaSafe } = require('../utils/persona');
-const aiStickers = require('../utils/aiStickers');
-const gemini = require('../utils/gemini');
-const fishAudio = require('../utils/fishAudio');
 
+import AiConversation from './models/AiConversation.js';
+import aiMessageLedger from './utils/aiMessageLedger.js';
+import aiStickers from './utils/aiStickers.js';
+import axios from 'axios';
+import ffmpeg from 'fluent-ffmpeg';
+import fishAudio from './utils/fishAudio.js';
+import fs from 'fs';
+import gemini from './utils/gemini.js';
+import logger from './utils/logger.js';
+import os from 'os';
+import path from 'path';
+import speechText from './utils/speechText.js';
+import { BOT_NAME, FISH_EXPRESSION_TAGS, AI_VOICE_MAX_OUTPUT_TOKENS } from './utils/config.js';
+import { MessageMedia } from '../services/media.js';
+import { getActivePersonaSafe } from './utils/persona.js';
+import { safeGetChat, safeGetQuotedMessage, resolveSenderName } from './utils/helpers.js';
 const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY;
 
 // ─── Small tmp-file / ffmpeg helpers ────────────────────────────────────────
@@ -52,7 +53,6 @@ function cleanup(...files) {
 // replaced the old in-memory Map (it didn't survive PM2 restarts, and its
 // per-call setTimeout cleanup had a real bug: an earlier timer could wipe
 // out a chat's newer history mid-conversation).
-const AiConversation = require('../models/AiConversation');
 
 const HISTORY_LIMIT = 20; // messages kept per conversation
 const HISTORY_TTL_MS = 30 * 60 * 1000; // idle window before Mongo auto-expires it

@@ -6,12 +6,12 @@
 // deployed — see that file's header comment for why (Mongoose throws a
 // CastError trying to hydrate a raw string into this subdocument shape
 // otherwise).
-const mongoose = require('mongoose');
-const User = require('./User');
-const { getNextSequence } = require('./Counter');
-const { xpNeededForLevel, encodeIdKey } = require('../utils/helpers');
-const { withGuildLock } = require('../utils/guildLock');
 
+import User from './User.js';
+import mongoose from 'mongoose';
+import { getNextSequence } from './Counter.js';
+import { withGuildLock } from './utils/guildLock.js';
+import { xpNeededForLevel, encodeIdKey } from './utils/helpers.js';
 const ROLES = ['leader', 'officer', 'veteran', 'member'];
 // Higher number = more senior. Used by .guild promote/.guild demote to
 // step a member one rank up/down, and by leadership-handoff logic, without

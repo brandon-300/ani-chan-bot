@@ -1,9 +1,9 @@
-const mongoose = require('mongoose');
 
 // Same shape/purpose as models/SentPin.js and models/SentWallpaper.js — one
 // record per (chat, article) pair, so a chat is never sent the same article
 // twice across either .news or the daily auto-broadcast (both draw from the
 // same feed and both check this).
+import mongoose from 'mongoose';
 const SentNewsSchema = new mongoose.Schema({
   chatId: { type: String, required: true },
   // The article's Google News link — stable and unique per article, so it

@@ -1,22 +1,22 @@
-const { CardCatalogue, OwnedCard, Auction, TradeRequest, SaleRequest } = require('../models/Card');
-const { checkAchievements, formatUnlockNotice } = require('../utils/achievements');
-const { checkTitle, formatTitleUnlockNotice } = require('../utils/titles');
-const { renderCard, fetchImageAsDataUri } = require('../utils/cardRenderer');
-const { MessageMedia } = require('whatsapp-web.js');
-const User = require('../models/User');
-const Group = require('../models/Group');
-const Guild = require('../models/Guild');
-const { _formatQuestCompletionNote } = require('./guilds');
-const { tierEmoji, rollTier, formatNum, pick, mentionName, mentionTag, generateUniqueCode, safeGetChat, cardValue, tierAbove, TIER_DROP_RATES, addXP, XP_REWARDS, parseAmount, boldSans, doubleStruck, cleanDescription } = require('../utils/helpers');
-const scheduler = require('../utils/scheduler');
-const crypto = require('crypto');
-const mongoose = require('mongoose');
 
 // How long a .sc (sale) or .tc (trade) offer stays valid — used both when
 // creating one (models/Card.js's expiresAt TTL field on SaleRequest/
 // TradeRequest) and when checking one's age in .acceptsale/.accepttrade.
 // One constant instead of the literal "10 * 60 * 1000" in three places, so
 // the creation side and the check side can't drift out of sync.
+import Group from './models/Group.js';
+import Guild from './models/Guild.js';
+import User from './models/User.js';
+import crypto from 'crypto';
+import mongoose from 'mongoose';
+import scheduler from './utils/scheduler.js';
+import { CardCatalogue, OwnedCard, Auction, TradeRequest, SaleRequest } from './models/Card.js';
+import { MessageMedia } from '../services/media.js';
+import { _formatQuestCompletionNote } from './guilds.js';
+import { checkAchievements, formatUnlockNotice } from './utils/achievements.js';
+import { checkTitle, formatTitleUnlockNotice } from './utils/titles.js';
+import { renderCard, fetchImageAsDataUri } from './utils/cardRenderer.js';
+import { tierEmoji, rollTier, formatNum, pick, mentionName, mentionTag, generateUniqueCode, safeGetChat, cardValue, tierAbove, TIER_DROP_RATES, addXP, XP_REWARDS, parseAmount, boldSans, doubleStruck, cleanDescription } from './utils/helpers.js';
 const REQUEST_EXPIRY_MS = 10 * 60 * 1000;
 
 // Thrown inside a mongoose session.withTransaction(...) callback purely to

@@ -1,4 +1,3 @@
-const mongoose = require('mongoose');
 
 // Per-(group, user) message-activity counter — replaces the old
 // Group.activityLog Map field. That field required a full load -> read
@@ -17,6 +16,7 @@ const mongoose = require('mongoose');
 // in a query filter, not part of a dynamically-built path string, so that
 // whole class of problem doesn't apply — no more "~"-encoding a WhatsApp
 // id just to use it as a Map key.
+import mongoose from 'mongoose';
 const GroupActivitySchema = new mongoose.Schema({
   groupId: { type: String, required: true },
   userId: { type: String, required: true },

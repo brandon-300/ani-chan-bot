@@ -1,13 +1,13 @@
-const Guild = require('../models/Guild');
-const GuildChallenge = require('../models/GuildChallenge');
-const Season = require('../models/Season');
-const GuildEvent = require('../models/GuildEvent');
-const BotState = require('../models/BotState');
-const User = require('../models/User');
-const { formatNum, formatCooldown, mentionName, mentionTag, resolveNameById, boldSans, doubleStruck, parseAmount, decodeIdKey, isOwner, safeGetChat } = require('../utils/helpers');
-const { GUILD_ACHIEVEMENTS, checkGuildAchievements, formatGuildUnlockNotice } = require('../utils/guildAchievements');
-const { withGuildLock } = require('../utils/guildLock');
 
+import BotState from './models/BotState.js';
+import Guild from './models/Guild.js';
+import GuildChallenge from './models/GuildChallenge.js';
+import GuildEvent from './models/GuildEvent.js';
+import Season from './models/Season.js';
+import User from './models/User.js';
+import { GUILD_ACHIEVEMENTS, checkGuildAchievements, formatGuildUnlockNotice } from './utils/guildAchievements.js';
+import { formatNum, formatCooldown, mentionName, mentionTag, resolveNameById, boldSans, doubleStruck, parseAmount, decodeIdKey, isOwner, safeGetChat } from './utils/helpers.js';
+import { withGuildLock } from './utils/guildLock.js';
 const ROLE_RANK = Guild.ROLE_RANK;
 const QUEST_DEFS = Guild.QUEST_DEFS;
 const MIN_QUEST_DURATION_MS = Guild.MIN_QUEST_DURATION_MS;

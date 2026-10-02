@@ -7,12 +7,11 @@
 // chess board's coordinate labels, so players can still see which number to
 // type without needing a separate text-only board.
 
-const { encodePNG } = require('../../utils/pngEncoder');
-
 // ─── 5x7 bitmap font — digits 1-9 only ─────────────────────────────────────
 // Same style/weight as the coordinate-label font in chessBoardImage.js
 // (1-8 copied verbatim so both boards' text reads consistently); 9 added
 // here since chess never needed it (ranks only go to 8).
+import { encodePNG } from './../utils/pngEncoder.js';
 const FONT = {
   '1': ['..#..', '.##..', '..#..', '..#..', '..#..', '..#..', '.###.'],
   '2': ['.###.', '#...#', '....#', '...#.', '..#..', '.#...', '#####'],

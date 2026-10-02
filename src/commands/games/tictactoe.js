@@ -1,13 +1,3 @@
-const { MessageMedia } = require('whatsapp-web.js');
-const logger = require('../../utils/logger');
-const { safeGetChat, resolveNameById } = require('../../utils/helpers');
-const { getBestMove } = require('./tictactoeEngine');
-const { renderBoardImage } = require('./tictactoeBoardImage');
-const { BOT_NAME } = require('../../utils/config');
-const { isChatBusy, claim, release } = require('./activeGame');
-const Guild = require('../../models/Guild');
-const { _formatQuestCompletionNote } = require('../guilds');
-const GameSession = require('../../models/GameSession');
 
 // Persists this game's current state to Mongo — fire-and-forget, since the
 // in-memory tttGames Map (below) stays authoritative while the bot is
@@ -15,6 +5,16 @@ const GameSession = require('../../models/GameSession');
 // turnTimer is a live setTimeout handle, not data, so it's deliberately
 // excluded — a restored game always gets a freshly-armed timer instead of
 // trying to resurrect the old handle (see _initTTT).
+import GameSession from './../models/GameSession.js';
+import Guild from './../models/Guild.js';
+import logger from './../utils/logger.js';
+import { BOT_NAME } from './../utils/config.js';
+import { MessageMedia } from '../services/media.js';
+import { _formatQuestCompletionNote } from './guilds.js';
+import { getBestMove } from './tictactoeEngine.js';
+import { isChatBusy, claim, release } from './activeGame.js';
+import { renderBoardImage } from './tictactoeBoardImage.js';
+import { safeGetChat, resolveNameById } from './../utils/helpers.js';
 function saveTTTSession(chatId, game) {
   const { turnTimer, ...state } = game;
   GameSession.findOneAndUpdate(

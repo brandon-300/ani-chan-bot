@@ -1,5 +1,5 @@
-const mongoose = require('mongoose');
 
+import mongoose from 'mongoose';
 const SentPinSchema = new mongoose.Schema({
   chatId: { type: String, required: true },
   pinId: { type: String, required: true },

@@ -1,4 +1,3 @@
-const mongoose = require('mongoose');
 
 // ─── Age Verification Lockout (.setdob under-18 denial) ────────────────────
 // See .setdob in commands/economy.js and MIN_REGISTRATION_AGE /
@@ -26,6 +25,7 @@ const mongoose = require('mongoose');
 // accounts for this by treating an already-expired-but-not-yet-swept
 // document as expired (and deleting it itself) rather than trusting the
 // document's mere existence.
+import mongoose from 'mongoose';
 const AgeVerificationSchema = new mongoose.Schema({
   // Same WhatsApp id format used as User.id (e.g. "234801234567@c.us").
   id: { type: String, required: true, unique: true },

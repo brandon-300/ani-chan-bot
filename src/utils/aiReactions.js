@@ -1,3 +1,6 @@
+import config from './config.js';
+import defaultLedger from './aiMessageLedger.js';
+import logger from './logger.js';
 'use strict';
 
 // ─── AI reacts to reactions on its own messages ─────────────────────────────
@@ -13,10 +16,6 @@
 //     messages the AI produced — not menus, card drops or other bot output.
 //   • At most one reaction per message, and a per-chat cooldown.
 //   • No Gemini call, so it is unaffected by quota or the Gemini command pause.
-
-const config = require('./config');
-const defaultLedger = require('./aiMessageLedger');
-const logger = require('./logger');
 
 // Emoji compare without the variation selector so "❤" and "❤️" are the same.
 const normalize = emoji => String(emoji || '').replace(/\uFE0F/g, '').trim();

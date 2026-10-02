@@ -1,7 +1,7 @@
-const User = require('../models/User');
-const { rand, pick, formatNum } = require('../utils/helpers');
 
 // ─── Slots ────────────────────────────────────────────────────────────────────
+import User from './models/User.js';
+import { rand, pick, formatNum } from './utils/helpers.js';
 const SLOT_SYMBOLS = ['🍒', '🍋', '🍊', '🍇', '⭐', '💎', '7️⃣'];
 const SLOT_WEIGHTS = [30, 25, 20, 15, 5, 3, 2]; // % chance
 

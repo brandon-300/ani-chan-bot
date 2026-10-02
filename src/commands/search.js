@@ -1,10 +1,11 @@
-const axios = require('axios');
-const { MessageMedia } = require('whatsapp-web.js');
-const SentWallpaper = require('../models/SentWallpaper');
-const SentPin = require('../models/SentPin');
-const { safeGetChat, safeGetQuotedMessage } = require('../utils/helpers');
-const gemini = require('../utils/gemini');
 
+import FormData from 'form-data';
+import SentPin from './models/SentPin.js';
+import SentWallpaper from './models/SentWallpaper.js';
+import axios from 'axios';
+import gemini from './utils/gemini.js';
+import { MessageMedia } from '../services/media.js';
+import { safeGetChat, safeGetQuotedMessage } from './utils/helpers.js';
 const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY;
 
 async function sendImage(msg, url, caption) {
@@ -158,7 +159,6 @@ module.exports = {
       const imageBuffer = Buffer.from(media.data, 'base64');
 
       // Use SauceNAO API for anime sources
-      const FormData = require('form-data');
       const form = new FormData();
       form.append('file', imageBuffer, { filename: 'image.jpg', contentType: media.mimetype });
       form.append('output_type', '2');

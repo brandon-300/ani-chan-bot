@@ -1,10 +1,10 @@
-const mongoose = require('mongoose');
 
 // One document per unique (group, user, command) combination — incremented
 // atomically on every use rather than logging every single invocation
 // forever, so this collection stays small and cheap to query even after
 // months of activity (same "counters, not raw logs" idea as Group's
 // messageCount/activityLog).
+import mongoose from 'mongoose';
 const CommandUsageSchema = new mongoose.Schema({
   // 'DM' for command usage outside of any group.
   groupId: { type: String, required: true, index: true },
