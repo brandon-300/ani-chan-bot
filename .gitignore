@@ -12,3 +12,4 @@ imports/anime-stickers/**/*.webp
 imports/anime-stickers/**/*.png
 imports/anime-stickers/**/*.jpg
 imports/anime-stickers/**/*.jpeg
+voice-tests/

@@ -60,6 +60,19 @@ function loadPersona(personaId = AI_PERSONA) {
   if (meta.voice?.referenceId != null && typeof meta.voice.referenceId !== 'string') {
     throw new Error(`Persona "${id}" voice.referenceId must be a string or null.`);
   }
+  // Optional delivery tuning. Each field is validated here so a typo in
+  // meta.json fails loudly at load time instead of silently sending a bad
+  // value to Fish Audio on every voice note.
+  const VOICE_TUNING_RANGES = { speed: [0.5, 2], volume: [-20, 20], temperature: [0, 1], topP: [0, 1] };
+  const voiceTuning = {};
+  for (const [field, [min, max]] of Object.entries(VOICE_TUNING_RANGES)) {
+    const value = meta.voice?.[field];
+    if (value == null) continue;
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < min || value > max) {
+      throw new Error(`Persona "${id}" voice.${field} must be a number between ${min} and ${max}.`);
+    }
+    voiceTuning[field] = value;
+  }
 
   // AI_CALL_NAMES deliberately replaces names only for this active persona;
   // it is never a shared pool or a default for other persona directories.
@@ -73,7 +86,7 @@ function loadPersona(personaId = AI_PERSONA) {
     series: typeof meta.series === 'string' ? meta.series.trim() : '',
     callNames: Object.freeze([...callNames]),
     stickerAuthor: meta.stickerAuthor.trim(),
-    voice: Object.freeze({ referenceId: meta.voice?.referenceId || null }),
+    voice: Object.freeze({ referenceId: meta.voice?.referenceId || null, ...voiceTuning }),
     personality: readPrompt(path.join(personaDir, 'personality.txt'), 'personality.txt'),
     text: readPrompt(path.join(personaDir, 'text.txt'), 'text.txt'),
     voicePrompt: readPrompt(path.join(personaDir, 'voice.txt'), 'voice.txt'),

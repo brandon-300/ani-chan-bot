@@ -2,9 +2,15 @@
   "id": "marin",
   "displayName": "Marin Kitagawa",
   "series": "My Dress-Up Darling",
-  "callNames": ["Marin", "Kitagawa", "Marin Kitagawa"],
+  "callNames": [
+    "Marin",
+    "Kitagawa",
+    "Marin Kitagawa"
+  ],
   "stickerAuthor": "Marin Kitagawa",
   "voice": {
-    "referenceId": "6f28ed94f4014cc5a9896365e6c4fc21"
+    "referenceId": "6f28ed94f4014cc5a9896365e6c4fc21",
+    "speed": 1.05,
+    "temperature": 0.85
   }
 }

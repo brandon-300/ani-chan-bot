@@ -136,6 +136,63 @@ const PERSONAS_DIR = path.resolve(__dirname, '../config/personas');
 const FISH_VOICE_ID = process.env.FISH_VOICE_ID || '';
 const FISH_MODEL = process.env.FISH_MODEL || 's2.1-pro-free';
 const FISH_REQUEST_TIMEOUT_MS = positiveEnvInt('FISH_REQUEST_TIMEOUT_MS', 45000);
+
+// ─── Float env parser (clamped) ─────────────────────────────────────────────
+// Missing/blank/invalid values fall back; valid values are clamped to [min, max].
+function envFloat(name, fallback, min, max) {
+  const raw = process.env[name];
+  if (raw === undefined || String(raw).trim() === '') return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(max, Math.max(min, n));
+}
+
+// ─── Fish Audio delivery tuning ─────────────────────────────────────────────
+// Sampling and pacing sent with every TTS request. A persona's meta.json
+// `voice` block (speed, volume, temperature, topP) overrides these per persona.
+// Higher temperature/top_p = more varied, more expressive delivery; Fish's own
+// default is 0.7. latency/chunk_length are only sent when explicitly set.
+const FISH_TEMPERATURE = envFloat('FISH_TEMPERATURE', 0.8, 0, 1);
+const FISH_TOP_P = envFloat('FISH_TOP_P', 0.8, 0, 1);
+const FISH_SPEED = envFloat('FISH_SPEED', 1, 0.5, 2);
+const FISH_VOLUME_DB = envFloat('FISH_VOLUME_DB', 0, -20, 20);
+const FISH_LATENCY = ['low', 'normal', 'balanced'].includes((process.env.FISH_LATENCY || '').trim().toLowerCase())
+  ? process.env.FISH_LATENCY.trim().toLowerCase()
+  : '';
+const FISH_CHUNK_LENGTH = (() => {
+  const n = envInt('FISH_CHUNK_LENGTH', 0);
+  return n > 0 ? Math.min(300, Math.max(100, n)) : 0;
+})();
+// Opt-in: prepend ONE short documented [cue] such as [excited] to a voice note.
+// OFF by default because cues are interpreted text on the S2.1 model and can be
+// spoken aloud if the model does not honor them. Test with
+// scripts/fish-voice-test.js before turning this on.
+const FISH_EXPRESSION_TAGS = envBool('FISH_EXPRESSION_TAGS', false);
+// Voice notes should be a few spoken sentences, not an essay.
+const AI_VOICE_MAX_OUTPUT_TOKENS = positiveEnvInt('AI_VOICE_MAX_OUTPUT_TOKENS', 500);
+
+// ─── Model-chosen stickers ──────────────────────────────────────────────────
+// For each text reply the AI is shown a numbered catalogue of stickers that
+// passed the persona-fit gate and picks the one that fits what it is saying (or
+// none). At most this many stickers are offered per reply; they are spread
+// across anime and shuffled so the same ones are not always on offer.
+const AI_STICKER_CATALOGUE_MAX = positiveEnvInt('AI_STICKER_CATALOGUE_MAX', 48);
+// Stickers sent in the last N AI stickers in a chat are left out of the next
+// catalogue so the AI does not repeat itself. 0 turns this off.
+const AI_STICKER_RECENT_EXCLUDE = Math.max(0, envInt('AI_STICKER_RECENT_EXCLUDE', 6));
+
+// ─── AI reacts to reactions on its own messages ─────────────────────────────
+// When someone reacts to a message/voice note/sticker the AI itself sent, it may
+// add its own emoji reaction to that same message. It never sends a message in
+// response, and makes no Gemini call.
+const AI_REACT_TO_REACTIONS = envBool('AI_REACT_TO_REACTIONS', true);
+const AI_REACT_CHANCE = envFloat('AI_REACT_CHANCE', 0.6, 0, 1);
+const AI_REACT_COOLDOWN_MS = Math.max(0, envInt('AI_REACT_COOLDOWN_MS', 15000));
+const AI_REACT_DELAY_MIN_MS = Math.max(0, envInt('AI_REACT_DELAY_MIN_MS', 1500));
+const AI_REACT_DELAY_MAX_MS = Math.max(AI_REACT_DELAY_MIN_MS, envInt('AI_REACT_DELAY_MAX_MS', 6000));
+// How long, and how many, recently sent AI messages are remembered as "mine".
+const AI_MESSAGE_MEMORY_MS = positiveEnvInt('AI_MESSAGE_MEMORY_MS', 24 * 60 * 60 * 1000);
+const AI_MESSAGE_MEMORY_MAX = positiveEnvInt('AI_MESSAGE_MEMORY_MAX', 1000);
 const AI_STICKER_ANALYSIS_VERSION = positiveEnvInt('AI_STICKER_ANALYSIS_VERSION', 1);
 // Non-exact sticker matches must be unusually strong. Exact persona reaction
 // labels are still accepted directly; this threshold prevents weak emotion/
@@ -198,4 +255,21 @@ module.exports = {
   GEMINI_PAUSE_DURING_STICKER_ANALYSIS,
   GEMINI_COMMANDS,
   GEMINI_BUSY_MESSAGE,
+  FISH_TEMPERATURE,
+  FISH_TOP_P,
+  FISH_SPEED,
+  FISH_VOLUME_DB,
+  FISH_LATENCY,
+  FISH_CHUNK_LENGTH,
+  FISH_EXPRESSION_TAGS,
+  AI_VOICE_MAX_OUTPUT_TOKENS,
+  AI_STICKER_CATALOGUE_MAX,
+  AI_STICKER_RECENT_EXCLUDE,
+  AI_REACT_TO_REACTIONS,
+  AI_REACT_CHANCE,
+  AI_REACT_COOLDOWN_MS,
+  AI_REACT_DELAY_MIN_MS,
+  AI_REACT_DELAY_MAX_MS,
+  AI_MESSAGE_MEMORY_MS,
+  AI_MESSAGE_MEMORY_MAX,
 };

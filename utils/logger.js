@@ -101,6 +101,76 @@ function hostOf(value) {
   try { return new URL(String(value)).hostname; } catch { return null; }
 }
 
+// Readable one-liners for the AI reply pipeline. In text mode the logger only
+// shows the event name unless a line is defined here, so every step of the AI's
+// decision (what it was asked, what it offered, what Gemini chose, what was
+// actually sent) has one, in the order it happens.
+function quote(value, max = 90) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  return `"${text.length > max ? `${text.slice(0, max - 1)}…` : text}"`;
+}
+
+function clockOf(value) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? 'later' : date.toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit' });
+}
+
+function aiLine(event, d) {
+  switch (event) {
+    case 'ai.input':
+      return `[ai] Input from ${d.sender || 'user'} (${d.chat || 'chat'}) via .${d.command || 'ai'}: ${d.kind === 'sticker' ? 'sticker reply' : (d.kind || 'text')}${d.kind === 'text' ? ` ${quote(d.promptPreview)}` : ''} · ${d.historyTurns != null ? `${d.historyTurns} earlier messages · ` : ''}${d.stickersOffered || 0} stickers offered`;
+    case 'ai.catalogue': {
+      if (d.reason === 'stickers_disabled') return '[ai] Sticker catalogue: stickers are switched off (AI_STICKERS_ENABLED)';
+      const ex = d.excluded || {};
+      const skipped = [
+        ex.recently_sent ? `${ex.recently_sent} recently sent` : '',
+        ex.low_persona_fit ? `${ex.low_persona_fit} not fitting this character` : '',
+        ex.unclassified ? `${ex.unclassified} not analysed yet` : '',
+        ex.no_asset ? `${ex.no_asset} missing image` : '',
+      ].filter(Boolean).join(', ');
+      return `[ai] Sticker catalogue: offering ${d.offered || 0} of ${d.eligible || 0} usable stickers from ${d.animeCount || 0} anime (library ${d.library ?? '?'})${skipped ? ` · left out: ${skipped}` : ''}${d.reason && d.reason !== 'stickers_disabled' ? ` · ${String(d.reason).replace(/_/g, ' ')}` : ''}`;
+    }
+    case 'ai.model.reply': {
+      const parts = [d.textChars ? `words ${quote(d.textPreview)}` : 'no words'];
+      if (d.emoji) parts.push(`react ${d.emoji}`);
+      if (d.sticker !== null && d.sticker !== undefined) parts.push(d.sticker === 'none' ? 'no sticker' : `sticker #${d.sticker}`);
+      if (d.legacyReaction) parts.push(`(ignored old reaction label: ${d.legacyReaction})`);
+      if (d.action) parts.push(`action ${d.action}`);
+      return `[ai] Gemini chose: ${parts.join(' · ')}`;
+    }
+    case 'ai.sticker.choice':
+      if (d.status === 'valid') return `[ai] Sticker #${d.requested} is on the catalogue: ${d.anime || 'unknown anime'}${d.description ? ` - ${d.description}` : ''}`;
+      if (d.status === 'not_offered') return `[ai] Sticker #${d.requested} was NOT on the catalogue (${d.offered || 0} offered) - ignored, no sticker sent`;
+      if (d.status === 'none_chosen') return `[ai] Gemini chose no sticker (${d.offered || 0} were offered)`;
+      return `[ai] Gemini picked no sticker (${d.offered || 0} were offered)`;
+    case 'ai.sticker.sent':
+      return `[ai] Sent sticker #${d.id}: ${d.anime || 'unknown anime'}${d.description ? ` - ${d.description}` : ''} (${shortenHash(d.hash)})`;
+    case 'ai.emoji.react':
+      return `[ai] Reacted ${d.emoji} to the user's ${d.messageType === 'sticker' ? 'sticker' : 'message'}`;
+    case 'ai.status_reaction.cleared':
+      return "[ai] Removed the ⏳ from the user's message";
+    case 'ai.status_reaction.clear_failed':
+      return `[ai] Could not remove the ⏳: ${d.error || 'unknown error'}`;
+    case 'ai.decision': {
+      if (d.menu) return '[ai] Decision: sent the command menu';
+      const did = [];
+      if (d.text) did.push(`words (${d.textChars} chars)`);
+      if (d.emoji) did.push(`reaction ${d.emoji}`);
+      if (d.sticker) did.push(`sticker #${d.sticker.id} (${d.sticker.anime || 'unknown anime'})`);
+      const aside = (d.dropped || []).length ? ` · set aside: ${d.dropped.join('; ')}` : '';
+      return `[ai] Decision: ${did.join(' + ') || 'nothing sent'}${d.stickerReply ? ' · replying to a user sticker' : ''}${aside}`;
+    }
+    case 'ai.reaction.react':
+      return `[ai] ${d.theirs} on my ${d.kind || 'message'} → I will react ${d.mine} in ${d.delayMs}ms`;
+    case 'ai.reaction.skip':
+      return `[ai] ${d.theirs} on my ${d.kind || 'message'}: not reacting back (${String(d.reason || '').replace(/_/g, ' ')})`;
+    case 'gemini.gate.blocked':
+      return `[ai] .${d.command || 'command'} paused while sticker analysis uses Gemini - told the user it is unavailable`;
+    default:
+      return null;
+  }
+}
+
 function textLineBody(record) {
   const { event, level, ...details } = record;
   const errorEvent = level === 'ERROR' || /(^|\.)(failed|error|exhausted|crashed)$/.test(event);
@@ -111,6 +181,11 @@ function textLineBody(record) {
     : event.startsWith('api.') ? 'api'
     : event.startsWith('background.') || event.startsWith('scheduler.') || event.startsWith('whatsapp.') ? 'background'
     : 'background';
+
+  if (!errorEvent && (event.startsWith('ai.') || event === 'gemini.gate.blocked')) {
+    const line = aiLine(event, details);
+    if (line) return line;
+  }
 
   if (errorEvent && event.startsWith('command.')) {
     return `[error] Command ${commandName(details, event)} failed: ${shortError(details)}`;
@@ -147,6 +222,9 @@ function textLineBody(record) {
     : `[sticker] Analysis failed: ${shortError(details)}`;
   if (event === 'background.ai_sticker_analysis.worker.start') return `[sticker] Analysis worker started (${details.queued || 0} queued)`;
   if (event === 'background.ai_sticker_analysis.worker.idle') return '[sticker] Analysis worker idle';
+  if (event === 'background.ai_sticker_analysis.quota_hit') return `[sticker] Gemini quota error while analysing for ${details.personaId || 'persona'} - the sticker stays queued: ${shorten(details.error || '', 120)}`;
+  if (event === 'background.ai_sticker_analysis.quota_pause') return `[sticker] Gemini quota used up: sticker analysis paused for ${Math.round((details.cooldownMs || 0) / 60000) || '<1'} min (resumes about ${clockOf(details.resumeAt)}), ${details.remaining ?? '?'} waiting${details.streak > 1 ? `, ${details.streak} quota pauses in a row` : ''}`;
+  if (event === 'background.ai_sticker_analysis.quota_resume') return `[sticker] Trying Gemini again: sticker analysis resumed (${details.queued || 0} waiting)`;
   if (event === 'background.ai_sticker.classified') return `[sticker] Classified for ${details.personaId || 'persona'}: ${(details.reactions || []).join(', ') || 'no reactions'}`;
   if (event === 'sticker.selection.picked') return `[sticker] Picked ${details.reaction || 'reaction'} → ${shortenHash(details.hash)}`;
   if (event === 'sticker.selection.skipped') return `[sticker] Skipped (no good match for ${details.reaction || 'reaction'})`;

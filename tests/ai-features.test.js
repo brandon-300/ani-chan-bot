@@ -137,8 +137,8 @@ test('persona prompts/call names are loaded per character and Mongo enforces per
   assert.equal(persona.displayName, 'Marin Kitagawa');
   assert.deepEqual(persona.callNames, ['Marin', 'Kitagawa', 'Marin Kitagawa']);
   assert.match(persona.personality, /Cheerful, energetic/);
-  assert.match(persona.text, /\[\[reaction:/);
-  assert.match(persona.text, /Do not use emojis/i);
+  assert.doesNotMatch(persona.text, /Internal reaction control|\[\[reaction:/, 'sticker/emoji controls are built in code now, not in the persona file');
+  assert.match(persona.text, /Emojis are welcome in text replies/i);
   assert.doesNotMatch(persona.voicePrompt, /\[\[reaction:/);
   assert.equal(persona.voice.referenceId, '6f28ed94f4014cc5a9896365e6c4fc21');
   const prompt = _buildPersonaSystemPrompt('Brandon', 'text');
@@ -167,8 +167,8 @@ test('Karane and Rias load independently with their supplied Fish Audio IDs and 
   assert.match(rias.personality, /compassionate/i);
   assert.match(rias.personality, /peerage/i);
   for (const entry of [karane, rias]) {
-    assert.match(entry.text, /Do not use emojis/i);
-    assert.match(entry.text, /\[\[reaction:<label>\]\]/);
+    assert.match(entry.text, /Emojis are welcome in text replies/i);
+    assert.doesNotMatch(entry.text, /\[\[reaction:<label>\]\]|Internal reaction control/);
     assert.match(entry.text, /\[\[bot_action:command_menu\]\]/);
     assert.doesNotMatch(entry.voicePrompt, /\[\[reaction:/);
   }
@@ -221,37 +221,56 @@ test('AI control tags are removed, malformed controls are stripped, and menu act
 
   const malformed = _parseAiControls('Useful answer\n[[reaction:happy]', { allowBotActions: true });
   assert.equal(malformed.text, 'Useful answer');
+  // Emojis are allowed in visible text again; only the control token is removed.
   const emojiReply = _parseAiControls('Hey Brandon! ✨💖 [[reaction:happy]]');
-  assert.equal(emojiReply.text, 'Hey Brandon!');
+  assert.equal(emojiReply.text, 'Hey Brandon! ✨💖');
+  assert.equal(emojiReply.reaction, 'happy');
 });
 
-test('sticker replies choose exactly one response mode and fall back to text when sticker selection fails', async () => {
-  const originalSend = aiStickers.sendReactionSticker;
-  const calls = [];
-  aiStickers.sendReactionSticker = async (_client, _msg, reaction) => {
-    calls.push(reaction);
-    return reaction !== 'angry';
+test('replies to a user sticker are ONE message (sticker or words), an emoji reaction can go with either, and failures fall back to words', async () => {
+  const originalSend = aiStickers.sendCatalogueSticker;
+  const sentIds = [];
+  aiStickers.sendCatalogueSticker = async (_client, _msg, catalogue, id) => {
+    sentIds.push(id);
+    return id === 2 ? { sent: false, reason: 'send_failed', item: null } : { sent: true, reason: null, item: catalogue.items.find(i => i.id === id) };
   };
-  const makeMsg = () => ({ replies: [], async reply(text) { this.replies.push(text); } });
+  const item = id => ({ id, hash: `h${id}`, label: `sticker ${id}`, entry: { animeName: 'Naruto' } });
+  const catalogue = { offered: 3, items: [item(1), item(2), item(3)] };
+  const makeMsg = () => ({ replies: [], reactions: [], type: 'sticker', async reply(text) { this.replies.push(text); }, async react(emoji) { this.reactions.push(emoji); } });
+  const run = async (raw, msg = makeMsg()) => { const out = await _deliverTextResponse({}, msg, raw, false, { stickerReply: true, catalogue }); return { msg, out }; };
   try {
-    const textOnly = makeMsg();
-    await _deliverTextResponse({}, textOnly, 'Text reply [[response_mode:text]] [[reaction:happy]]', false, { stickerReply: true });
-    assert.deepEqual(textOnly.replies, ['Text reply']);
+    const wordsOnly = await run('lol mood [[sticker:none]]');
+    assert.deepEqual(wordsOnly.msg.replies, ['lol mood']);
+    assert.deepEqual(sentIds, []);
 
-    const stickerOnly = makeMsg();
-    await _deliverTextResponse({}, stickerOnly, 'Ignored text [[response_mode:sticker]] [[reaction:happy]]', false, { stickerReply: true });
-    assert.deepEqual(stickerOnly.replies, []);
+    const stickerOnly = await run('[[sticker:1]]');
+    assert.deepEqual(stickerOnly.msg.replies, []);
+    assert.deepEqual(sentIds, [1]);
 
-    const failedSticker = makeMsg();
-    await _deliverTextResponse({}, failedSticker, 'Fallback text [[response_mode:sticker]] [[reaction:angry]]', false, { stickerReply: true });
-    assert.deepEqual(failedSticker.replies, ['Fallback text']);
+    const both = await run('Extra words that should be set aside [[sticker:3]]');
+    assert.deepEqual(both.msg.replies, [], 'a sticker and words together become just the sticker');
+    assert.deepEqual(sentIds, [1, 3]);
 
-    const noMode = makeMsg();
-    await _deliverTextResponse({}, noMode, 'Normal text [[reaction:happy]]', false, { stickerReply: true });
-    assert.deepEqual(noMode.replies, ['Normal text']);
-    assert.deepEqual(calls, ['happy', 'angry']);
+    const failed = await run('Fallback words [[sticker:2]]');
+    assert.deepEqual(failed.msg.replies, ['Fallback words'], 'a sticker that cannot be sent falls back to the words');
+
+    const notOffered = await run('Safe words [[sticker:77]]');
+    assert.deepEqual(notOffered.msg.replies, ['Safe words'], 'a number that was never offered is ignored');
+    assert.deepEqual(sentIds, [1, 3, 2], 'and never sent');
+
+    const emojiOnly = await run('[[emoji:😂]]');
+    assert.deepEqual(emojiOnly.msg.reactions, ['😂']);
+    assert.deepEqual(emojiOnly.msg.replies, [], 'an emoji reaction alone is a complete reply');
+    assert.equal(emojiOnly.msg._aiEmojiReacted, true);
+
+    const emojiAndSticker = await run('[[emoji:😭]] [[sticker:1]]');
+    assert.deepEqual(emojiAndSticker.msg.reactions, ['😭']);
+    assert.deepEqual(sentIds, [1, 3, 2, 1]);
+
+    const nothing = await run('[[sticker:none]]');
+    assert.match(nothing.msg.replies[0], /could not generate a response/);
   } finally {
-    aiStickers.sendReactionSticker = originalSend;
+    aiStickers.sendCatalogueSticker = originalSend;
   }
 });
 

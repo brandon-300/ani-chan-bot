@@ -20,10 +20,13 @@ const {
   AI_STICKER_ANALYSIS_DELAY_MS,
   AI_STICKER_QUOTA_COOLDOWN_MS,
   AI_STICKER_QUOTA_MAX_COOLDOWN_MS,
+  AI_STICKER_CATALOGUE_MAX,
+  AI_STICKER_RECENT_EXCLUDE,
 } = require('./config');
 const { getActivePersonaSafe, listPersonaIds, loadPersona } = require('./persona');
 const logger = require('./logger');
 const geminiGate = require('./geminiGate');
+const aiMessageLedger = require('./aiMessageLedger');
 
 const ALLOWED_REACTIONS = new Set([
   'amused', 'happy', 'laughing', 'love', 'excited', 'sad', 'angry', 'confused',
@@ -49,6 +52,7 @@ const importsInFlight = new Map();
 const importSessions = new Map();
 const recentByChat = new Map();
 const recentAnimeByChat = new Map();
+const recentHashesByChat = new Map();
 const analysisQueue = [];
 const queuedAnalysis = new Set();
 let analysisBusy = false;
@@ -828,6 +832,10 @@ function rememberRecent(chatId, hash, animeId) {
   const key = String(chatId || 'unknown-chat');
   recentByChat.delete(key);
   recentByChat.set(key, hash);
+  const recentHashes = (recentHashesByChat.get(key) || []).filter(item => item !== hash).concat(hash).slice(-20);
+  recentHashesByChat.delete(key);
+  recentHashesByChat.set(key, recentHashes);
+  while (recentHashesByChat.size > MAX_TRACKED_CHATS) recentHashesByChat.delete(recentHashesByChat.keys().next().value);
   while (recentByChat.size > MAX_TRACKED_CHATS) recentByChat.delete(recentByChat.keys().next().value);
 
   if (isKnownAnime(animeId)) {
@@ -972,11 +980,170 @@ async function sendReactionSticker(client, msg, reaction) {
       stickerName: BOT_NAME,
       stickerAuthor: persona.stickerAuthor,
     });
+    aiMessageLedger.remember(sent, 'sticker');
     await rememberSentSticker(sent, chatId, selected, reaction);
     return true;
   } catch (err) {
     console.error('AI reaction sticker send failed:', err.message);
     return false;
+  }
+}
+
+// ─── Model-chosen stickers (the AI picks from a numbered catalogue) ─────────
+// The old path guessed a sticker from a single reaction label, without knowing
+// what had just been said, so it could pick a sticker that matched the label but
+// not the moment. Now the reply prompt includes a short catalogue and the AI
+// chooses the sticker itself, while it writes its reply, or chooses none.
+// Only stickers that passed the persona-fit gate are ever offered, and the model
+// can only pick a number that was offered.
+
+function clip(value, max) {
+  const text = String(value || '').replace(/["\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim();
+  return text.length <= max ? text : `${text.slice(0, max - 1).trim()}…`;
+}
+
+function describeForCatalogue(entry, analysis) {
+  const expression = clip(entry.genericAnalysis?.expression, 56);
+  const note = clip(analysis?.notes, 56);
+  return expression || note || '';
+}
+
+function shuffled(list) {
+  const copy = list.slice();
+  for (let i = copy.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+  }
+  return copy;
+}
+
+// Returns { items, text, eligible, offered, animeCount, excluded, reason }.
+// items[n] = { id, hash, entry, analysis, label }; `text` is the prompt block.
+async function buildStickerCatalogue(chatId, persona = null, { max = AI_STICKER_CATALOGUE_MAX } = {}) {
+  const base = { items: [], text: '', eligible: 0, offered: 0, animeCount: 0, excluded: {}, reason: null };
+  const chatKey = String(chatId || 'unknown-chat');
+  if (!AI_STICKERS_ENABLED) {
+    logger.write('INFO', 'ai.catalogue', { chatId: chatKey, offered: 0, reason: 'stickers_disabled' });
+    return { ...base, reason: 'stickers_disabled' };
+  }
+  const activePersona = persona || getActivePersonaSafe();
+  if (!activePersona) return { ...base, reason: 'no_persona' };
+
+  let records;
+  try {
+    records = await loadSharedStickers();
+  } catch (err) {
+    logger.error('ai.catalogue.failed', err, { chatId: chatKey });
+    return { ...base, reason: 'library_unavailable' };
+  }
+
+  const recent = new Set(AI_STICKER_RECENT_EXCLUDE > 0 ? (recentHashesByChat.get(chatKey) || []).slice(-AI_STICKER_RECENT_EXCLUDE) : []);
+  const excluded = { no_asset: 0, unclassified: 0, low_persona_fit: 0, recently_sent: 0 };
+  const eligible = [];
+  for (const entry of records) {
+    if (!entry.cloudinaryUrl || !entry.cloudinaryPublicId) { excluded.no_asset += 1; continue; }
+    const analysis = getPersonaAnalysis(entry, activePersona.id);
+    if (!analysis || analysis.analysisStatus !== 'classified') { excluded.unclassified += 1; continue; }
+    const fit = Math.max(0, Math.min(1, Number(analysis.personaFit) || 0));
+    if (fit < AI_STICKER_MIN_PERSONA_FIT) { excluded.low_persona_fit += 1; continue; }
+    if (recent.has(entry.hash)) { excluded.recently_sent += 1; continue; }
+    eligible.push({ entry, analysis });
+  }
+
+  // Spread across anime: shuffle inside each anime, then take one from each in
+  // turn until the cap is reached, so no single anime crowds the catalogue.
+  const groups = new Map();
+  for (const item of shuffled(eligible)) {
+    const key = isKnownAnime(item.entry.animeId) ? item.entry.animeId : UNKNOWN_ANIME_ID;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(item);
+  }
+  const queues = shuffled([...groups.values()]);
+  const picked = [];
+  while (picked.length < max && queues.some(queue => queue.length)) {
+    for (const queue of queues) {
+      if (picked.length >= max) break;
+      if (queue.length) picked.push(queue.shift());
+    }
+  }
+
+  // Number them in display order (grouped by anime) so the list is compact.
+  const byAnime = new Map();
+  for (const item of picked) {
+    const name = isKnownAnime(item.entry.animeId) ? (item.entry.animeName || item.entry.animeId) : 'Other';
+    if (!byAnime.has(name)) byAnime.set(name, []);
+    byAnime.get(name).push(item);
+  }
+  const items = [];
+  const lines = [];
+  for (const [name, group] of [...byAnime.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+    const parts = group.map(item => {
+      const id = items.length + 1;
+      const reactions = (item.analysis.reactions || []).slice(0, 3).join(', ');
+      const description = describeForCatalogue(item.entry, item.analysis);
+      const label = [description, reactions].filter(Boolean).join(' / ') || 'sticker';
+      items.push({ id, hash: item.entry.hash, entry: item.entry, analysis: item.analysis, label });
+      return `${id} "${description || 'sticker'}"${reactions ? ` [${reactions}]` : ''}`;
+    });
+    lines.push(`${name}: ${parts.join(' | ')}`);
+  }
+
+  const result = {
+    items,
+    text: lines.join('\n'),
+    eligible: eligible.length,
+    offered: items.length,
+    animeCount: byAnime.size,
+    excluded,
+    reason: items.length ? null : 'nothing_eligible',
+  };
+  logger.write('INFO', 'ai.catalogue', {
+    chatId: chatKey,
+    personaId: activePersona.id,
+    library: records.length,
+    eligible: result.eligible,
+    offered: result.offered,
+    animeCount: result.animeCount,
+    excluded,
+    reason: result.reason,
+  });
+  return result;
+}
+
+// Sends catalogue sticker `stickerId`. Never throws; the result says what
+// happened so the caller can log it and decide on a fallback.
+async function sendCatalogueSticker(client, msg, catalogue, stickerId, { persona = null } = {}) {
+  const id = Number(stickerId);
+  const item = (catalogue?.items || []).find(candidate => candidate.id === id);
+  if (!item) {
+    logger.write('WARN', 'ai.sticker.choice', { requested: stickerId, status: 'not_offered', offered: catalogue?.items?.length || 0 });
+    return { sent: false, reason: 'not_offered', item: null };
+  }
+  const activePersona = persona || getActivePersonaSafe();
+  const chatId = msg.from || msg.to || msg.chat?.id?._serialized;
+  try {
+    const image = await fetchImageBuffer(item.entry.cloudinaryUrl);
+    const media = new MessageMedia('image/webp', image.toString('base64'), `ai-sticker-${item.entry.hash}.webp`);
+    const sent = await client.sendMessage(chatId, media, {
+      sendMediaAsSticker: true,
+      stickerName: BOT_NAME,
+      stickerAuthor: activePersona?.stickerAuthor,
+    });
+    aiMessageLedger.remember(sent, 'sticker');
+    const label = (item.analysis.reactions || [])[0] || 'neutral';
+    await rememberSentSticker(sent, chatId, { entry: item.entry, persona: activePersona }, label);
+    rememberRecent(chatId, item.entry.hash, item.entry.animeId);
+    logger.write('INFO', 'ai.sticker.sent', {
+      id,
+      hash: String(item.entry.hash || '').slice(0, 8),
+      anime: item.entry.animeName || item.entry.animeId || null,
+      description: item.label,
+      chatId,
+    });
+    return { sent: true, reason: null, item };
+  } catch (err) {
+    logger.error('ai.sticker.send.failed', err, { id, hash: String(item.entry.hash || '').slice(0, 8), chatId });
+    return { sent: false, reason: 'send_failed', item, error: err };
   }
 }
 
@@ -991,6 +1158,7 @@ function _setAdaptersForTests({ Model, storage, mongoConnected } = {}) {
   importSessions.clear();
   recentByChat.clear();
   recentAnimeByChat.clear();
+  recentHashesByChat.clear();
   analysisQueue.length = 0;
   queuedAnalysis.clear();
   analysisBusy = false;
@@ -1006,6 +1174,8 @@ module.exports = {
   stopImportMode,
   handleIncomingSticker,
   sendReactionSticker,
+  buildStickerCatalogue,
+  sendCatalogueSticker,
   initialize,
   ALLOWED_REACTIONS,
   _parseClassification: parseClassification,

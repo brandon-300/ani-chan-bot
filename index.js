@@ -12,6 +12,7 @@ const aiStickers = require('./utils/aiStickers');
 const { instrumentHttpClients, wrapWithUsageTracking } = require('./utils/usageTracking');
 const logger = require('./utils/logger');
 const geminiGate = require('./utils/geminiGate');
+const aiReactions = require('./utils/aiReactions');
 const { tryHandleQuizAnswer } = require('./commands/games/quiz');
 const AiConversation = require('./models/AiConversation');
 const GroupActivity = require('./models/GroupActivity');
@@ -1323,7 +1324,10 @@ client.on('message', (msg) => {
       try {
         if (command === 'play') {
           await msg.react('▶️');
-        } else if (command !== 'news') {
+        } else if (command !== 'news' && command !== 'copilot' && command !== 'voice') {
+          // copilot/voice put their own ⏳ on the message and remove it again when
+          // the reply is done (commands/ai.js), so the dispatcher must not add a
+          // second one that nothing would ever clear.
           await msg.react('⏳');
         }
       } catch (err) {
@@ -1370,6 +1374,20 @@ client.on('message', (msg) => {
 }
     });
   })().catch(err => logger.error('message.handler.failed', err, { chatId: msg.from }));
+});
+
+// ── AI reacts to reactions on its own messages ─────────────────────────────
+// Someone reacted to a message, voice note, image or sticker the AI sent: the
+// AI may put its own emoji reaction on that same message. It never sends a
+// message here — see utils/aiReactions.js for the rules (ignores its own
+// reactions, only AI-sent messages, one reaction per message, cooldown).
+const aiReactionHandler = aiReactions.createReactionHandler({ client });
+client.on('message_reaction', (reaction) => {
+  try {
+    aiReactionHandler.handle(reaction);
+  } catch (err) {
+    logger.error('ai.reaction.handler_failed', err);
+  }
 });
 
 client.on('group_join', async (notification) => {

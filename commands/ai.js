@@ -5,7 +5,10 @@ const os = require('os');
 const ffmpeg = require('fluent-ffmpeg');
 const { MessageMedia } = require('whatsapp-web.js');
 const { safeGetChat, safeGetQuotedMessage, resolveSenderName } = require('../utils/helpers');
-const { BOT_NAME } = require('../utils/config');
+const { BOT_NAME, FISH_EXPRESSION_TAGS, AI_VOICE_MAX_OUTPUT_TOKENS } = require('../utils/config');
+const speechText = require('../utils/speechText');
+const logger = require('../utils/logger');
+const aiMessageLedger = require('../utils/aiMessageLedger');
 const { getActivePersonaSafe } = require('../utils/persona');
 const aiStickers = require('../utils/aiStickers');
 const gemini = require('../utils/gemini');
@@ -107,7 +110,39 @@ async function addTurnToHistory(chatId, senderId, userContent, assistantContent)
 // ─── Persona prompts and internal text controls ─────────────────────────────
 // Persona identity and medium-specific behavior live in config/personas/<id>.
 // Voice prompts deliberately omit the text-only reaction/menu controls.
-function buildPersonaSystemPrompt(senderName, medium, allowBotActions = false) {
+// The reply-controls block for text replies. It is built in code (not in the
+// persona files) because the sticker catalogue changes on every request. It
+// teaches the model to answer like a person in a chat: words, a reaction, a
+// sticker, or a mix, and never to describe a sticker or picture.
+function buildReplyControlsPrompt(catalogue) {
+  const hasStickers = Boolean(catalogue?.items?.length);
+  const lines = [
+    'How to answer like a real person in a WhatsApp chat:',
+    '- You can answer with words, with a sticker, with an emoji reaction on their message, or with a mix. Real friends often skip the full sentence: a laugh, a reaction, a sticker, or a few casual words is a normal reply. Do not write a paragraph when a reaction would do, and do not attach a sticker to every message.',
+    '- Never describe or name what a sticker or picture shows (no "that frog", "that cartoon", "that picture", "that sticker"). React to the feeling and the situation, the way a friend would.',
+    '- Match the moment. A joke, a meme, or a funny "mood" about everyday stress such as exams, work or school gets a laugh, a laughing reaction, or a playful line, not advice and not a counselling tone. Only when the person is clearly really hurting do you comfort them, briefly and naturally, with a few warm words, a gentle sticker, or a sad or hugging emoji. Sympathy is the exception, not the default.',
+    '',
+    'Control tokens (invisible to the user; put them after your reply and never mention them):',
+    '- [[emoji:😂]] also puts that single emoji as a reaction on THEIR message. Use any one emoji that fits (😂 😭 🥺 ❤️ 👍 🔥 😳 🙄 ...). Use it alone when an emoji is the natural reply.',
+  ];
+  if (hasStickers) {
+    lines.push('- [[sticker:N]] also sends sticker number N from the catalogue below. Use it alone (no words) when the sticker is the whole reply. Pick a sticker only if what it shows and feels like really fits what you are answering; otherwise write [[sticker:none]] or leave it out. Only use a number that is listed.');
+  } else {
+    lines.push('- There is no sticker library available right now, so never write [[sticker:...]].');
+  }
+  lines.push('- Every reply must contain at least one of: words, [[emoji:...]] or [[sticker:N]].');
+  if (hasStickers) lines.push('', 'Sticker catalogue (number "what it shows" [feelings it fits]):', catalogue.text);
+  return lines.join('\n');
+}
+
+// Older persona files carried their own "Internal reaction control" block
+// (label-based stickers). The controls are built in code now, so a leftover
+// copy is removed instead of contradicting them.
+function stripLegacyReactionBlock(text) {
+  return String(text || '').replace(/\nInternal reaction control:\n[\s\S]*?(?=\nPrivate-DM menu action:\n|$)/, '\n');
+}
+
+function buildPersonaSystemPrompt(senderName, medium, allowBotActions = false, { catalogue = null } = {}) {
   const persona = getActivePersonaSafe();
   if (!persona) {
     const err = new Error('The active AI persona could not be loaded. Check AI_PERSONA and its config/personas/<id> files.');
@@ -117,53 +152,71 @@ function buildPersonaSystemPrompt(senderName, medium, allowBotActions = false) {
   const mediumPrompt = medium === 'voice' ? persona.voicePrompt : persona.text;
   let behavior = mediumPrompt;
   if (medium !== 'voice') {
+    behavior = stripLegacyReactionBlock(behavior);
     const marker = '\nPrivate-DM menu action:\n';
     const splitAt = behavior.indexOf(marker);
     if (splitAt >= 0 && !allowBotActions) behavior = behavior.slice(0, splitAt);
   }
-  const identity = `You are ${persona.displayName}${persona.series ? ` from "${persona.series}"` : ''}, acting as ${BOT_NAME}'s AI assistant on WhatsApp. Be this character naturally; never sound like generic customer support. Never use emojis or emoticons in any reply because text may be converted to speech.`;
+  const identity = `You are ${persona.displayName}${persona.series ? ` from "${persona.series}"` : ''}, acting as ${BOT_NAME}'s AI assistant on WhatsApp. Be this character naturally; never sound like generic customer support. ${medium === 'voice' ? 'This reply is spoken aloud: never use emojis, emoticons, symbols, brackets or stage directions, because every symbol is read literally.' : 'You may use emojis the way a real person texting does: a natural few that match the mood, never instead of words.'}`;
   let prompt = `${identity}\n\n${persona.personality}\n\n${behavior}`;
+  if (medium !== 'voice') prompt += `\n\n${buildReplyControlsPrompt(catalogue)}`;
   if (senderName) {
     prompt += `\n\nThe person's name is "${senderName}". Address them by that name as written; do not automatically append -kun or another honorific.`;
   }
   return prompt;
 }
 
-// Emoji are omitted from both visible persona replies and speech inputs because
-// Fish Audio may pronounce emoji names literally. Cover pictographs, flags,
-// keycaps, modifiers, variation selectors, and joiners.
-const EMOJI_SEQUENCE = /(?:\p{Regional_Indicator}{2}|[#*0-9]\uFE0F?\u20E3)|[\p{Extended_Pictographic}\p{Regional_Indicator}\p{Emoji_Modifier}\uFE0E\uFE0F\u200D\u20E3\u{E0020}-\u{E007F}]/gu;
+// ─── Reply controls ─────────────────────────────────────────────────────────
+// The model is told (buildReplyControlsPrompt) to use [[emoji:X]] and
+// [[sticker:N]]. Models don't always follow the exact shape, so this parser is
+// forgiving, and strict about what it will act on:
+//   - [[emoji:X]] / [[react:X]]: only a single real emoji is accepted
+//   - [[sticker:N]]: a positive number; whether N was actually offered is
+//     checked at delivery time; [[sticker:none]] is a deliberate "no sticker"
+//   - legacy [[reaction:label]], bare [[label]] and [[response_mode:...]] are
+//     still understood (and logged) but no longer pick a sticker
+//   - [[bot_action:command_menu]] only where allowed
+//   - never lets any [[...]] control syntax reach the visible reply or the
+//     conversation history, matched or not
+const graphemeSegmenter = typeof Intl.Segmenter === 'function'
+  ? new Intl.Segmenter('en', { granularity: 'grapheme' })
+  : null;
 
-function stripEmojis(text) {
-  return String(text || '')
-    .replace(EMOJI_SEQUENCE, '')
-    .replace(/[ \t]+([,.;!?])/g, '$1')
-    .replace(/[ \t]{2,}/g, ' ');
+// Returns the first emoji in `value` if (and only if) it is a genuine emoji.
+function parseEmojiToken(value) {
+  const text = String(value || '').trim();
+  if (!text) return null;
+  const first = graphemeSegmenter ? [...graphemeSegmenter.segment(text)][0]?.segment : [...text][0];
+  if (!first || first.length > 16) return null;
+  if (!/\p{Extended_Pictographic}|\p{Regional_Indicator}/u.test(first)) return null;
+  if (speechText.stripEmojis(first).trim() !== '') return null;
+  return first;
 }
 
-// Gemini is instructed (config/personas/*/text.txt) to emit [[reaction:label]]
-// and [[bot_action:command_menu]], but models don't always follow the exact
-// shape — e.g. a bare [[excited]] instead of [[reaction:excited]], or a token
-// left unterminated at the very end of a truncated response. This parser:
-//   - accepts both [[reaction:label]] and bare [[label]] when label is a
-//     known reaction (aiStickers.ALLOWED_REACTIONS)
-//   - accepts [[bot_action:command_menu]] only where allowed
-//   - takes the FIRST valid reaction found anywhere in the text, not just a
-//     trailing one
-//   - rejects unknown labels (falls back to 'neutral') but still removes them
-//   - never lets any [[...]] control syntax reach the visible reply or
-//     conversation history, matched or not
 function parseAiControls(rawOutput, { allowBotActions = false } = {}) {
   let reaction = 'none';
   let responseMode = 'text';
   let action = null;
   let sawReaction = false;
+  let emoji = null;
+  let sawEmojiToken = false;
+  let stickerId = null;
+  let stickerNone = false;
   const controlToken = /\[\[\s*([a-z_]+)(?:\s*:\s*([^\]\r\n]*))?\s*(?:\]\]|$)/gi;
 
   let clean = String(rawOutput || '').replace(controlToken, (_token, word, value) => {
     const kindWord = String(word).toLowerCase();
-    const label = String(value || '').trim().toLowerCase();
-    if (kindWord === 'reaction' && !sawReaction && (label === 'none' || aiStickers.ALLOWED_REACTIONS.has(label))) {
+    const rawValue = String(value || '').trim();
+    const label = rawValue.toLowerCase();
+    if (kindWord === 'emoji' || kindWord === 'react') {
+      if (!sawEmojiToken) {
+        sawEmojiToken = true;
+        emoji = parseEmojiToken(rawValue);
+      }
+    } else if (kindWord === 'sticker') {
+      if (label === 'none') stickerNone = true;
+      else if (stickerId === null && /^\d{1,3}$/.test(label) && Number(label) > 0) stickerId = Number(label);
+    } else if (kindWord === 'reaction' && !sawReaction && (label === 'none' || aiStickers.ALLOWED_REACTIONS.has(label))) {
       sawReaction = true;
       reaction = label;
     } else if (kindWord === 'response_mode' && (label === 'text' || label === 'sticker')) {
@@ -178,65 +231,144 @@ function parseAiControls(rawOutput, { allowBotActions = false } = {}) {
   });
 
   clean = clean.replace(/\[\[[^\]\r\n]*\]\]/g, '').replace(/\[\[[^\r\n]*$/gm, '').trim();
-  clean = stripEmojis(clean).trim();
-  return { text: clean, reaction, responseMode, action };
+  return { text: clean, reaction, responseMode, action, emoji, stickerId, stickerNone };
 }
 
-async function deliverTextResponse(client, msg, rawOutput, allowBotActions = false, { stickerReply = false } = {}) {
+// Puts an emoji reaction on the USER'S message (the same thing a person does by
+// long-pressing a message). Never throws; the caller gets true/false.
+async function reactToUserMessage(msg, emoji) {
+  try {
+    await msg.react(emoji);
+    logger.write('INFO', 'ai.emoji.react', { emoji, messageType: msg.type || 'unknown' });
+    return true;
+  } catch (err) {
+    logger.error('ai.emoji.react.failed', err, { emoji });
+    return false;
+  }
+}
+
+// copilot/voice put a ⏳ on the user's message while they work. A person does
+// not leave an hourglass behind, so it is removed when the reply is done,
+// unless the AI replaced it with its own emoji reaction.
+async function clearStatusReaction(msg) {
+  if (msg._aiEmojiReacted) return;
+  try {
+    await msg.react('');
+    logger.write('INFO', 'ai.status_reaction.cleared', {});
+  } catch (err) {
+    logger.write('WARN', 'ai.status_reaction.clear_failed', { error: String(err.message || err).slice(0, 160) });
+  }
+}
+
+// What the AI actually did, written the way the AI itself writes it, so its own
+// history teaches the same habit (and any copy of it in a reply is stripped by
+// parseAiControls). `delivered` is the result of deliverTextResponse, if any.
+function historyAssistantText(controls, delivered) {
+  const parts = [];
+  if (controls.text && (delivered ? delivered.textSent : true)) parts.push(controls.text);
+  if (controls.action === 'command_menu') parts.push('I sent the command menu.');
+  if (delivered?.emojiReacted && controls.emoji) parts.push(`[[emoji:${controls.emoji}]]`);
+  if (delivered?.stickerSent && delivered.stickerItem) parts.push(`[[sticker_sent:${delivered.stickerItem.label}]]`);
+  return parts.join(' ').trim() || '[[no_reply]]';
+}
+
+async function deliverTextResponse(client, msg, rawOutput, allowBotActions = false, { stickerReply = false, catalogue = null } = {}) {
   const controls = parseAiControls(rawOutput, { allowBotActions });
+  logger.write('INFO', 'ai.model.reply', {
+    stickerReply,
+    textChars: controls.text.length,
+    textPreview: controls.text.slice(0, 160),
+    emoji: controls.emoji,
+    sticker: controls.stickerId ?? (controls.stickerNone ? 'none' : null),
+    legacyReaction: controls.reaction !== 'none' ? controls.reaction : null,
+    action: controls.action,
+  });
+
   if (controls.action === 'command_menu') {
-    if (controls.text) await msg.reply(controls.text);
+    if (controls.text) await replyTracked(msg, controls.text, 'text');
     if (typeof client.sendQuickMenu === 'function') await client.sendQuickMenu(msg);
     else if (!controls.text) await msg.reply('❌ I could not open the command menu right now.');
-    return controls;
+    logger.write('INFO', 'ai.decision', { menu: true, textChars: controls.text.length });
+    return Object.assign(controls, { textSent: Boolean(controls.text), emojiReacted: false, stickerSent: false, stickerItem: null });
   }
 
-  if (stickerReply) {
-    if (controls.responseMode === 'sticker' && controls.reaction !== 'none') {
-      const sent = await aiStickers.sendReactionSticker(client, msg, controls.reaction);
-      if (!sent) await msg.reply(controls.text || 'I do not have a sticker that fits that reaction.');
-      return controls;
-    }
-    // For an incoming sticker reply, explicit text mode, no mode, or a
-    // missing reaction must never send a second standalone sticker.
-    if (controls.text) await msg.reply(controls.text);
-    else await msg.reply('❌ I could not generate a text response. Please try again.');
-    return controls;
+  const dropped = [];
+
+  // 1. Emoji reaction on the user's message (instant, like a person tapping it).
+  let emojiReacted = false;
+  if (controls.emoji) emojiReacted = await reactToUserMessage(msg, controls.emoji);
+  else if (controls.emoji === null && /\[\[\s*(?:emoji|react)\s*:/i.test(String(rawOutput || ''))) dropped.push('emoji (not a valid emoji)');
+  msg._aiEmojiReacted = emojiReacted;
+
+  // 2. Which sticker (if any) did the model choose, and was it actually offered?
+  let stickerItem = null;
+  if (controls.stickerId !== null) {
+    stickerItem = (catalogue?.items || []).find(item => item.id === controls.stickerId) || null;
+    logger.write(stickerItem ? 'INFO' : 'WARN', 'ai.sticker.choice', {
+      requested: controls.stickerId,
+      status: stickerItem ? 'valid' : 'not_offered',
+      offered: catalogue?.items?.length || 0,
+      anime: stickerItem?.entry?.animeName || null,
+      description: stickerItem?.label || null,
+    });
+    if (!stickerItem) dropped.push(`sticker ${controls.stickerId} (not in the catalogue)`);
+  } else if (catalogue?.items?.length) {
+    logger.write('INFO', 'ai.sticker.choice', { requested: null, status: controls.stickerNone ? 'none_chosen' : 'not_requested', offered: catalogue.items.length });
   }
 
-  if (controls.text) await msg.reply(controls.text);
-  if (controls.text && controls.reaction !== 'none') await aiStickers.sendReactionSticker(client, msg, controls.reaction);
-  else if (!controls.text) await msg.reply('❌ I could not generate a text response. Please try again.');
-  return controls;
+  // 3. A reply to someone's sticker is ONE reply, like a person's: a sticker or
+  //    words, never both. A reaction emoji can still go with either.
+  let sendText = Boolean(controls.text);
+  const sendSticker = Boolean(stickerItem);
+  if (stickerReply && sendText && sendSticker) {
+    sendText = false;
+    dropped.push('text (a reply to a sticker is one message)');
+  }
+
+  let textSent = false;
+  let stickerSent = false;
+  if (sendText) {
+    await replyTracked(msg, controls.text, 'text');
+    textSent = true;
+  }
+  if (sendSticker) {
+    const result = await aiStickers.sendCatalogueSticker(client, msg, catalogue, stickerItem.id);
+    stickerSent = result.sent;
+  }
+  // The sticker could not be sent and the words were set aside for it: say them.
+  if (!stickerSent && !textSent && controls.text) {
+    await replyTracked(msg, controls.text, 'text');
+    textSent = true;
+    dropped.push('(sticker failed, so the text was sent instead)');
+  }
+  if (!textSent && !stickerSent && !emojiReacted) {
+    await msg.reply('❌ I could not generate a response. Please try again.');
+  }
+
+  logger.write('INFO', 'ai.decision', {
+    stickerReply,
+    text: textSent,
+    textChars: textSent ? controls.text.length : 0,
+    emoji: emojiReacted ? controls.emoji : null,
+    sticker: stickerSent ? { id: stickerItem.id, anime: stickerItem.entry.animeName || stickerItem.entry.animeId || null, description: stickerItem.label } : null,
+    dropped,
+  });
+  return Object.assign(controls, { textSent, emojiReacted, stickerSent, stickerItem });
 }
 
-// Strips markdown/formatting and emoji before handing text to Fish Audio —
-// a guaranteed safety net on top of the voice-specific prompt above, since
-// LLMs don't always perfectly follow speech-output instructions.
-// Runs regardless of how well the model followed the speech rules, so the
-// asterisk bug can't come back even on an occasional prompt slip-up.
-function stripSpeechFormatting(text) {
-  return text
-    // Defense in depth against [[reaction:...]] / [[bot_action:...]] / bare
-    // [[label]] control tokens ever reaching Fish Audio and being spoken out
-    // loud (e.g. as literally "bracket bracket excited"). In the normal
-    // .voice/.copilot flow these are already removed by parseAiControls
-    // before this function ever sees the text; this also protects .tts,
-    // which can be pointed at arbitrary message text (a reply to any AI
-    // reply, including one from before this fix shipped).
-    .replace(/\[\[[^\]\r\n]*\]\]/g, '')
-    .replace(/\[\[[^\r\n]*$/gm, '')
-    .replace(/\*\*?(.*?)\*\*?/g, '$1')     // *bold* / **bold**
-    .replace(/_(.*?)_/g, '$1')              // _italic_
-    .replace(/~~?(.*?)~~?/g, '$1')          // ~strike~ / ~~strike~~
-    .replace(/`{1,3}([^`]*?)`{1,3}/g, '$1') // `code` / ```code```
-    .replace(/^#{1,6}\s+/gm, '')            // # markdown headings
-    .replace(/^[-*•]\s+/gm, '')             // bullet list markers
-    .replace(/[*_~`#]/g, '')                // any leftover stray symbols
-    .replace(EMOJI_SEQUENCE, '')             // pictographs / flags / keycaps
-    .replace(/[ \t]+([,.;!?])/g, '$1')       // remove spaces before punctuation
-    .replace(/[ \t]{2,}/g, ' ')             // collapse extra whitespace left behind
-    .trim();
+// Everything spoken by Fish Audio goes through speechText.toSpeechText():
+// emojis, [cues], (S1-style cues), stage directions, markdown, URLs and control
+// tokens are removed, and chat shorthand becomes spoken words. It runs
+// regardless of how well the model followed the voice prompt. Kept under the
+// old name so existing callers and tests keep working.
+const stripSpeechFormatting = speechText.toSpeechText;
+
+// Sends a reply and records the sent message so a later reaction to it can be
+// recognised as a reaction to something the AI said (utils/aiMessageLedger.js).
+async function replyTracked(msg, content, kind, ...rest) {
+  const sent = await msg.reply(content, ...rest);
+  aiMessageLedger.remember(sent, kind);
+  return sent;
 }
 
 // Turns a gemini.js error into the kind of short, actionable WhatsApp reply
@@ -278,6 +410,16 @@ function friendlyAiError(err, fallbackLabel) {
 //  - neither has usable media                     -> falls back to typed args
 //  - an image with NO typed args                  -> { error: '...usage...' }
 // Returns { error } OR { prompt, image } (image is null when there isn't one).
+// What the model is told when the user sends a sticker. The old wording said
+// "interpret this sticker", which produced answers that DESCRIBED the picture
+// ("that frog is too real") instead of reacting to it the way a friend would.
+const USER_STICKER_PROMPT = [
+  'The user just sent the sticker in Image 1 as their reply in our chat.',
+  'Read it the way a friend would: the feeling it expresses, any words printed on it, and how it connects to what you two were just talking about.',
+  'Then answer the way a real friend actually would: usually laugh along, react with an emoji, or send a fitting sticker; only now and then a few casual words, and only occasionally real sympathy.',
+  'Never describe or name what is drawn on it (no frog, cartoon, character, picture, or "that sticker").',
+].join(' ');
+
 async function resolveMultimodalInput(msg, args) {
   const typed = args.join(' ').trim();
   let source = null;
@@ -318,7 +460,7 @@ async function resolveMultimodalInput(msg, args) {
     // user gets the interpret-this-sticker instruction.
     let prompt = botSentStickerReply
       ? (typed || 'Respond naturally to the user about the reaction sticker you sent.')
-      : (typed || 'Interpret this sticker as part of our conversation and respond naturally. Decide whether a text or sticker response fits better.');
+      : (typed || USER_STICKER_PROMPT);
     const quotedMessageId = quoted?.id?._serialized || quoted?.id?.id;
     if (botSentStickerReply && quotedMessageId) {
       const sentContext = await aiStickers.getSentStickerContext(quotedMessageId);
@@ -345,6 +487,11 @@ module.exports = {
   _stripSpeechFormatting: stripSpeechFormatting,
   _buildPersonaSystemPrompt: buildPersonaSystemPrompt,
   _deliverTextResponse: deliverTextResponse,
+  _buildReplyControlsPrompt: buildReplyControlsPrompt,
+  _stripLegacyReactionBlock: stripLegacyReactionBlock,
+  _historyAssistantText: historyAssistantText,
+  _clearStatusReaction: clearStatusReaction,
+  _USER_STICKER_PROMPT: USER_STICKER_PROMPT,
 
   // .stickerimport [off] — owner-only, private-DM import mode. Sticker media
   // is intercepted by index.js only after the service independently checks
@@ -383,7 +530,20 @@ module.exports = {
       const history = await getHistory(chat.id._serialized, senderId);
       const senderName = await resolveSenderName(msg, client);
       const allowBotActions = !chat.isGroup;
-      const systemPrompt = buildPersonaSystemPrompt(senderName, 'text', allowBotActions);
+      const catalogue = await aiStickers.buildStickerCatalogue(chat.id._serialized, getActivePersonaSafe());
+      const systemPrompt = buildPersonaSystemPrompt(senderName, 'text', allowBotActions, { catalogue });
+      const inputKind = resolved.stickerReply ? 'sticker' : (resolved.images?.length ? 'image' : 'text');
+      logger.write('INFO', 'ai.input', {
+        command: 'copilot',
+        sender: senderName,
+        chat: chat.isGroup ? 'group' : 'DM',
+        kind: inputKind,
+        stickerReply: Boolean(resolved.stickerReply),
+        promptChars: resolved.prompt.length,
+        promptPreview: inputKind === 'sticker' ? '(user sticker)' : resolved.prompt.slice(0, 120),
+        historyTurns: history.length,
+        stickersOffered: catalogue.offered,
+      });
 
       const rawReply = resolved.images?.length
         ? await gemini.generateVision({
@@ -400,12 +560,22 @@ module.exports = {
             maxOutputTokens: 2048,
           });
 
+      // The conversation memory records what the AI actually did (words, an
+      // emoji reaction, a sticker), so it keeps acting like one person. The
+      // memory is saved even if delivery fails part-way.
       const controls = parseAiControls(rawReply, { allowBotActions });
-      const historyReply = controls.text || (controls.action === 'command_menu' ? 'I sent the command menu.' : '');
-      await addTurnToHistory(chat.id._serialized, senderId, resolved.prompt, historyReply);
-      return await deliverTextResponse(client, msg, rawReply, allowBotActions, { stickerReply: resolved.stickerReply });
+      const historyUser = resolved.stickerReply ? '[sent a sticker]' : resolved.prompt;
+      let delivered = null;
+      try {
+        delivered = await deliverTextResponse(client, msg, rawReply, allowBotActions, { stickerReply: resolved.stickerReply, catalogue });
+        return delivered;
+      } finally {
+        await addTurnToHistory(chat.id._serialized, senderId, historyUser, historyAssistantText(controls, delivered));
+      }
     } catch (err) {
       return msg.reply(friendlyAiError(err, 'Copilot'));
+    } finally {
+      await clearStatusReaction(msg);
     }
   },
 
@@ -423,7 +593,18 @@ module.exports = {
       const senderName = await resolveSenderName(msg, client);
       const chat = await safeGetChat(msg);
       const allowBotActions = !!chat && !chat.isGroup;
-      const systemPrompt = buildPersonaSystemPrompt(senderName, 'text', allowBotActions);
+      const catalogue = await aiStickers.buildStickerCatalogue(msg.from || msg.to, getActivePersonaSafe());
+      const systemPrompt = buildPersonaSystemPrompt(senderName, 'text', allowBotActions, { catalogue });
+      logger.write('INFO', 'ai.input', {
+        command: 'gpt',
+        sender: senderName,
+        chat: chat?.isGroup ? 'group' : 'DM',
+        kind: resolved.stickerReply ? 'sticker' : (resolved.images?.length ? 'image' : 'text'),
+        stickerReply: Boolean(resolved.stickerReply),
+        promptChars: resolved.prompt.length,
+        promptPreview: resolved.stickerReply ? '(user sticker)' : resolved.prompt.slice(0, 120),
+        stickersOffered: catalogue.offered,
+      });
 
       const reply = resolved.images?.length
         ? await gemini.generateVision({
@@ -438,7 +619,7 @@ module.exports = {
             maxOutputTokens: 2048,
           });
 
-      return await deliverTextResponse(client, msg, reply, allowBotActions);
+      return await deliverTextResponse(client, msg, reply, allowBotActions, { stickerReply: resolved.stickerReply, catalogue });
     } catch (err) {
       return msg.reply(friendlyAiError(err, 'GPT'));
     }
@@ -481,13 +662,13 @@ module.exports = {
             history,
             prompt: resolved.prompt,
             images: resolved.images,
-            maxOutputTokens: 1200,
+            maxOutputTokens: AI_VOICE_MAX_OUTPUT_TOKENS,
           })
         : await gemini.generateText({
             systemPrompt,
             history,
             prompt: resolved.prompt,
-            maxOutputTokens: 1200,
+            maxOutputTokens: AI_VOICE_MAX_OUTPUT_TOKENS,
           });
 
       // Safety net — see stripSpeechFormatting()'s comment above. Applied
@@ -495,9 +676,13 @@ module.exports = {
       // never gets spoken AND never lingers in context for the next turn.
       const reply = stripSpeechFormatting(rawReply);
 
+      if (!reply) throw new Error('The voice reply was empty after removing non-spoken text. Please try again.');
+
+      // History keeps the plain spoken words; the optional expression cue is
+      // added only to the text sent to Fish Audio (config FISH_EXPRESSION_TAGS).
       await addTurnToHistory(chat.id._serialized, senderId, resolved.prompt, reply);
 
-      const mp3Buffer = await fishAudio.synthesizeSpeech(reply);
+      const mp3Buffer = await fishAudio.synthesizeSpeech(FISH_EXPRESSION_TAGS ? speechText.applyExpressionCue(reply) : reply);
 
       mp3Path = tmpFile('mp3');
       oggPath = tmpFile('ogg');
@@ -515,7 +700,7 @@ module.exports = {
 
       const voiceData = fs.readFileSync(oggPath).toString('base64');
       const voiceMedia = new MessageMedia('audio/ogg', voiceData);
-      await msg.reply(voiceMedia, undefined, { sendAudioAsVoice: true });
+      await replyTracked(msg, voiceMedia, 'voice', undefined, { sendAudioAsVoice: true });
     } catch (err) {
       // Fish Audio-specific failures need their own messages (same as
       // .tts); anything else (Gemini transcription/text errors) goes
@@ -531,6 +716,7 @@ module.exports = {
       }
     } finally {
       cleanup(mp3Path, oggPath);
+      await clearStatusReaction(msg);
     }
   },
 
@@ -545,7 +731,7 @@ module.exports = {
       const ext = mimeType.includes('png') ? 'png' : 'jpg';
       const media = new MessageMedia(mimeType, base64, `imagine.${ext}`);
 
-      await msg.reply(media, undefined, { caption: `🎨 *Imagine:* ${prompt}` });
+      await replyTracked(msg, media, 'image', undefined, { caption: `🎨 *Imagine:* ${prompt}` });
     } catch (err) {
       return msg.reply(friendlyAiError(err, 'Image generation'));
     }
@@ -662,7 +848,7 @@ module.exports = {
 
     let mp3Path, oggPath;
     try {
-      const mp3Buffer = await fishAudio.synthesizeSpeech(text);
+      const mp3Buffer = await fishAudio.synthesizeSpeech(FISH_EXPRESSION_TAGS ? speechText.applyExpressionCue(text) : text);
 
       mp3Path = tmpFile('mp3');
       oggPath = tmpFile('ogg');
@@ -682,7 +868,7 @@ module.exports = {
       const voiceData = fs.readFileSync(oggPath).toString('base64');
       const voiceMedia = new MessageMedia('audio/ogg', voiceData);
 
-      await msg.reply(voiceMedia, undefined, { sendAudioAsVoice: true });
+      await replyTracked(msg, voiceMedia, 'voice', undefined, { sendAudioAsVoice: true });
     } catch (err) {
       if (err.code === 'NO_FISH_KEY' || err.code === 'NO_FISH_VOICE') {
         return msg.reply(`❌ ${err.message}`);
