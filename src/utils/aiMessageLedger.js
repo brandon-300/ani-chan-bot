@@ -3,7 +3,8 @@
  * Tracks AI conversation messages with enhanced features:
  * - Emoji support in AI responses
  * - Emoji filtering for TTS/Voice commands
- * - Reaction handling
+ * - Reaction handling for bot's own messages
+ * - Persona-aware conversation tracking
  */
 
 import AiConversation from '../models/AiConversation.js';
@@ -17,6 +18,20 @@ const FISH_EXPRESSION_TAGS = [
   '[happy]', '[sad]', '[angry]', '[excited]', '[nervous]', '[sarcastic]',
   '[whisper]', '[shout]', '[laugh]', '[cry]', '[surprised]', '[confused]',
   '[tired]', '[bored]', '[scared]', '[disgusted]', '[proud]', '[shy]',
+  '[gasp]', '[sigh]', '[giggle]', '[chuckle]', '[sobbing]', '[panting]',
+  '[groaning]', '[laughing]', '[shouting]', '[screaming]', '[crying]',
+];
+
+// Emoji patterns that should be filtered for TTS
+const EMOTICON_PATTERNS = [
+  /[:;=8][-^']?[)(DPpOo3\/\\|*$]+/g,
+  /[xX][Dd]+/g,
+  /[>^<][_.-]?[<^>]/g,
+  /[Tt][_.-][Tt]/g,
+  /-_-/g,
+  /o_o/g,
+  /O_O/g,
+  /;_;/g,
 ];
 
 /**
@@ -29,23 +44,158 @@ function isBotOwner(senderId) {
 }
 
 /**
- * Add a message to the conversation history
- * Handles persona switching and expiration logic
+ * Track AI sent messages for reaction detection
+ */
+const aiSentMessages = new Map();
+
+/**
+ * Remember an AI sent message for reaction tracking
+ */
+function remember(msg, kind, personaId = 'default') {
+  if (!msg || !msg.id) return;
+  
+  const key = msg.id._serialized || msg.id;
+  aiSentMessages.set(key, {
+    msg,
+    kind,
+    personaId,
+    timestamp: Date.now(),
+    fromMe: msg.fromMe || false,
+    chatId: msg.chatId || msg.from,
+  });
+  
+  setTimeout(() => aiSentMessages.delete(key), 3600000);
+}
+
+/**
+ * Check if a message is a bot's own message
+ */
+function isAIBotMessage(msg) {
+  if (!msg || !msg.id) return false;
+  const key = msg.id._serialized || msg.id;
+  return aiSentMessages.has(key);
+}
+
+/**
+ * Get the AI's sent message by key
+ */
+function getAISentMessage(key) {
+  const id = key._serialized || key.id || key;
+  return aiSentMessages.get(id);
+}
+
+/**
+ * Handle reaction to AI's own message
+ * AI can react back but should NOT send a text message
+ */
+async function handleReactionToAI(msg, reactionInfo) {
+  if (!msg || !reactionInfo) return false;
+  
+  const { key, receipt, isReactionToBot, botMessage } = reactionInfo;
+  
+  if (!isReactionToBot || !botMessage) return false;
+  
+  if (receipt?.type === 'reaction' && receipt.reaction) {
+    const emoji = receipt.reaction;
+    const aiMsg = botMessage.msg;
+    const personaId = botMessage.personaId || 'default';
+    
+    try {
+      return { shouldReact: true, shouldSendText: false, emoji, personaId };
+    } catch (err) {
+      console.error('Error handling reaction to AI message:', err.message);
+      return { shouldReact: false, shouldSendText: false, personaId };
+    }
+  }
+  
+  return { shouldReact: false, shouldSendText: true };
+}
+
+/**
+ * Filter out Fish Audio expression tags from text
+ * These should not be spoken aloud when using .tts or .voice
+ */
+function filterEmojisForTTS(text) {
+  if (!text) return text;
+  
+  let result = text;
+  
+  FISH_EXPRESSION_TAGS.forEach(tag => {
+    result = result.replace(new RegExp(tag, 'gi'), '');
+  });
+  
+  result = result.replace(/\[\[\s*emoji:([^\]\r\n]*?)\s*\]\]/gi, '');
+  result = result.replace(/\[\[\s*sticker:(\d+)\s*\]\]/gi, '');
+  
+  EMOTICON_PATTERNS.forEach(pattern => {
+    result = result.replace(pattern, '');
+  });
+  
+  result = result.replace(/[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F1E0}-\u{1F1FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\u{200D}\u{23E9}-\u{23F3}\u{25AA}-\u{25AB}\u{25B6}\u{25C0}\u{25FB}-\u{25FE}\u{2614}-\u{2615}\u{2648}-\u{2653}\u{267F}\u{2693}\u{26A1}\u{26AA}-\u{26AB}\u{26BD}-\u{26BE}\u{26C4}-\u{26C5}\u{26CE}\u{26D4}\u{26EA}\u{26F2}-\u{26F3}\u{26F5}\u{26FA}-\u{26FF}\u{2702}\u{2705}\u{2708}-\u{270D}\u{270F}\u{2712}\u{2714}\u{2716}-\u{271D}\u{2721}\u{2728}\u{2733}-\u{2734}\u{2744}\u{2747}\u{274C}-\u{274E}\u{2753}-\u{2755}\u{2757}\u{2763}-\u{2767}\u{2795}-\u{2797}\u{27B0}\u{27BF}\u{2B1B}-\u{2B1C}\u{2B50}\u{2B55}\u{2934}-\u{2935}\u{2B00}-\u{2BFF}\u{3030}\u{303D}\u{3297}\u{3299}\u{1F004}\u{1F0CF}\u{1F170}-\u{1F251}\u{1F300}-\u{1F5FF}\u{1F600}-\u{1F64F}\u{1F680}-\u{1F6FF}\u{1F774}-\u{1F775}\u{1F7F0}-\u{1F7FF}\u{1F800}-\u{1F8FF}\u{1F900}-\u{1F9FF}\u{1FA00}-\u{1FA6F}\u{1FA70}-\u{1FAFF}\u{1FB00}-\u{1FBFF}]/gu, '');
+  
+  result = result.replace(/\s+/g, ' ').trim();
+  
+  return result;
+}
+
+/**
+ * Add emoji support back to AI responses
+ * But ensure they're filtered for TTS/Voice commands
+ */
+async function processAIResponse(msg, content, command, personaId = 'default') {
+  if (command === 'tts' || command === 'voice') {
+    return filterEmojisForTTS(content);
+  }
+  
+  let processed = content;
+  
+  const emojiReactionMatches = processed.matchAll(/\[\[\s*emoji:([^\]\r\n]*?)\s*\]\]/gi);
+  for (const match of emojiReactionMatches) {
+    const emoji = match[1];
+    processed = processed.replace(match[0], '');
+    
+    if (msg.hasQuotedMsg) {
+      try {
+        const quoted = await msg.getQuotedMessage();
+        if (quoted.id) {
+          await aiReactions.addReaction(msg, quoted.id, emoji);
+        }
+      } catch (err) {
+        console.error('Error adding reaction:', err.message);
+      }
+    }
+  }
+  
+  const stickerMatches = processed.matchAll(/\[\[\s*sticker:(\d+)\s*\]\]/gi);
+  for (const match of stickerMatches) {
+    const stickerNum = parseInt(match[1]);
+    processed = processed.replace(match[0], '');
+    
+    try {
+      const { aiStickers } = await import('./aiStickers.js');
+      await aiStickers.sendStickerByNumber(msg, stickerNum);
+    } catch (err) {
+      console.error('Error sending sticker:', err.message);
+    }
+  }
+  
+  return processed.trim();
+}
+
+/**
+ * Add a message to the conversation history with persona support
+ * Handles reaction detection and expiration logic
  */
 async function addToHistory(msg, role, content, personaId = null) {
   const senderId = msg.author || msg.from;
   const chatId = msg.from;
   
-  // Get active persona if not provided
   if (!personaId) {
     const persona = getActivePersonaSafe();
     personaId = persona?.id || 'default';
   }
   
-  // Check if this is a reaction to bot's own message
-  // If AI reacts to its own message, don't send a message
-  if (role === 'assistant' && content.startsWith('[REACT:') && msg.fromMe) {
-    // This is the bot reacting to its own message - just record it
+  if (role === 'assistant' && content.startsWith('[REACT:') && (msg.fromMe || isAIBotMessage(msg))) {
     const conversation = await AiConversation.findOneAndUpdate(
       { chatId, senderId, personaId },
       { 
@@ -58,17 +208,11 @@ async function addToHistory(msg, role, content, personaId = null) {
     return conversation;
   }
   
-  // For user messages, check if they're reacting to AI's message
   if (role === 'user') {
-    // Check if user is reacting to their own message
-    // In this case, AI should be able to react but not send a message
     if (msg.hasQuotedMsg) {
       try {
         const quoted = await msg.getQuotedMessage();
-        if (quoted.fromMe) {
-          // User is reacting to AI's message
-          // AI can react back but shouldn't send a text message
-          // Just record the user's reaction in history
+        if (quoted.fromMe || isAIBotMessage(quoted)) {
           const conversation = await AiConversation.findOneAndUpdate(
             { chatId, senderId, personaId },
             { 
@@ -86,7 +230,6 @@ async function addToHistory(msg, role, content, personaId = null) {
     }
   }
   
-  // Normal message - add to history with expiration logic
   const isOwner = isBotOwner(senderId);
   const now = new Date();
   const expiresAt = isOwner ? null : new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
@@ -134,7 +277,6 @@ async function getHistory(msg, personaId = null) {
   
   if (!conversation) return [];
   
-  // Update lastActivityAt on read
   if (!isBotOwner(senderId)) {
     await AiConversation.findOneAndUpdate(
       { chatId, senderId, personaId },
@@ -146,81 +288,6 @@ async function getHistory(msg, personaId = null) {
 }
 
 /**
- * Filter out Fish Audio expression tags from text
- * These should not be spoken aloud when using .tts or .voice
- */
-function filterEmojisForTTS(text) {
-  if (!text) return text;
-  
-  let result = text;
-  
-  // Remove Fish Audio expression tags
-  FISH_EXPRESSION_TAGS.forEach(tag => {
-    result = result.replace(new RegExp(tag, 'gi'), '');
-  });
-  
-  // Remove emoji reaction codes like [[emoji:😊]]
-  result = result.replace(/\[\[emoji:[^\]]+\]\]/g, '');
-  
-  // Remove sticker codes like [[sticker:N]]
-  result = result.replace(/\[\[sticker:[^\]]+\]\]/g, '');
-  
-  return result.trim();
-}
-
-/**
- * Add emoji support back to AI responses
- * But ensure they're filtered for TTS/Voice commands
- */
-async function processAIResponse(msg, content, command) {
-  // For TTS and Voice commands, filter out expressions
-  if (command === 'tts' || command === 'voice') {
-    return filterEmojisForTTS(content);
-  }
-  
-  // For normal AI responses, allow emojis
-  // Also handle reaction and sticker codes
-  let processed = content;
-  
-  // Handle emoji reaction codes: [[emoji:😊]] -> add actual emoji as reaction
-  const emojiReactionMatches = processed.matchAll(/\[\[emoji:([^\]]+)\]\]/g);
-  for (const match of emojiReactionMatches) {
-    const emoji = match[1];
-    // For now, just remove the code - reaction handling is done separately
-    processed = processed.replace(match[0], '');
-    
-    // If this is a reaction to a quoted message, handle it
-    if (msg.hasQuotedMsg) {
-      try {
-        const quoted = await msg.getQuotedMessage();
-        if (quoted.id) {
-          await aiReactions.addReaction(msg, quoted.id, emoji);
-        }
-      } catch (err) {
-        console.error('Error adding reaction:', err.message);
-      }
-    }
-  }
-  
-  // Handle sticker codes: [[sticker:N]]
-  const stickerMatches = processed.matchAll(/\[\[sticker:(\d+)\]\]/g);
-  for (const match of stickerMatches) {
-    const stickerNum = parseInt(match[1]);
-    processed = processed.replace(match[0], '');
-    
-    // Send the sticker
-    try {
-      const { aiStickers } = await import('./aiStickers.js');
-      await aiStickers.sendStickerByNumber(msg, stickerNum);
-    } catch (err) {
-      console.error('Error sending sticker:', err.message);
-    }
-  }
-  
-  return processed.trim();
-}
-
-/**
  * Handle persona switching
  * When persona is switched, start a new conversation thread
  */
@@ -228,16 +295,13 @@ async function switchPersona(msg, newPersonaId) {
   const senderId = msg.author || msg.from;
   const chatId = msg.from;
   
-  // Get current persona
   const persona = getActivePersonaSafe();
   const currentPersonaId = persona?.id || 'default';
   
   if (currentPersonaId === newPersonaId) {
-    // Same persona, return existing conversation
     return AiConversation.findOne({ chatId, senderId, personaId: newPersonaId });
   }
   
-  // Different persona, start fresh conversation
   const isOwner = isBotOwner(senderId);
   const now = new Date();
   const expiresAt = isOwner ? null : new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
@@ -257,6 +321,10 @@ async function switchPersona(msg, newPersonaId) {
 }
 
 export { 
+  remember,
+  isAIBotMessage,
+  getAISentMessage,
+  handleReactionToAI,
   addToHistory, 
   getHistory, 
   filterEmojisForTTS, 
@@ -267,6 +335,10 @@ export {
 };
 
 export default {
+  remember,
+  isAIBotMessage,
+  getAISentMessage,
+  handleReactionToAI,
   addToHistory,
   getHistory,
   filterEmojisForTTS,

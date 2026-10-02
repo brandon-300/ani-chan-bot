@@ -13,7 +13,6 @@ import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import NodeCache from 'node-cache';
 import authManager from './auth.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -29,8 +28,59 @@ const logger = pino({
 // Signal key store for E2E
 const signalKeyStore = makeCacheableSignalKeyStore(logger);
 
+// Simple in-memory cache for message retry (replaces NodeCache for Termux compatibility)
+const msgRetryCounterCache = new Map();
+
+// Clean up old cache entries periodically
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, value] of msgRetryCounterCache) {
+    if (now - value.timestamp > 600000) { // 10 minutes
+      msgRetryCounterCache.delete(key);
+    }
+  }
+}, 60000);
+
+/**
+ * Simple cache implementation for Termux
+ */
+class SimpleCache {
+  constructor(stdTTL = 600, checkperiod = 60) {
+    this.store = new Map();
+    this.stdTTL = stdTTL;
+    this.checkperiod = checkperiod;
+    
+    // Cleanup interval
+    this.interval = setInterval(() => {
+      const now = Date.now();
+      for (const [key, value] of this.store) {
+        if (now - value.timestamp > this.stdTTL * 1000) {
+          this.store.delete(key);
+        }
+      }
+    }, checkperiod * 1000);
+  }
+  
+  get(key) {
+    const value = this.store.get(key);
+    return value?.value;
+  }
+  
+  set(key, value, ttl = this.stdTTL) {
+    this.store.set(key, { value, timestamp: Date.now(), ttl });
+  }
+  
+  del(key) {
+    this.store.delete(key);
+  }
+  
+  flushAll() {
+    this.store.clear();
+  }
+}
+
 // Message retry cache for Termux/low memory
-const msgRetryCounterCache = new NodeCache({ stdTTL: 600, checkperiod: 60 });
+const simpleMsgRetryCache = new SimpleCache(600, 60);
 
 /**
  * Socket Manager
@@ -62,6 +112,12 @@ class SocketManager {
     
     // Bot's own JID (populated after connection)
     this.info = null;
+    
+    // Track bot's sent messages for reaction detection
+    this.sentMessages = new Map();
+    
+    // Track if event handlers are set up to prevent duplicates
+    this.eventHandlersSetup = false;
   }
 
   /**
@@ -131,6 +187,29 @@ class SocketManager {
   }
 
   /**
+   * Register a sent message for reaction tracking
+   */
+  registerSentMessage(key, msg) {
+    this.sentMessages.set(key.id, { key, msg, timestamp: Date.now() });
+    // Clean up old messages after 1 hour
+    setTimeout(() => this.sentMessages.delete(key.id), 3600000);
+  }
+
+  /**
+   * Check if a message was sent by the bot
+   */
+  isBotMessage(key) {
+    return this.sentMessages.has(key.id);
+  }
+
+  /**
+   * Get the bot's sent message by key
+   */
+  getBotSentMessage(key) {
+    return this.sentMessages.get(key.id);
+  }
+
+  /**
    * Initialize the socket
    */
   async init() {
@@ -152,7 +231,7 @@ class SocketManager {
       const authState = authManager.getState();
       const needsPairing = !authManager.isAuthenticated();
 
-      // Get version
+      // Get version - await the promise
       const version = await this.getBaileysVersion();
 
       // Create socket configuration
@@ -163,7 +242,7 @@ class SocketManager {
         logger: pino({ level: 'silent' }),
         browser: Browsers.ubuntu('Chrome'),
         signalKeyStore,
-        msgRetryCounterCache,
+        msgRetryCounterCache: simpleMsgRetryCache,
         transactionOpts: {
           maxCommitRetries: 10,
           delayBetweenCommitMs: 3000,
@@ -190,7 +269,10 @@ class SocketManager {
       };
 
       // Setup event handlers - only once!
-      this.setupEventHandlers();
+      if (!this.eventHandlersSetup) {
+        this.setupEventHandlers();
+        this.eventHandlersSetup = true;
+      }
 
       this.isConnecting = false;
       logger.info('Baileys socket initialized');
@@ -232,9 +314,6 @@ class SocketManager {
 
     // Group participants update
     this.sock.ev.on('group-participants.update', this.handleGroupParticipantsUpdate.bind(this));
-
-    // Pairing code callback
-    this.sock.ev.on('creds.update', this.handlePairingCode.bind(this));
   }
 
   /**
@@ -395,6 +474,11 @@ class SocketManager {
             continue;
           }
 
+          // Register bot's own sent messages for reaction tracking
+          if (baileysMsg.key.fromMe) {
+            this.registerSentMessage(baileysMsg.key, baileysMsg);
+          }
+
           // Normalize the message
           const normalizedMsg = this.normalizeMessage(baileysMsg);
           
@@ -423,6 +507,9 @@ class SocketManager {
           type: 'reaction',
           key,
           receipt,
+          // Check if this is a reaction to bot's own message
+          isReactionToBot: this.isBotMessage(key),
+          botMessage: this.isBotMessage(key) ? this.getBotSentMessage(key) : null,
         };
         this.emit('message_reaction', reaction);
       }
@@ -463,10 +550,10 @@ class SocketManager {
    * Normalize Baileys message to match whatsapp-web.js format
    */
   normalizeMessage(baileysMsg) {
-    const { key, pushName, message, participant, timestamp } = baileysMsg;
+    const { key, pushName, message, participant, timestamp, fromMe } = baileysMsg;
     
     const isGroup = key.remoteJid?.endsWith('@g.us') || false;
-    const fromMe = key.fromMe || false;
+    const fromMeFlag = key.fromMe || fromMe || false;
     
     // Determine the actual sender
     let author = null;
@@ -474,7 +561,7 @@ class SocketManager {
     
     if (isGroup && participant) {
       author = participant;
-    } else if (!fromMe && key.remoteJid) {
+    } else if (!fromMeFlag) {
       author = key.remoteJid.split('@')[0];
     }
 
@@ -597,7 +684,7 @@ class SocketManager {
     const normalizedMsg = {
       id: { _serialized: key.id },
       from: from,
-      fromMe: fromMe,
+      fromMe: fromMeFlag,
       author: author,
       body: body,
       type: type,
@@ -651,6 +738,28 @@ class SocketManager {
       return null;
     };
 
+    // Add delete function
+    normalizedMsg.delete = async (everyone = false) => {
+      return this.deleteMessage(key, everyone);
+    };
+
+    // Add forward function
+    normalizedMsg.forward = async (jid) => {
+      return this.forwardMessage(jid, baileysMsg);
+    };
+
+    // Add _data for compatibility with old whatsapp-web.js
+    normalizedMsg._data = {
+      id: key.id,
+      from: from,
+      to: key.remoteJid,
+      body: body,
+      type: type,
+      timestamp: timestamp ? timestamp * 1000 : Date.now(),
+      fromMe: fromMeFlag,
+      isGroup: isGroup,
+    };
+
     return normalizedMsg;
   }
 
@@ -683,7 +792,12 @@ class SocketManager {
           msgOptions.mentions = options.mentions;
         }
         
-        await this.sock.sendMessage(jid, msgOptions);
+        const result = await this.sock.sendMessage(jid, msgOptions);
+        // Register the sent message for reaction tracking
+        if (result && result.key) {
+          this.registerSentMessage(result.key, result);
+        }
+        return result;
       } else if (content?.mimetype || content?._data || content?.data) {
         // Media message (from MessageMedia-like object)
         const media = { ...content };
@@ -724,13 +838,73 @@ class SocketManager {
           }
         }
         
-        await this.sock.sendMessage(jid, media, options);
+        const result = await this.sock.sendMessage(jid, media, options);
+        // Register the sent message for reaction tracking
+        if (result && result.key) {
+          this.registerSentMessage(result.key, result);
+        }
+        return result;
       } else {
         // Unknown content type - try to send as text
-        await this.sock.sendMessage(jid, { text: String(content) }, options);
+        const result = await this.sock.sendMessage(jid, { text: String(content) }, options);
+        if (result && result.key) {
+          this.registerSentMessage(result.key, result);
+        }
+        return result;
       }
     } catch (error) {
       logger.error('Failed to send message:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Delete a message
+   */
+  async deleteMessage(key, everyone = false) {
+    if (!this.sock) {
+      throw new Error('Socket not initialized');
+    }
+
+    try {
+      await this.sock.sendMessage(key.remoteJid, {
+        delete: {
+          id: key.id,
+          remoteJid: key.remoteJid,
+          fromMe: true,
+          participant: key.participant,
+        },
+      });
+    } catch (error) {
+      logger.error('Failed to delete message:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Forward a message
+   */
+  async forwardMessage(jid, baileysMsg) {
+    if (!this.sock) {
+      throw new Error('Socket not initialized');
+    }
+
+    try {
+      const { key, message } = baileysMsg;
+      const forwardMsg = { ...message, key: { ...key } };
+      delete forwardMsg.key.id;
+      
+      const result = await this.sock.sendMessage(jid, {
+        forward: forwardMsg,
+      });
+      
+      // Register the forwarded message
+      if (result && result.key) {
+        this.registerSentMessage(result.key, result);
+      }
+      return result;
+    } catch (error) {
+      logger.error('Failed to forward message:', error);
       throw error;
     }
   }

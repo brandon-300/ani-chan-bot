@@ -16,11 +16,11 @@ import { BOT_OWNER } from '../utils/config.js';
 const AiConversationSchema = new mongoose.Schema({
   chatId: { type: String, required: true },
   // Who this specific conversation belongs to. In a DM, chatId alone was
-  // already unique per person — but in a GROUP, chatId is the same for
+  // already unique per person  but in a GROUP, chatId is the same for
   // every member, so keying on chatId alone (the old design) meant the
   // whole group shared one conversation: everyone's messages and the AI's
   // replies to them all got mixed into one shared history. senderId
-  // (msg.author in a group, msg.from in a DM — see commands/ai.js) splits
+  // (msg.author in a group, msg.from in a DM  see commands/ai.js) splits
   // that back out so each person gets their own thread even inside the
   // same group.
   senderId: { type: String, required: true },
@@ -28,7 +28,8 @@ const AiConversationSchema = new mongoose.Schema({
   // This allows 3 separate conversations per user (one per persona)
   personaId: { type: String, required: true, default: 'default' },
   // Capped to the most recent messages via $slice in addTurnToHistory()
-  // see commands/ai.js — rather than enforced here.
+  // see commands/ai.js  rather than enforced here.
+  // Each message has a timestamp for tracking activity
   messages: [{
     role: { type: String, required: true }, // 'user' | 'assistant'
     content: { type: String, required: true },
@@ -37,7 +38,7 @@ const AiConversationSchema = new mongoose.Schema({
   // NEW: Track last activity time for inactivity-based expiration
   lastActivityAt: { type: Date, default: Date.now },
   // TTL field. `expires: 0` (a SchemaType option, not a query operator)
-  // tells Mongoose to create the index as expireAfterSeconds: 0 — meaning
+  // tells Mongoose to create the index as expireAfterSeconds: 0  meaning
   // "expire exactly at the date stored here", not N seconds after some
   // other fixed timestamp. 
   // 
@@ -47,7 +48,7 @@ const AiConversationSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 // Compound unique index (replaces the old single-field unique index on
-// chatId) — findOneAndUpdate's upsert relies on this being unique per
+// chatId)  findOneAndUpdate's upsert relies on this being unique per
 // (chatId, senderId, personaId) pair, not per chatId alone. This allows
 // each user to have 3 separate conversations (one per persona).
 AiConversationSchema.index({ chatId: 1, senderId: 1, personaId: 1 }, { unique: true });

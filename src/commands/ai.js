@@ -1,24 +1,24 @@
 
-import AiConversation from './models/AiConversation.js';
-import aiMessageLedger from './utils/aiMessageLedger.js';
-import aiStickers from './utils/aiStickers.js';
+import AiConversation from '../models/AiConversation.js';
+import aiMessageLedger from '../utils/aiMessageLedger.js';
+import aiStickers from '../utils/aiStickers.js';
 import axios from 'axios';
 import ffmpeg from 'fluent-ffmpeg';
-import fishAudio from './utils/fishAudio.js';
+import fishAudio from '../utils/fishAudio.js';
 import fs from 'fs';
-import gemini from './utils/gemini.js';
-import logger from './utils/logger.js';
+import gemini from '../utils/gemini.js';
+import logger from '../utils/logger.js';
 import os from 'os';
 import path from 'path';
-import speechText from './utils/speechText.js';
-import { BOT_NAME, FISH_EXPRESSION_TAGS, AI_VOICE_MAX_OUTPUT_TOKENS } from './utils/config.js';
+import speechText from '../utils/speechText.js';
+import { BOT_NAME, FISH_EXPRESSION_TAGS, AI_VOICE_MAX_OUTPUT_TOKENS, BOT_OWNER } from '../utils/config.js';
 import { MessageMedia } from '../services/media.js';
-import { getActivePersonaSafe } from './utils/persona.js';
-import { safeGetChat, safeGetQuotedMessage, resolveSenderName } from './utils/helpers.js';
+import { getActivePersonaSafe } from '../utils/persona.js';
+import { safeGetChat, safeGetQuotedMessage, resolveSenderName } from '../utils/helpers.js';
 const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY;
 
-// ─── Small tmp-file / ffmpeg helpers ────────────────────────────────────────
-// Same pattern as commands/converter.js (tmpFile/runFfmpeg/cleanup) — kept as
+// 	 Small tmp-file / ffmpeg helpers 											
+// Same pattern as commands/converter.js (tmpFile/runFfmpeg/cleanup)  kept as
 // a local, tiny copy here rather than importing from converter.js, since
 // converter.js doesn't currently export them and this is the only other
 // file in the project that needs ffmpeg-based conversion.
@@ -47,68 +47,108 @@ function cleanup(...files) {
   }
 }
 
-// ─── Conversation memory (per chat AND per sender, clears after 30 min idle) ──
-// Persisted in Mongo (models/AiConversation.js) with a native TTL index
-// doing the 30-minute idle cleanup — see that file's comment for why this
-// replaced the old in-memory Map (it didn't survive PM2 restarts, and its
-// per-call setTimeout cleanup had a real bug: an earlier timer could wipe
-// out a chat's newer history mid-conversation).
+// Conversation memory with persona support
+// Each user has 3 separate conversations (one per persona)
+// Expires after 7 days of inactivity
+// Bot owner has unlimited history
 
 const HISTORY_LIMIT = 20; // messages kept per conversation
-const HISTORY_TTL_MS = 30 * 60 * 1000; // idle window before Mongo auto-expires it
 
-// Returns this (chat, sender) pair's recent conversation as a plain
-// { role, content }[] array for gemini.js — empty for a fresh conversation,
-// or one Mongo's TTL index already expired. Reading never touches
-// expiresAt itself — only addTurnToHistory extends the idle window, so a
-// history can't be kept alive just by being read.
-//
-// senderId matters here: in a DM, chatId alone is already unique per
-// person, but in a GROUP chatId is the same for every member — without
-// senderId, everyone in a group would read and write the SAME
-// conversation, which is exactly the "only one conversation, shared by
-// whoever uses the AI commands" behavior this replaces. Pass msg.author in
-// a group (the actual sender) and msg.from in a DM (there is no
-// msg.author there) — see the call sites below.
-async function getHistory(chatId, senderId) {
-  const convo = await AiConversation.findOne({ chatId, senderId }).catch(err => {
+/**
+ * Check if user is bot owner
+ */
+function isBotOwner(senderId) {
+  const owner = BOT_OWNER || process.env.BOT_OWNER;
+  if (!owner) return false;
+  return senderId === owner || senderId.includes(owner.split('@')[0]);
+}
+
+/**
+ * Get conversation for a specific persona
+ * Each user has 3 separate conversations (one per persona)
+ */
+async function getHistory(chatId, senderId, personaId = 'default') {
+  const isOwner = isBotOwner(senderId);
+  
+  // For bot owner, no expiration - get conversation without updating expiry
+  if (isOwner) {
+    const convo = await AiConversation.findOne({ 
+      chatId, 
+      senderId, 
+      personaId: personaId || 'default' 
+    }).catch(err => {
+      console.error('getHistory: lookup failed:', err.message);
+      return null;
+    });
+    return convo ? convo.messages.map(m => ({ role: m.role, content: m.content })) : [];
+  }
+  
+  // For non-owner users, update lastActivityAt on read to extend expiration
+  const conversation = await AiConversation.findOneAndUpdate(
+    { chatId, senderId, personaId: personaId || 'default' },
+    { $set: { lastActivityAt: new Date() } },
+    { upsert: true, new: true }
+  ).catch(err => {
     console.error('getHistory: lookup failed:', err.message);
     return null;
   });
-  return convo ? convo.messages.map(m => ({ role: m.role, content: m.content })) : [];
+  
+  return conversation ? conversation.messages.map(m => ({ role: m.role, content: m.content })) : [];
 }
 
-// Appends BOTH sides of one exchange — the user's message and the
-// assistant's reply — in a single $push, so they land in Mongo as one
-// atomic write instead of the two independent, unawaited writes this used
-// to be. That distinction matters two ways: a process crash between the
-// old pair of writes could leave a user message permanently stored with no
-// reply ever recorded next to it, and two overlapping requests for the
-// SAME conversation could have their four separate writes land in the
-// wrong order relative to each other. One $push means both messages of a
-// given exchange succeed together or neither does, and nothing else can
-// land in between them.
-async function addTurnToHistory(chatId, senderId, userContent, assistantContent) {
+/**
+ * Add a turn to conversation history with persona support
+ * Updates lastActivityAt and extends expiration for non-owner users
+ */
+async function addTurnToHistory(chatId, senderId, personaId, userContent, assistantContent) {
+  const isOwner = isBotOwner(senderId);
+  const now = new Date();
+  const newExpiresAt = isOwner ? null : new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+  
   await AiConversation.findOneAndUpdate(
-    { chatId, senderId },
+    { chatId, senderId, personaId: personaId || 'default' },
     {
       $push: {
         messages: {
           $each: [
-            { role: 'user', content: userContent },
-            { role: 'assistant', content: assistantContent },
+            { role: 'user', content: userContent, timestamp: now },
+            { role: 'assistant', content: assistantContent, timestamp: now },
           ],
           $slice: -HISTORY_LIMIT,
         },
       },
-      $set: { expiresAt: new Date(Date.now() + HISTORY_TTL_MS) },
+      $set: { 
+        lastActivityAt: now,
+        ...(newExpiresAt ? { expiresAt: newExpiresAt } : {})
+      },
     },
     { upsert: true }
   ).catch(err => console.error('addTurnToHistory: save failed:', err.message));
 }
 
-// ─── Persona prompts and internal text controls ─────────────────────────────
-// Persona identity and medium-specific behavior live in config/personas/<id>.
+/**
+ * Switch persona - starts a new conversation thread for the new persona
+ */
+async function switchPersona(chatId, senderId, newPersonaId) {
+  const isOwner = isBotOwner(senderId);
+  const now = new Date();
+  const expiresAt = isOwner ? null : new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+  
+  const conversation = await AiConversation.findOneAndUpdate(
+    { chatId, senderId, personaId: newPersonaId || 'default' },
+    {
+      $set: { 
+        lastActivityAt: now,
+        ...(expiresAt ? { expiresAt } : {})
+      }
+    },
+    { upsert: true, new: true }
+  );
+  
+  return conversation;
+}
+
+// Persona prompts and internal text controls
 // Voice prompts deliberately omit the text-only reaction/menu controls.
 // The reply-controls block for text replies. It is built in code (not in the
 // persona files) because the sticker catalogue changes on every request. It
@@ -123,7 +163,7 @@ function buildReplyControlsPrompt(catalogue) {
     '- Match the moment. A joke, a meme, or a funny "mood" about everyday stress such as exams, work or school gets a laugh, a laughing reaction, or a playful line, not advice and not a counselling tone. Only when the person is clearly really hurting do you comfort them, briefly and naturally, with a few warm words, a gentle sticker, or a sad or hugging emoji. Sympathy is the exception, not the default.',
     '',
     'Control tokens (invisible to the user; put them after your reply and never mention them):',
-    '- [[emoji:😂]] also puts that single emoji as a reaction on THEIR message. Use any one emoji that fits (😂 😭 🥺 ❤️ 👍 🔥 😳 🙄 ...). Use it alone when an emoji is the natural reply.',
+    '- [[emoji:\ud83d\ude02]] also puts that single emoji as a reaction on THEIR message. Use any one emoji that fits (\ud83d\ude02 \ud83d\ude2d \ud83e\udd7a \u2764\ufe0f \ud83d\udc4d \ud83d\udd25 \ud83d\ude33 \ud83d\ude44 ...). Use it alone when an emoji is the natural reply.',
   ];
   if (hasStickers) {
     lines.push('- [[sticker:N]] also sends sticker number N from the catalogue below. Use it alone (no words) when the sticker is the whole reply. Pick a sticker only if what it shows and feels like really fits what you are answering; otherwise write [[sticker:none]] or leave it out. Only use a number that is listed.');
@@ -142,7 +182,7 @@ function stripLegacyReactionBlock(text) {
   return String(text || '').replace(/\nInternal reaction control:\n[\s\S]*?(?=\nPrivate-DM menu action:\n|$)/, '\n');
 }
 
-function buildPersonaSystemPrompt(senderName, medium, allowBotActions = false, { catalogue = null } = {}) {
+function buildPersonaSystemPrompt(senderName, medium, allowBotActions = false, { catalogue = null, personaId = 'default' } = {}) {
   const persona = getActivePersonaSafe();
   if (!persona) {
     const err = new Error('The active AI persona could not be loaded. Check AI_PERSONA and its config/personas/<id> files.');
@@ -166,7 +206,7 @@ function buildPersonaSystemPrompt(senderName, medium, allowBotActions = false, {
   return prompt;
 }
 
-// ─── Reply controls ─────────────────────────────────────────────────────────
+// Reply controls
 // The model is told (buildReplyControlsPrompt) to use [[emoji:X]] and
 // [[sticker:N]]. Models don't always follow the exact shape, so this parser is
 // forgiving, and strict about what it will act on:
@@ -247,7 +287,7 @@ async function reactToUserMessage(msg, emoji) {
   }
 }
 
-// copilot/voice put a ⏳ on the user's message while they work. A person does
+// copilot/voice put a \u23f3 on the user's message while they work. A person does
 // not leave an hourglass behind, so it is removed when the reply is done,
 // unless the AI replaced it with its own emoji reaction.
 async function clearStatusReaction(msg) {
@@ -272,7 +312,7 @@ function historyAssistantText(controls, delivered) {
   return parts.join(' ').trim() || '[[no_reply]]';
 }
 
-async function deliverTextResponse(client, msg, rawOutput, allowBotActions = false, { stickerReply = false, catalogue = null } = {}) {
+async function deliverTextResponse(client, msg, rawOutput, allowBotActions = false, { stickerReply = false, catalogue = null, personaId = 'default' } = {}) {
   const controls = parseAiControls(rawOutput, { allowBotActions });
   logger.write('INFO', 'ai.model.reply', {
     stickerReply,
@@ -282,14 +322,15 @@ async function deliverTextResponse(client, msg, rawOutput, allowBotActions = fal
     sticker: controls.stickerId ?? (controls.stickerNone ? 'none' : null),
     legacyReaction: controls.reaction !== 'none' ? controls.reaction : null,
     action: controls.action,
+    personaId,
   });
 
   if (controls.action === 'command_menu') {
-    if (controls.text) await replyTracked(msg, controls.text, 'text');
+    if (controls.text) await replyTracked(msg, controls.text, 'text', personaId);
     if (typeof client.sendQuickMenu === 'function') await client.sendQuickMenu(msg);
-    else if (!controls.text) await msg.reply('❌ I could not open the command menu right now.');
-    logger.write('INFO', 'ai.decision', { menu: true, textChars: controls.text.length });
-    return Object.assign(controls, { textSent: Boolean(controls.text), emojiReacted: false, stickerSent: false, stickerItem: null });
+    else if (!controls.text) await msg.reply('\u274c I could not open the command menu right now.');
+    logger.write('INFO', 'ai.decision', { menu: true, textChars: controls.text.length, personaId });
+    return Object.assign(controls, { textSent: Boolean(controls.text), emojiReacted: false, stickerSent: false, stickerItem: null, personaId });
   }
 
   const dropped = [];
@@ -297,7 +338,7 @@ async function deliverTextResponse(client, msg, rawOutput, allowBotActions = fal
   // 1. Emoji reaction on the user's message (instant, like a person tapping it).
   let emojiReacted = false;
   if (controls.emoji) emojiReacted = await reactToUserMessage(msg, controls.emoji);
-  else if (controls.emoji === null && /\[\[\s*(?:emoji|react)\s*:/i.test(String(rawOutput || ''))) dropped.push('emoji (not a valid emoji)');
+  else if (controls.emoji === null && /\[\\s*(?:emoji|react)\s*:/i.test(String(rawOutput || ''))) dropped.push('emoji (not a valid emoji)');
   msg._aiEmojiReacted = emojiReacted;
 
   // 2. Which sticker (if any) did the model choose, and was it actually offered?
@@ -310,10 +351,11 @@ async function deliverTextResponse(client, msg, rawOutput, allowBotActions = fal
       offered: catalogue?.items?.length || 0,
       anime: stickerItem?.entry?.animeName || null,
       description: stickerItem?.label || null,
+      personaId,
     });
     if (!stickerItem) dropped.push(`sticker ${controls.stickerId} (not in the catalogue)`);
   } else if (catalogue?.items?.length) {
-    logger.write('INFO', 'ai.sticker.choice', { requested: null, status: controls.stickerNone ? 'none_chosen' : 'not_requested', offered: catalogue.items.length });
+    logger.write('INFO', 'ai.sticker.choice', { requested: null, status: controls.stickerNone ? 'none_chosen' : 'not_requested', offered: catalogue.items.length, personaId });
   }
 
   // 3. A reply to someone's sticker is ONE reply, like a person's: a sticker or
@@ -328,7 +370,7 @@ async function deliverTextResponse(client, msg, rawOutput, allowBotActions = fal
   let textSent = false;
   let stickerSent = false;
   if (sendText) {
-    await replyTracked(msg, controls.text, 'text');
+    await replyTracked(msg, controls.text, 'text', personaId);
     textSent = true;
   }
   if (sendSticker) {
@@ -337,12 +379,12 @@ async function deliverTextResponse(client, msg, rawOutput, allowBotActions = fal
   }
   // The sticker could not be sent and the words were set aside for it: say them.
   if (!stickerSent && !textSent && controls.text) {
-    await replyTracked(msg, controls.text, 'text');
+    await replyTracked(msg, controls.text, 'text', personaId);
     textSent = true;
     dropped.push('(sticker failed, so the text was sent instead)');
   }
   if (!textSent && !stickerSent && !emojiReacted) {
-    await msg.reply('❌ I could not generate a response. Please try again.');
+    await msg.reply('\u274c I could not generate a response. Please try again.');
   }
 
   logger.write('INFO', 'ai.decision', {
@@ -352,8 +394,9 @@ async function deliverTextResponse(client, msg, rawOutput, allowBotActions = fal
     emoji: emojiReacted ? controls.emoji : null,
     sticker: stickerSent ? { id: stickerItem.id, anime: stickerItem.entry.animeName || stickerItem.entry.animeId || null, description: stickerItem.label } : null,
     dropped,
+    personaId,
   });
-  return Object.assign(controls, { textSent, emojiReacted, stickerSent, stickerItem });
+  return Object.assign(controls, { textSent, emojiReacted, stickerSent, stickerItem, personaId });
 }
 
 // Everything spoken by Fish Audio goes through speechText.toSpeechText():
@@ -365,43 +408,43 @@ const stripSpeechFormatting = speechText.toSpeechText;
 
 // Sends a reply and records the sent message so a later reaction to it can be
 // recognised as a reaction to something the AI said (utils/aiMessageLedger.js).
-async function replyTracked(msg, content, kind, ...rest) {
-  const sent = await msg.reply(content, ...rest);
-  aiMessageLedger.remember(sent, kind);
+async function replyTracked(msg, content, kind, personaId = 'default') {
+  const sent = await msg.reply(content);
+  aiMessageLedger.remember(sent, kind, personaId);
   return sent;
 }
 
 // Turns a gemini.js error into the kind of short, actionable WhatsApp reply
 // the old OpenAI-based commands used to give, without swallowing the actual
-// reason (missing key, bad model name, safety block, etc.) — important since
+// reason (missing key, bad model name, safety block, etc.)  important since
 // Brandon can't always dig through PM2 logs on unstable data.
 function friendlyAiError(err, fallbackLabel) {
-  if (err.code === 'AI_PERSONA_UNAVAILABLE') return `❌ ${err.message}`;
-  if (err.code === 'NO_GEMINI_KEY') return '❌ GEMINI_API_KEY is missing from .env.';
-  if (err.code === 'EMPTY_RESPONSE' || err.code === 'EMPTY_IMAGE') return `❌ ${err.message}`;
+  if (err.code === 'AI_PERSONA_UNAVAILABLE') return `\u274c ${err.message}`;
+  if (err.code === 'NO_GEMINI_KEY') return '\u274c GEMINI_API_KEY is missing from .env.';
+  if (err.code === 'EMPTY_RESPONSE' || err.code === 'EMPTY_IMAGE') return `\u274c ${err.message}`;
   if (err.status === 429) {
     // Google returns 429 both for "you're calling too fast, back off a bit"
     // AND for "your project has zero free quota for this model, enable
-    // billing" — same HTTP status, very different fix. The message text is
+    // billing"  same HTTP status, very different fix. The message text is
     // the only way to tell them apart; retrying helps with the first, not
     // the second.
     if (/quota/i.test(err.message)) {
-      return `❌ Gemini rejected this: no free quota available (needs billing enabled on your Google AI Studio project). Retrying won't help.\n\n${err.message}`;
+      return `\u274c Gemini rejected this: no free quota available (needs billing enabled on your Google AI Studio project). Retrying won't help.\n\n${err.message}`;
     }
-    return '❌ Gemini rate limit hit — free tier caps requests per minute/day. Try again shortly.';
+    return '\u274c Gemini rate limit hit \u2014 free tier caps requests per minute/day. Try again shortly.';
   }
   console.error(`${fallbackLabel} error:`, err.message);
-  return `❌ ${fallbackLabel} failed: ${err.message}`;
+  return `\u274c ${fallbackLabel} failed: ${err.message}`;
 }
 
-// ─── Shared multimodal input resolution for .copilot / .gpt / .voice ───────
+// Shared multimodal input resolution for .copilot / .gpt / .voice
 // Figures out what the user is actually asking for. Two possible media
 // sources, checked in this order:
-//   1. The message itself, if IT carries media — covers sending an image
+//   1. The message itself, if IT carries media  covers sending an image
 //      directly with a ".copilot ..." caption, AND (new) index.js's
 //      auto-reply detection, where the user's own reply to the bot is an
 //      image or voice note.
-//   2. The quoted message's media, if the current message has none — the
+//   2. The quoted message's media, if the current message has none  the
 //      classic "reply to an existing image/voice-note with .copilot" usage.
 // Resolution:
 //  - plain typed args only                       -> { prompt: <args> }
@@ -441,12 +484,12 @@ async function resolveMultimodalInput(msg, args) {
     } catch { return null; }
   };
   const media = await download(source);
-  if (!media) return { error: '❌ Could not download the attached/replied-to media — it may have expired. Try re-sending it and trying again.' };
+  if (!media) return { error: '\u274c Could not download the attached/replied-to media \u2014 it may have expired. Try re-sending it and trying again.' };
   const mimetype = media.mimetype || '';
 
   if (mimetype.includes('image') || msg.type === 'sticker' || source.type === 'sticker') {
     if (!typed && msg.type !== 'sticker') {
-      return { error: '❌ Reply to an image AND tell me what to do with it, e.g. *.copilot describe this image*' };
+      return { error: '\u274c Reply to an image AND tell me what to do with it, e.g. *.copilot describe this image*' };
     }
     const images = [{ base64: media.data, mimeType: mimetype || 'image/webp' }];
     const botSentStickerReply = Boolean(quoted?.fromMe && quoted?.type === 'sticker');
@@ -493,7 +536,7 @@ export default {
   _clearStatusReaction: clearStatusReaction,
   _USER_STICKER_PROMPT: USER_STICKER_PROMPT,
 
-  // .stickerimport [off] — owner-only, private-DM import mode. Sticker media
+  // .stickerimport [off]  owner-only, private-DM import mode. Sticker media
   // is intercepted by index.js only after the service independently checks
   // owner identity, direct-chat status, and the active in-memory session.
   async stickerimport(client, msg, args) {
@@ -506,9 +549,9 @@ export default {
       : aiStickers.startImportMode(client, msg);
   },
 
-  // .copilot [prompt] — full context-aware AI chat (Gemini). Also works
+  // .copilot [prompt]  full context-aware AI chat (Gemini). Also works
   // replying to a voice note (transcribed and used as the prompt) or an
-  // image (analyzed with Gemini vision — you must also say what to do
+  // image (analyzed with Gemini vision  you must also say what to do
   // with it, e.g. ".copilot what anime is this from").
   async copilot(client, msg, args) {
     const chat = await safeGetChat(msg);
@@ -517,21 +560,23 @@ export default {
     const resolved = await resolveMultimodalInput(msg, args);
     if (resolved.error) return msg.reply(resolved.error);
     if (!resolved.prompt) {
-      return msg.reply('❌ Usage: .copilot [your message]\nOr reply to a voice note with .copilot, or reply to an image with .copilot [what to do with it]');
+      return msg.reply('\u274c Usage: .copilot [your message]\nOr reply to a voice note with .copilot, or reply to an image with .copilot [what to do with it]');
     }
 
-    try { await msg.react('⏳'); } catch { /* reactions aren't critical to the reply */ }
+    try { await msg.react('\u23f3'); } catch { /* reactions aren't critical to the reply */ }
 
     try {
       // msg.author is the actual sender inside a group; it's undefined in a
       // DM, where msg.from IS the sender (and already unique per person)
-      // — see models/AiConversation.js's comment for why this matters.
+      //  see models/AiConversation.js's comment for why this matters.
       const senderId = msg.author || msg.from;
-      const history = await getHistory(chat.id._serialized, senderId);
+      const persona = getActivePersonaSafe();
+      const personaId = persona?.id || 'default';
+      const history = await getHistory(chat.id._serialized, senderId, personaId);
       const senderName = await resolveSenderName(msg, client);
       const allowBotActions = !chat.isGroup;
-      const catalogue = await aiStickers.buildStickerCatalogue(chat.id._serialized, getActivePersonaSafe());
-      const systemPrompt = buildPersonaSystemPrompt(senderName, 'text', allowBotActions, { catalogue });
+      const catalogue = await aiStickers.buildStickerCatalogue(chat.id._serialized, persona);
+      const systemPrompt = buildPersonaSystemPrompt(senderName, 'text', allowBotActions, { catalogue, personaId });
       const inputKind = resolved.stickerReply ? 'sticker' : (resolved.images?.length ? 'image' : 'text');
       logger.write('INFO', 'ai.input', {
         command: 'copilot',
@@ -541,8 +586,8 @@ export default {
         stickerReply: Boolean(resolved.stickerReply),
         promptChars: resolved.prompt.length,
         promptPreview: inputKind === 'sticker' ? '(user sticker)' : resolved.prompt.slice(0, 120),
-        historyTurns: history.length,
         stickersOffered: catalogue.offered,
+        personaId,
       });
 
       const rawReply = resolved.images?.length
@@ -567,10 +612,10 @@ export default {
       const historyUser = resolved.stickerReply ? '[sent a sticker]' : resolved.prompt;
       let delivered = null;
       try {
-        delivered = await deliverTextResponse(client, msg, rawReply, allowBotActions, { stickerReply: resolved.stickerReply, catalogue });
+        delivered = await deliverTextResponse(client, msg, rawReply, allowBotActions, { stickerReply: resolved.stickerReply, catalogue, personaId });
         return delivered;
       } finally {
-        await addTurnToHistory(chat.id._serialized, senderId, historyUser, historyAssistantText(controls, delivered));
+        await addTurnToHistory(chat.id._serialized, senderId, personaId, historyUser, historyAssistantText(controls, delivered));
       }
     } catch (err) {
       return msg.reply(friendlyAiError(err, 'Copilot'));
@@ -579,31 +624,32 @@ export default {
     }
   },
 
-  // .gpt [prompt] — single-turn AI reply (Gemini, no history). Same quoted
+  // .gpt [prompt]  single-turn AI reply (Gemini, no history). Same quoted
   // voice-note/image handling as .copilot, minus conversation memory.
   async gpt(client, msg, args) {
     const resolved = await resolveMultimodalInput(msg, args);
     if (resolved.error) return msg.reply(resolved.error);
     if (!resolved.prompt) {
-      return msg.reply('❌ Usage: .gpt [your question]\nOr reply to a voice note with .gpt, or reply to an image with .gpt [what to do with it]');
+      return msg.reply('\u274c Usage: .gpt [your question]\nOr reply to a voice note with .gpt, or reply to an image with .gpt [what to do with it]');
     }
 
-    await msg.reply('💭 Processing...');
+    await msg.reply('\ud83d\udcad Processing...');
     try {
       const senderName = await resolveSenderName(msg, client);
       const chat = await safeGetChat(msg);
       const allowBotActions = !!chat && !chat.isGroup;
-      const catalogue = await aiStickers.buildStickerCatalogue(msg.from || msg.to, getActivePersonaSafe());
-      const systemPrompt = buildPersonaSystemPrompt(senderName, 'text', allowBotActions, { catalogue });
+      const persona = getActivePersonaSafe();
+      const personaId = persona?.id || 'default';
+      const catalogue = await aiStickers.buildStickerCatalogue(msg.from || msg.to, persona);
+      const systemPrompt = buildPersonaSystemPrompt(senderName, 'text', allowBotActions, { catalogue, personaId });
       logger.write('INFO', 'ai.input', {
         command: 'gpt',
         sender: senderName,
         chat: chat?.isGroup ? 'group' : 'DM',
         kind: resolved.stickerReply ? 'sticker' : (resolved.images?.length ? 'image' : 'text'),
-        stickerReply: Boolean(resolved.stickerReply),
         promptChars: resolved.prompt.length,
-        promptPreview: resolved.stickerReply ? '(user sticker)' : resolved.prompt.slice(0, 120),
-        stickersOffered: catalogue.offered,
+        promptPreview: resolved.prompt.slice(0, 120),
+        personaId,
       });
 
       const reply = resolved.images?.length
@@ -619,13 +665,13 @@ export default {
             maxOutputTokens: 2048,
           });
 
-      return await deliverTextResponse(client, msg, reply, allowBotActions, { stickerReply: resolved.stickerReply, catalogue });
+      return await deliverTextResponse(client, msg, reply, allowBotActions, { stickerReply: resolved.stickerReply, catalogue, personaId });
     } catch (err) {
       return msg.reply(friendlyAiError(err, 'GPT'));
     }
   },
 
-  // .voice [prompt] — like .copilot, but always answers with a spoken
+  // .voice [prompt]  like .copilot, but always answers with a spoken
   // voice note instead of text. Works the same three ways .copilot/.gpt
   // do, via the same resolveMultimodalInput() resolver:
   //   - plain typed text:      .voice what's the strongest anime villain
@@ -643,18 +689,20 @@ export default {
     const resolved = await resolveMultimodalInput(msg, args);
     if (resolved.error) return msg.reply(resolved.error);
     if (!resolved.prompt) {
-      return msg.reply('❌ Usage: .voice [your message]\nOr reply to a voice note with .voice, or reply to an image with .voice [what to do with it]');
+      return msg.reply('\u274c Usage: .voice [your message]\nOr reply to a voice note with .voice, or reply to an image with .voice [what to do with it]');
     }
 
-    try { await msg.react('⏳'); } catch { /* reactions aren't critical to the reply */ }
+    try { await msg.react('\u23f3'); } catch { /* reactions aren't critical to the reply */ }
 
     let mp3Path, oggPath;
     try {
       // See .copilot's identical comment above.
       const senderId = msg.author || msg.from;
-      const history = await getHistory(chat.id._serialized, senderId);
+      const persona = getActivePersonaSafe();
+      const personaId = persona?.id || 'default';
+      const history = await getHistory(chat.id._serialized, senderId, personaId);
       const senderName = await resolveSenderName(msg, client);
-      const systemPrompt = buildPersonaSystemPrompt(senderName, 'voice', false);
+      const systemPrompt = buildPersonaSystemPrompt(senderName, 'voice', false, { personaId });
 
       const rawReply = resolved.images?.length
         ? await gemini.generateVision({
@@ -671,7 +719,7 @@ export default {
             maxOutputTokens: AI_VOICE_MAX_OUTPUT_TOKENS,
           });
 
-      // Safety net — see stripSpeechFormatting()'s comment above. Applied
+      // Safety net  see stripSpeechFormatting()'s comment above. Applied
       // before both TTS and history so a stray "*" the model slips in
       // never gets spoken AND never lingers in context for the next turn.
       const reply = stripSpeechFormatting(rawReply);
@@ -680,9 +728,16 @@ export default {
 
       // History keeps the plain spoken words; the optional expression cue is
       // added only to the text sent to Fish Audio (config FISH_EXPRESSION_TAGS).
-      await addTurnToHistory(chat.id._serialized, senderId, resolved.prompt, reply);
+      // Filter out emojis and Fish Audio expression tags for voice
+      const voiceText = aiMessageLedger.filterEmojisForTTS(reply);
+      
+      await addTurnToHistory(chat.id._serialized, senderId, personaId, resolved.prompt, reply);
 
-      const mp3Buffer = await fishAudio.synthesizeSpeech(FISH_EXPRESSION_TAGS ? speechText.applyExpressionCue(reply) : reply);
+      // Use improved voice synthesis with anime character settings
+      const mp3Buffer = await fishAudio.synthesizeSpeech(
+        FISH_EXPRESSION_TAGS ? speechText.applyExpressionCue(voiceText) : voiceText,
+        personaId
+      );
 
       mp3Path = tmpFile('mp3');
       oggPath = tmpFile('ogg');
@@ -700,17 +755,17 @@ export default {
 
       const voiceData = fs.readFileSync(oggPath).toString('base64');
       const voiceMedia = new MessageMedia('audio/ogg', voiceData);
-      await replyTracked(msg, voiceMedia, 'voice', undefined, { sendAudioAsVoice: true });
+      await replyTracked(msg, voiceMedia, 'voice', personaId, { sendAudioAsVoice: true });
     } catch (err) {
       // Fish Audio-specific failures need their own messages (same as
       // .tts); anything else (Gemini transcription/text errors) goes
       // through the shared friendlyAiError() handling.
       if (err.code === 'NO_FISH_KEY' || err.code === 'NO_FISH_VOICE') {
-        return msg.reply(`❌ ${err.message}`);
+        return msg.reply(`\u274c ${err.message}`);
       } else if (err.status === 402) {
-        return msg.reply('❌ Fish Audio TTS failed: out of credits/quota on your Fish Audio account.');
+        return msg.reply('\u274c Fish Audio TTS failed: out of credits/quota on your Fish Audio account.');
       } else if (err.status === 401) {
-        return msg.reply('❌ Fish Audio TTS failed: invalid FISH_API_KEY.');
+        return msg.reply('\u274c Fish Audio TTS failed: invalid FISH_API_KEY.');
       } else {
         return msg.reply(friendlyAiError(err, 'Voice'));
       }
@@ -720,32 +775,32 @@ export default {
     }
   },
 
-  // .imagine [prompt] — AI image generation (Gemini 2.5 Flash Image / "Nano Banana")
+  // .imagine [prompt]  AI image generation (Gemini 2.5 Flash Image / "Nano Banana")
   async imagine(client, msg, args) {
     const prompt = args.join(' ');
-    if (!prompt) return msg.reply('❌ Usage: .imagine [image description]');
+    if (!prompt) return msg.reply('\u274c Usage: .imagine [image description]');
 
-    await msg.reply('🎨 Generating image...');
+    await msg.reply('\ud83c\udfa8 Generating image...');
     try {
       const { base64, mimeType } = await gemini.generateImage(prompt);
       const ext = mimeType.includes('png') ? 'png' : 'jpg';
       const media = new MessageMedia(mimeType, base64, `imagine.${ext}`);
 
-      await replyTracked(msg, media, 'image', undefined, { caption: `🎨 *Imagine:* ${prompt}` });
+      await replyTracked(msg, media, 'image');
     } catch (err) {
       return msg.reply(friendlyAiError(err, 'Image generation'));
     }
   },
 
-  // .upscale — upscale a replied-to image using RapidAPI (unchanged — not an
+  // .upscale  upscale a replied-to image using RapidAPI (unchanged  not an
   // OpenAI/Gemini call, no need to touch this one)
   async upscale(client, msg, args) {
     const quoted = await safeGetQuotedMessage(msg).catch(() => null);
     const targetMsg = quoted || msg;
 
-    if (!targetMsg.hasMedia) return msg.reply('❌ Reply to an image with .upscale');
+    if (!targetMsg.hasMedia) return msg.reply('\u274c Reply to an image with .upscale');
 
-    await msg.reply('⬆️ Upscaling image...');
+    await msg.reply('\u2b06\ufe0f Upscaling image...');
     try {
       const media = await targetMsg.downloadMedia();
       // media.data is already base64-encoded
@@ -768,18 +823,18 @@ export default {
 
       if (res.data.code !== 0 || !res.data.result_base64) {
         console.error('Upscale non-ok response:', JSON.stringify(res.data)?.slice(0, 300));
-        return msg.reply('❌ Upscale failed. Make sure you replied to an image and your RapidAPI key is valid.');
+        return msg.reply('\u274c Upscale failed. Make sure you replied to an image and your RapidAPI key is valid.');
       }
 
       const upscaledMedia = new MessageMedia('image/jpeg', res.data.result_base64);
-      await msg.reply(upscaledMedia, undefined, { caption: '✅ Image upscaled 2x!' });
+      await msg.reply(upscaledMedia, undefined, { caption: '\u2705 Image upscaled 2x!' });
     } catch (err) {
       console.error('Upscale error:', err.response?.status, JSON.stringify(err.response?.data)?.slice(0, 300) || err.message);
-      return msg.reply('❌ Upscale failed. Make sure you replied to an image and your RapidAPI key is valid.');
+      return msg.reply('\u274c Upscale failed. Make sure you replied to an image and your RapidAPI key is valid.');
     }
   },
 
-  // .translate [lang] [text] — translate text (Gemini)
+  // .translate [lang] [text]  translate text (Gemini)
   async translate(client, msg, args) {
     const lang = args[0];
     const text = args.slice(1).join(' ');
@@ -789,34 +844,34 @@ export default {
     const toTranslate = text || quoted?.body;
 
     if (!lang || !toTranslate) {
-      return msg.reply('❌ Usage: .translate [language] [text]\nOr reply to a message with .translate [language]');
+      return msg.reply('\u274c Usage: .translate [language] [text]\nOr reply to a message with .translate [language]');
     }
 
-    await msg.reply('🌍 Translating...');
+    await msg.reply('\ud83c\udf0d Translating...');
     try {
       const translated = await gemini.generateText({
         systemPrompt: `Translate the following text to ${lang}. Return ONLY the translated text, nothing else.`,
         prompt: toTranslate,
         maxOutputTokens: 1500,
       });
-      return msg.reply(`🌍 *Translation (${lang})*\n\n${translated}`);
+      return msg.reply(`\ud83c\udf0d *Translation (${lang})*\n\n${translated}`);
     } catch (err) {
       return msg.reply(friendlyAiError(err, 'Translation'));
     }
   },
 
-  // .transcribe — transcribe a voice note (Gemini multimodal, replaces Whisper)
+  // .transcribe  transcribe a voice note (Gemini multimodal, replaces Whisper)
   async transcribe(client, msg, args) {
     const quoted = await safeGetQuotedMessage(msg).catch(() => null);
     const targetMsg = quoted || msg;
 
-    if (!targetMsg.hasMedia) return msg.reply('❌ Reply to a voice note with .transcribe');
+    if (!targetMsg.hasMedia) return msg.reply('\u274c Reply to a voice note with .transcribe');
 
-    await msg.reply('🎙️ Transcribing...');
+    await msg.reply('\ud83c\udf99\ufe0f Transcribing...');
     try {
       const media = await targetMsg.downloadMedia();
       if (!media.mimetype.includes('audio') && !media.mimetype.includes('ogg')) {
-        return msg.reply('❌ Please reply to a voice note or audio file.');
+        return msg.reply('\u274c Please reply to a voice note or audio file.');
       }
 
       const text = await gemini.transcribeAudio({
@@ -824,13 +879,13 @@ export default {
         mimeType: media.mimetype,
       });
 
-      return msg.reply(`🎙️ *Transcription*\n\n${text}`);
+      return msg.reply(`\ud83c\udf99\ufe0f *Transcription*\n\n${text}`);
     } catch (err) {
       return msg.reply(friendlyAiError(err, 'Transcription'));
     }
   },
 
-  // .tts [text] — text-to-speech via Fish Audio, sent back as a WhatsApp
+  // .tts [text]  text-to-speech via Fish Audio, sent back as a WhatsApp
   // voice note. Reply to a message with .tts (no args) to speak that
   // message's text instead of typing it again.
   async tts(client, msg, args) {
@@ -838,24 +893,29 @@ export default {
     const quoted = await safeGetQuotedMessage(msg).catch(() => null);
     const rawText = typed || quoted?.body;
 
-    if (!rawText) return msg.reply('❌ Usage: .tts [text]\nOr reply to a text message with .tts');
+    if (!rawText) return msg.reply('\u274c Usage: .tts [text]\nOr reply to a text message with .tts');
 
     // Strip markdown and emoji before checking length or sending to Fish Audio.
     // This also cleans older AI replies when the user quotes them with .tts.
     const text = stripSpeechFormatting(rawText);
-    if (!text) return msg.reply('❌ Nothing left to speak after stripping formatting from that text.');
-    if (text.length > 800) return msg.reply('❌ Keep it under 800 characters for now — long TTS jobs are slow on Fish Audio\'s free tier.');
+    if (!text) return msg.reply('\u274c Nothing left to speak after stripping formatting from that text.');
+    if (text.length > 800) return msg.reply('\u274c Keep it under 800 characters for now \u2014 long TTS jobs are slow on Fish Audio\'s free tier.');
 
+    // Filter out emojis and Fish Audio expression tags for TTS
+    const voiceText = aiMessageLedger.filterEmojisForTTS(text);
+    
     let mp3Path, oggPath;
     try {
-      const mp3Buffer = await fishAudio.synthesizeSpeech(FISH_EXPRESSION_TAGS ? speechText.applyExpressionCue(text) : text);
+      const mp3Buffer = await fishAudio.synthesizeSpeech(
+        FISH_EXPRESSION_TAGS ? speechText.applyExpressionCue(voiceText) : voiceText
+      );
 
       mp3Path = tmpFile('mp3');
       oggPath = tmpFile('ogg');
       fs.writeFileSync(mp3Path, mp3Buffer);
 
-      // Convert to ogg/opus — same ffmpeg settings commands/converter.js
-      // uses for .tovn — so it plays as a proper WhatsApp voice note
+      // Convert to ogg/opus  same ffmpeg settings commands/converter.js
+      // uses for .tovn  so it plays as a proper WhatsApp voice note
       // instead of showing up as a generic audio file attachment.
       await runFfmpeg(mp3Path, oggPath, [
         '-vn',
@@ -868,20 +928,61 @@ export default {
       const voiceData = fs.readFileSync(oggPath).toString('base64');
       const voiceMedia = new MessageMedia('audio/ogg', voiceData);
 
-      await replyTracked(msg, voiceMedia, 'voice', undefined, { sendAudioAsVoice: true });
+      await replyTracked(msg, voiceMedia, 'voice');
     } catch (err) {
       if (err.code === 'NO_FISH_KEY' || err.code === 'NO_FISH_VOICE') {
-        return msg.reply(`❌ ${err.message}`);
+        return msg.reply(`\u274c ${err.message}`);
       } else if (err.status === 402) {
-        return msg.reply('❌ Fish Audio TTS failed: out of credits/quota on your Fish Audio account.');
+        return msg.reply('\u274c Fish Audio TTS failed: out of credits/quota on your Fish Audio account.');
       } else if (err.status === 401) {
-        return msg.reply('❌ Fish Audio TTS failed: invalid FISH_API_KEY.');
+        return msg.reply('\u274c Fish Audio TTS failed: invalid FISH_API_KEY.');
       } else {
         console.error('TTS error:', err.message);
-        return msg.reply(`❌ TTS failed: ${err.message}`);
+        return msg.reply(`\u274c TTS failed: ${err.message}`);
       }
     } finally {
       cleanup(mp3Path, oggPath);
+    }
+  },
+
+  // .persona [name]  switch AI persona
+  async persona(client, msg, args) {
+    const personaName = args.join(' ').trim();
+    if (!personaName) {
+      const persona = getActivePersonaSafe();
+      const personas = await aiStickers.getAvailablePersonas();
+      const personaList = personas.map(p => `\u2022 *${p.displayName}* - ${p.description || 'No description'}`).join('\n');
+      return msg.reply(`*Current Persona: ${persona?.displayName || 'None'}*\n\n*Available Personas:*\n${personaList}`);
+    }
+
+    try {
+      const senderId = msg.author || msg.from;
+      const chat = await safeGetChat(msg);
+      const chatId = chat.id._serialized;
+      
+      // Find the persona
+      const personas = await aiStickers.getAvailablePersonas();
+      const targetPersona = personas.find(p => 
+        p.displayName.toLowerCase().includes(personaName.toLowerCase()) ||
+        p.id.toLowerCase().includes(personaName.toLowerCase())
+      );
+      
+      if (!targetPersona) {
+        const personaList = personas.map(p => `\u2022 *${p.displayName}*`).join('\n');
+        return msg.reply(`\u274c Persona not found. Available personas:\n${personaList}`);
+      }
+      
+      // Switch persona - this starts a new conversation thread
+      await switchPersona(chatId, senderId, targetPersona.id);
+      
+      // Update active persona for this session
+      const personaModule = await import('../utils/persona.js');
+      personaModule.setActivePersona(targetPersona.id);
+      
+      return msg.reply(`\u2705 Switched to persona: *${targetPersona.displayName}*\n${targetPersona.series ? `from "${targetPersona.series}"` : ''}\n\n*${targetPersona.description || 'No description'}*`);
+    } catch (err) {
+      console.error('Persona switch error:', err.message);
+      return msg.reply(`\u274c Failed to switch persona: ${err.message}`);
     }
   },
 };

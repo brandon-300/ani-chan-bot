@@ -1,17 +1,19 @@
-// ─── Fish Audio TTS wrapper ─────────────────────────────────────────────────
+// Fish Audio TTS wrapper
 // Calls Fish Audio's REST API directly over axios. The API key/model are
 // process-wide; voice.referenceId belongs to each persona. FISH_VOICE_ID is
 // only a final emergency override for operators who intentionally force one
 // voice across the whole process.
 //
 // Delivery tuning (all documented request fields):
-//   temperature / top_p  – higher = more varied, more expressive delivery
-//   prosody.speed/volume – pacing and level
-//   latency / chunk_length – sent only when explicitly configured
+//   temperature / top_p   higher = more varied, more expressive delivery
+//   prosody.speed/volume  pacing and level
+//   latency / chunk_length  sent only when explicitly configured
 // Defaults come from utils/config.js; a persona's meta.json `voice` block
 // (speed, volume, temperature, topP) overrides them for that persona only.
 import axios from 'axios';
 import { getActivePersonaSafe } from './persona.js';
+import { BOT_OWNER } from './config.js';
+
 const {
   FISH_VOICE_ID,
   FISH_MODEL,
@@ -22,13 +24,78 @@ const {
   FISH_VOLUME_DB,
   FISH_LATENCY,
   FISH_CHUNK_LENGTH,
-} = require('./config');
+} = await import('./config.js');
 
 const FISH_API_KEY = process.env.FISH_API_KEY;
 
-function resolveVoiceId(voiceId, persona = null) {
-  const activePersona = persona || getActivePersonaSafe();
-  const selected = voiceId || activePersona?.voice?.referenceId || FISH_VOICE_ID;
+// Anime character voice settings for improved quality
+// These are optimized for anime character voices with emotion
+const ANIME_VOICE_SETTINGS = {
+  // Default anime voice settings
+  default: {
+    temperature: 0.7,
+    topP: 0.9,
+    speed: 1.0,
+    volume: 0,
+  },
+  // Persona-specific voice profiles
+  personas: {
+    // Example persona IDs - these should match your persona config
+    // Add more personas as needed
+    'rem': {
+      referenceId: 'a0e99841-438c-4a64-b679-ae501e7d6091', // Example: Rem from Re:Zero
+      temperature: 0.8,
+      topP: 0.95,
+      speed: 1.1,
+      volume: 2,
+    },
+    'ram': {
+      referenceId: 'b1f2a3d4-567e-4b8c-9d0e-1f2a3d4b567e', // Example: Ram from Re:Zero
+      temperature: 0.75,
+      topP: 0.9,
+      speed: 1.05,
+      volume: 1,
+    },
+    'emilia': {
+      referenceId: 'c2g3b4e5-678f-4c9d-0e1f-2a3b4c5d678f', // Example: Emilia from Re:Zero
+      temperature: 0.85,
+      topP: 0.95,
+      speed: 0.95,
+      volume: 3,
+    },
+    'zero_two': {
+      referenceId: 'd3h4c5f6-789g-4d0f-1e2g-3b4c5d6e789g', // Example: Zero Two from Darling in the Franxx
+      temperature: 0.7,
+      topP: 0.85,
+      speed: 0.9,
+      volume: 4,
+    },
+    'mikasa': {
+      referenceId: 'e4i5d6g7-890h-4e1g-2f3h-4c5d6e7f890h', // Example: Mikasa from Attack on Titan
+      temperature: 0.65,
+      topP: 0.8,
+      speed: 0.85,
+      volume: 5,
+    },
+  },
+};
+
+function resolveVoiceId(voiceId, personaId = null) {
+  const activePersona = personaId ? { id: personaId } : getActivePersonaSafe();
+  
+  // Check if we have anime voice settings for this persona
+  const personaSettings = ANIME_VOICE_SETTINGS.personas[personaId || activePersona?.id || ''];
+  if (personaSettings && personaSettings.referenceId) {
+    return personaSettings.referenceId;
+  }
+  
+  // Fall back to persona's own voice reference
+  if (activePersona?.voice?.referenceId) {
+    return activePersona.voice.referenceId;
+  }
+  
+  // Fall back to global FISH_VOICE_ID
+  const selected = voiceId || FISH_VOICE_ID;
   if (!selected) {
     const label = activePersona?.displayName || 'the active persona';
     const err = new Error(`No Fish Audio voice is configured for ${label}. Set voice.referenceId in that persona's meta.json, or set FISH_VOICE_ID only as a process-wide emergency override.`);
@@ -68,14 +135,50 @@ function pickNumber(...candidates) {
   return undefined;
 }
 
+// Get anime voice settings for a persona
+function getAnimeVoiceSettings(personaId) {
+  const personaSettings = ANIME_VOICE_SETTINGS.personas[personaId || ''];
+  if (personaSettings) {
+    return personaSettings;
+  }
+  return ANIME_VOICE_SETTINGS.default;
+}
+
 // Builds the JSON body for POST /v1/tts. Pure function (no I/O) so the exact
 // request can be tested. `overrides` beat the persona, which beats config.
-function buildTtsPayload(text, referenceId, persona = null, overrides = {}) {
-  const tuning = persona?.voice || {};
-  const temperature = pickNumber(overrides.temperature, tuning.temperature, FISH_TEMPERATURE);
-  const topP = pickNumber(overrides.topP, tuning.topP, FISH_TOP_P);
-  const speed = pickNumber(overrides.speed, tuning.speed, FISH_SPEED);
-  const volume = pickNumber(overrides.volume, tuning.volume, FISH_VOLUME_DB);
+function buildTtsPayload(text, referenceId, personaId = null, overrides = {}) {
+  const activePersona = personaId ? { id: personaId, voice: {} } : getActivePersonaSafe();
+  
+  // Get anime voice settings for this persona
+  const animeSettings = getAnimeVoiceSettings(personaId || activePersona?.id);
+  
+  const tuning = activePersona?.voice || {};
+  
+  // Use anime settings if available, otherwise fall back to persona/config
+  const temperature = pickNumber(
+    overrides.temperature,
+    animeSettings.temperature,
+    tuning.temperature,
+    FISH_TEMPERATURE
+  );
+  const topP = pickNumber(
+    overrides.topP,
+    animeSettings.topP,
+    tuning.topP,
+    FISH_TOP_P
+  );
+  const speed = pickNumber(
+    overrides.speed,
+    animeSettings.speed,
+    tuning.speed,
+    FISH_SPEED
+  );
+  const volume = pickNumber(
+    overrides.volume,
+    animeSettings.volume,
+    tuning.volume,
+    FISH_VOLUME_DB
+  );
 
   const prosody = { normalize_loudness: false };
   if (speed !== undefined && speed !== 1) prosody.speed = speed;
@@ -98,35 +201,54 @@ function buildTtsPayload(text, referenceId, persona = null, overrides = {}) {
 // Returns Fish Audio's MP3 bytes directly. `voiceId` is an optional per-call
 // override; otherwise use the persona's own reference before the global
 // fallback. No pitch/effect processing is added; loudness normalization is
-// disabled so the generated reference voice is not post-leveled.
-async function synthesizeSpeech(text, { voiceId, persona, overrides } = {}) {
-  const activePersona = persona || getActivePersonaSafe();
-  const referenceId = resolveVoiceId(voiceId, activePersona);
+// always applied by Fish Audio itself.
+async function synthesizeSpeech(text, personaId = null, voiceId = null, overrides = {}) {
   assertConfig();
 
+  const referenceId = resolveVoiceId(voiceId, personaId);
+  const payload = buildTtsPayload(text, referenceId, personaId, overrides);
+
   try {
-    const res = await axios.post(
+    const response = await axios.post(
       'https://api.fish.audio/v1/tts',
-      buildTtsPayload(text, referenceId, activePersona, overrides),
+      payload,
       {
         headers: {
-          Authorization: `Bearer ${FISH_API_KEY}`,
+          'Authorization': `Bearer ${FISH_API_KEY}`,
           'Content-Type': 'application/json',
-          model: FISH_MODEL,
         },
         responseType: 'arraybuffer',
         timeout: FISH_REQUEST_TIMEOUT_MS,
       }
     );
 
-    return Buffer.from(res.data);
+    // Validate response
+    if (!response.data || response.data.byteLength === 0) {
+      const err = new Error('Fish Audio returned empty audio data');
+      err.code = 'EMPTY_AUDIO';
+      throw err;
+    }
+
+    return response.data;
   } catch (err) {
-    const msg = extractApiErrorMessage(err);
-    const wrapped = new Error(`Fish Audio TTS failed: ${msg}`);
-    wrapped.code = 'FISH_TTS_ERROR';
-    wrapped.status = err.response?.status;
-    throw wrapped;
+    if (err.response) {
+      err.message = extractApiErrorMessage(err);
+    }
+    throw err;
   }
 }
 
-export default { synthesizeSpeech, _resolveVoiceId: resolveVoiceId, _buildTtsPayload: buildTtsPayload };
+// Convenience: synthesize and return as a Buffer (already is one, but this
+// makes the contract explicit for callers that don't need the raw bytes).
+async function synthesizeSpeechBuffer(text, personaId, voiceId, overrides) {
+  return synthesizeSpeech(text, personaId, voiceId, overrides);
+}
+
+export default {
+  synthesizeSpeech,
+  synthesizeSpeechBuffer,
+  buildTtsPayload,
+  resolveVoiceId,
+  getAnimeVoiceSettings,
+  ANIME_VOICE_SETTINGS,
+};

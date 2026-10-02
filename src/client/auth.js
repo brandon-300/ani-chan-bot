@@ -22,12 +22,17 @@ class AuthManager {
     this.state = null;
     this.saveCreds = null;
     this.isAuthenticatedFlag = false;
+    this.initialized = false;
   }
 
   /**
    * Initialize auth state
    */
   async init() {
+    if (this.initialized) {
+      return;
+    }
+    
     try {
       const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
       this.state = state;
@@ -35,6 +40,7 @@ class AuthManager {
       
       // Check if authenticated
       this.isAuthenticatedFlag = this.checkAuthenticated();
+      this.initialized = true;
       
       console.log('Auth state initialized');
     } catch (error) {
@@ -96,9 +102,34 @@ class AuthManager {
       // For now, just reset the flag
       // Actual file cleanup would need to delete the auth directory
       this.isAuthenticatedFlag = false;
+      this.state = null;
+      this.saveCreds = null;
       console.log('Auth state cleared');
     } catch (error) {
       console.error('Failed to clear auth state:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get pairing code for Termux
+   * Uses PHONE_NUMBER from .env
+   */
+  async getPairingCode(sock) {
+    if (!sock) {
+      throw new Error('Socket not provided');
+    }
+    
+    const phoneNumber = process.env.PHONE_NUMBER;
+    if (!phoneNumber) {
+      throw new Error('PHONE_NUMBER not set in .env, cannot generate pairing code');
+    }
+    
+    try {
+      const pairingCode = await sock.requestPairingCode(phoneNumber);
+      return pairingCode;
+    } catch (error) {
+      console.error('Failed to generate pairing code:', error);
       throw error;
     }
   }
