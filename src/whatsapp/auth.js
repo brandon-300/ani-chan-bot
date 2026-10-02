@@ -1,5 +1,5 @@
 /**
- * Auth Manager
+ * Auth Manager for WhatsApp Adapter
  * Handles authentication state for Baileys
  * Uses multi-file auth state for Termux compatibility
  */
@@ -30,7 +30,7 @@ class AuthManager {
    */
   async init() {
     if (this.initialized) {
-      return;
+      return this.state;
     }
     
     try {
@@ -42,9 +42,10 @@ class AuthManager {
       this.isAuthenticatedFlag = this.checkAuthenticated();
       this.initialized = true;
       
-      console.log('Auth state initialized');
+      console.log('✅ Auth state initialized');
+      return this.state;
     } catch (error) {
-      console.error('Failed to initialize auth state:', error);
+      console.error('❌ Failed to initialize auth state:', error);
       throw error;
     }
   }
@@ -99,14 +100,13 @@ class AuthManager {
    */
   async clear() {
     try {
-      // For now, just reset the flag
-      // Actual file cleanup would need to delete the auth directory
       this.isAuthenticatedFlag = false;
       this.state = null;
       this.saveCreds = null;
-      console.log('Auth state cleared');
+      this.initialized = false;
+      console.log('✅ Auth state cleared');
     } catch (error) {
-      console.error('Failed to clear auth state:', error);
+      console.error('❌ Failed to clear auth state:', error);
       throw error;
     }
   }
@@ -120,16 +120,18 @@ class AuthManager {
       throw new Error('Socket not provided');
     }
     
-    const phoneNumber = process.env.PHONE_NUMBER;
+    const phoneNumber = process.env.PHONE_NUMBER || process.env.BOT_NUMBER;
     if (!phoneNumber) {
-      throw new Error('PHONE_NUMBER not set in .env, cannot generate pairing code');
+      throw new Error('PHONE_NUMBER or BOT_NUMBER not set in .env, cannot generate pairing code');
     }
     
     try {
+      console.log(`🔑 Requesting pairing code for: ${phoneNumber}`);
       const pairingCode = await sock.requestPairingCode(phoneNumber);
+      console.log(`✅ Pairing code generated: ${pairingCode}`);
       return pairingCode;
     } catch (error) {
-      console.error('Failed to generate pairing code:', error);
+      console.error('❌ Failed to generate pairing code:', error);
       throw error;
     }
   }
@@ -137,10 +139,5 @@ class AuthManager {
 
 // Singleton instance
 const authManager = new AuthManager();
-
-// Initialize immediately
-authManager.init().catch(err => {
-  console.error('Failed to initialize auth manager:', err);
-});
 
 export default authManager;

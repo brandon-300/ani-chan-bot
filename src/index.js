@@ -7,11 +7,10 @@ import 'dotenv/config';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import mongoose from 'mongoose';
-import fs from 'fs';
 import { execSync } from 'child_process';
 
 // Import utilities
-import { safeGetQuotedMessage, safeGetChat, safeGetContact, resolveSenderName, withRetry, decodeIdKey, isOwner, isMod, buildRegistrationIntroText, buildRegistrationProgressText } from './utils/helpers.js';
+import { resolveSenderName, withRetry, decodeIdKey, isOwner, isMod, buildRegistrationIntroText, buildRegistrationProgressText } from './utils/helpers.js';
 import { BOT_NAME, MONGODB_URI, BOT_PREFIX, AI_CALL_NAMES_OVERRIDE } from './utils/config.js';
 import { getActivePersonaSafe } from './utils/persona.js';
 import aiStickers from './utils/aiStickers.js';
@@ -20,14 +19,11 @@ import logger from './utils/logger.js';
 import geminiGate from './utils/geminiGate.js';
 import { tryHandleQuizAnswer } from './commands/games/quiz.js';
 
-// Import Baileys components
-import socketManager from './client/socket.js';
-import authManager from './client/auth.js';
-import { normalizeMessage, safeGetQuotedMessage as safeGetQuoted, safeGetChat as safeGetChatWrapper, safeGetContact as safeGetContactWrapper } from './middleware/normalizeMessage.js';
-import mediaService from './services/media.js';
+// Import WhatsApp adapter
+import wa from './whatsapp/index.js';
+import { MessageMedia } from './whatsapp/index.js';
 
 // Set up global MessageMedia for compatibility
-import { MessageMedia } from './services/media.js';
 global.MessageMedia = MessageMedia;
 
 const __filename = fileURLToPath(import.meta.url);
@@ -48,7 +44,7 @@ async function connectMongo() {
   try {
     await mongoose.connect(process.env.MONGO_URI || MONGODB_URI, mongoOptions);
     operation.finish('success', { readyState: mongoose.connection.readyState });
-    console.log('✅ MongoDB connected');
+    console.log('\u2705 MongoDB connected');
 
     // Initialize AI stickers
     aiStickers.initialize().catch(err => {
@@ -77,7 +73,7 @@ async function connectMongo() {
             { $setOnInsert: { count, lastAt: group.updatedAt || new Date() } },
             { upsert: true }
           ).catch(err => {
-            console.error(`⚠️  GroupActivity migration failed for ${group.id}:`, err.message);
+            console.error(`\u26a0\ufe0f  GroupActivity migration failed for ${group.id}:`, err.message);
           });
         }
       }
@@ -97,8 +93,8 @@ async function connectMongo() {
 // Connect to MongoDB
 connectMongo();
 
-// Initialize socket manager
-const sock = socketManager.getSocket();
+// Initialize WhatsApp adapter
+const client = wa;
 
 // Background task counter
 let backgroundTaskCounter = 0;
@@ -182,7 +178,7 @@ try {
   console.error('Failed to read commands directory:', err.message);
 }
 
-console.log(`✅ Loaded ${Object.keys(commands).length} commands`);
+console.log(`\u2705 Loaded ${Object.keys(commands).length} commands`);
 
 // Aliases
 const aliases = {
@@ -229,11 +225,11 @@ function extractMenuCommands(cmdField) {
 // Send quick menu
 async function sendQuickMenu(msg) {
   const header = `
-╔═══════════════════════════════════════════════════════════════╗
-║                    *${BOT_NAME}*                        ║
-║  📱 Prefix: ${BOT_PREFIX}                                   ║
-║  📝 Commands: ${Object.keys(commands).length}                            ║
-╚═══════════════════════════════════════════════════════════════╝`;
+\u2554\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2557
+\u2551                    *${BOT_NAME}*                        \u2551
+\u2551  \ud83d\udcf1 Prefix: ${BOT_PREFIX}                                   \u2551
+\u2551  \ud83d\udcdd Commands: ${Object.keys(commands).length}                            \u2551
+\u255a\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u255d`;
 
   const body = COMMAND_REFERENCE.map(section => {
     const seen = new Set();
@@ -258,8 +254,8 @@ async function sendQuickMenu(msg) {
         }
       }
     }
-    const lines = cmds.map(cmd => `✦ ${cmd}`).join('\n');
-    return `*${section.emoji} ${section.title} ${section.emoji}*\n${lines}\n════════════════════`;
+    const lines = cmds.map(cmd => `\u2726 ${cmd}`).join('\n');
+    return `*${section.emoji} ${section.title} ${section.emoji}*\n${lines}\n\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550`;
   }).join('\n\n');
 
   const menu = `${header}\n\n${body}\n\nType *${BOT_PREFIX}<command>* to use one.`;
@@ -267,7 +263,6 @@ async function sendQuickMenu(msg) {
   try {
     let imageUrl;
     try {
-      // For now, use the fallback image
       imageUrl = process.env.MENU_IMAGE_URL || '';
     } catch (err) {
       console.error('Menu: failed to fetch bot profile picture, using fallback image:', err.message);
@@ -287,7 +282,6 @@ async function sendQuickMenu(msg) {
 }
 
 // Attach sendQuickMenu to client
-const client = socketManager;
 client.sendQuickMenu = sendQuickMenu;
 
 // Heavy commands
@@ -307,14 +301,7 @@ const REGISTRATION_BYPASS_COMMANDS = new Set(['reg', 'setname', 'setdob', 'bio',
 
 // Registration gate
 async function checkRegistrationGate(msg, command) {
-  let senderId = null;
-  try {
-    const contact = await safeGetContactWrapper(msg);
-    senderId = contact?.id?._serialized || null;
-  } catch (err) {
-    console.error('Registration gate: contact lookup failed:', err.message);
-  }
-  if (!senderId) senderId = msg.author || msg.from;
+  let senderId = msg.author || msg.from;
 
   if (isOwner(senderId) || isMod(senderId)) {
     return { blocked: false, senderId, wasActive: true };
@@ -406,7 +393,7 @@ const THIRD_PERSON_PREDICATES = new Set([
 ]);
 
 function isCommandMenuRequest(rawBody) {
-  const text = String(rawBody || '').toLowerCase().replace(/[’]/g, "'").trim();
+  const text = String(rawBody || '').toLowerCase().replace(/[\u2019]/g, "'").trim();
   if (!text) return false;
   return [
     /\b(?:what|which)\s+(?:are|r)\s+(?:your|the)\s+commands?\b/,
@@ -443,94 +430,91 @@ function isCallingBotByName(rawBody) {
   return false;
 }
 
-// Initialize socket and setup event handlers
+// Initialize and setup event handlers
 async function initialize() {
   try {
-    // Initialize socket
-    await socketManager.init();
+    // Initialize WhatsApp adapter
+    await wa.init();
     
-    // Set up socket event handlers for messages
-    socketManager.on('message', async (baileysMsg) => {
+    // Set up message handler
+    wa.on('message', async (baileysMsg) => {
       try {
-        // Normalize the message
-        const msg = normalizeMessage(baileysMsg);
-        
         // Skip if from bot itself
-        if (msg.fromMe) {
-          logger.debug('message.ignored', { reason: 'from_me', messageType: msg.type });
+        if (baileysMsg.fromMe) {
+          logger.debug('message.ignored', { reason: 'from_me', messageType: baileysMsg.type });
           return;
         }
 
         // Handle sticker import
-        if (msg.type === 'sticker') {
-          const imported = await aiStickers.handleIncomingSticker(client, msg).catch(err => {
-            logger.error('route.ai_sticker_import.failed', err, { chatId: msg.from });
+        if (baileysMsg.type === 'sticker') {
+          const imported = await aiStickers.handleIncomingSticker(client, baileysMsg).catch(err => {
+            logger.error('route.ai_sticker_import.failed', err, { chatId: baileysMsg.from });
             return false;
           });
           if (imported) {
-            logger.write('INFO', 'route.ai_sticker_import', { messageType: msg.type, chatId: msg.from });
+            logger.write('INFO', 'route.ai_sticker_import', { messageType: baileysMsg.type, chatId: baileysMsg.from });
             return;
           }
         }
 
         // Handle quiz answers
         try {
-          if (await tryHandleQuizAnswer(client, msg)) {
-            logger.write('INFO', 'route.quiz_answer', { chatId: msg.from, messageType: msg.type });
+          if (await tryHandleQuizAnswer(client, baileysMsg)) {
+            logger.write('INFO', 'route.quiz_answer', { chatId: baileysMsg.from, messageType: baileysMsg.type });
             return;
           }
         } catch (err) {
-          logger.error('route.quiz_answer.failed', err, { chatId: msg.from });
+          logger.error('route.quiz_answer.failed', err, { chatId: baileysMsg.from });
         }
 
         // Queue command processing
-        enqueueCommand(msg.from, async () => {
+        enqueueCommand(baileysMsg.chatId || baileysMsg.from, async () => {
           try {
-            const body = msg.body || '';
+            const body = baileysMsg.body || '';
             let command;
             let args;
 
             if (!body.startsWith(BOT_PREFIX)) {
-              const mentionsBot = msg.mentionedIds &&
-                msg.mentionedIds.includes(client.info?.wid?._serialized || '');
+              const mentionsBot = baileysMsg.mentionedIds &&
+                baileysMsg.mentionedIds.includes(client.info?.wid?._serialized || '');
               
               if (mentionsBot) {
-                return await sendQuickMenu(msg);
+                return await sendQuickMenu(baileysMsg);
               }
 
-              const quoted = msg.hasQuotedMsg ? await safeGetQuoted(msg).catch(() => null) : null;
+              const quoted = baileysMsg.hasQuotedMsg ? await baileysMsg.getQuotedMessage().catch(() => null) : null;
 
               if (quoted && quoted.fromMe) {
-                const replyKind = classifyReplyKind(msg);
+                const replyKind = classifyReplyKind(baileysMsg);
                 if (replyKind === 'other') {
-                  logger.debug('message.ignored', { reason: 'unsupported_reply_to_bot', chatId: msg.from, messageType: msg.type });
+                  logger.debug('message.ignored', { reason: 'unsupported_reply_to_bot', chatId: baileysMsg.from, messageType: baileysMsg.type });
                   return;
                 }
-                msg._aiStickerReply = replyKind === 'sticker';
-                const typed = (msg.body || '').trim();
+                baileysMsg._aiStickerReply = replyKind === 'sticker';
+                const typed = (baileysMsg.body || '').trim();
                 args = typed
                   ? typed.split(/\s+/)
                   : (replyKind === 'image' ? ['Take', 'a', 'look', 'and', 'respond', 'naturally.'] : []);
                 command = isVoiceNoteMessage(quoted) ? 'voice' : 'copilot';
               } else {
-                const chat = await safeGetChatWrapper(msg);
+                const chat = await baileysMsg.getChat();
                 if (chat && !chat.isGroup && !String(chat.id?._serialized || '').endsWith('@g.us')) {
-                  if (isVoiceNoteMessage(msg)) {
+                  if (isVoiceNoteMessage(baileysMsg)) {
                     command = 'voice';
                     args = [];
-                  } else if (msg.type === 'chat' && !msg.hasMedia && body.trim()) {
+                  } else if (baileysMsg.type === 'chat' && !baileysMsg.hasMedia && body.trim()) {
                     command = isCommandMenuRequest(body) ? 'menu' : 'copilot';
                     args = [body.trim()];
                   } else {
-                    logger.debug('message.ignored', { reason: 'unsupported_dm_message', chatId: msg.from, messageType: msg.type });
+                    logger.debug('message.ignored', { reason: 'unsupported_dm_message', chatId: baileysMsg.from, messageType: baileysMsg.type });
                     return;
                   }
                 } else {
                   if (!isCallingBotByName(body)) {
-                    logger.debug('message.ignored', { reason: 'group_not_addressed_to_bot', chatId: msg.from, messageType: msg.type });
+                    logger.debug('message.ignored', { reason: 'group_not_addressed_to_bot', chatId: baileysMsg.from, messageType: baileysMsg.type });
                     return;
                   }
-                  const quoted = msg.hasQuotedMsg ? await safeGetQuoted(msg).catch(() => null) : null;
+                  const quoted = baileysMsg.hasQuotedMsg ? await baileysMsg.getQuotedMessage().catch(() => null) : null;
                   const quotedText = quoted ? (quoted.body || '').trim() : '';
                   const prompt = quotedText
                     ? `${body}\n\n(They're replying to this message: "${quotedText}")`
@@ -547,7 +531,7 @@ async function initialize() {
             }
 
             // Registration gate
-            const registrationCheck = await checkRegistrationGate(msg, command).catch(err => {
+            const registrationCheck = await checkRegistrationGate(baileysMsg, command).catch(err => {
               logger.error('registration.gate.failed_open', err, { command });
               return { blocked: false, senderId: null, wasActive: true };
             });
@@ -558,9 +542,9 @@ async function initialize() {
 
             // Gemini gate
             if (geminiGate.shouldBlockCommand(command)) {
-              logger.write('INFO', 'gemini.gate.blocked', { command, from: msg.from });
+              logger.write('INFO', 'gemini.gate.blocked', { command, from: baileysMsg.from });
               try {
-                await msg.reply(geminiGate.BUSY_MESSAGE);
+                await baileysMsg.reply(geminiGate.BUSY_MESSAGE);
               } catch (replyErr) {
                 logger.error('gemini.gate.reply_failed', replyErr, { command });
               }
@@ -570,35 +554,35 @@ async function initialize() {
             // Task ID and logging
             const taskId = nextTaskId();
             const receivedAt = new Date().toLocaleString();
-            const senderName = msg.pushName || msg.author || msg.from;
-            const chatLabel = chat?.name || msg.from;
+            const senderName = baileysMsg.pushName || baileysMsg.author || baileysMsg.from;
+            const chatLabel = chat?.name || baileysMsg.from;
             const queuePosition = inFlightCount + 1;
             const isHeavy = HEAVY_COMMANDS.has(command);
             inFlightCount++;
 
             logger.write('INFO', 'command.accepted', {
               taskId, command, argsPreview: args.map(arg => String(arg).slice(0, 160)), senderName, chatLabel, receivedAt,
-              queuePosition, queue: isHeavy ? 'heavy' : 'normal', from: msg.from,
+              queuePosition, queue: isHeavy ? 'heavy' : 'normal', from: baileysMsg.from,
             });
 
             // Resolve handler
             let handlerFn = null;
 
             if (command === 'menu' || command === 'help') {
-              handlerFn = () => sendQuickMenu(msg);
+              handlerFn = () => sendQuickMenu(baileysMsg);
             }
 
             if (!handlerFn && command === 'antilink' && args[0]?.toLowerCase() === 'action') {
               args.shift();
               if (commands['antilinkaction']) {
-                handlerFn = () => commands['antilinkaction'](client, msg, args);
+                handlerFn = () => commands['antilinkaction'](client, baileysMsg, args);
               }
             }
 
             if (!handlerFn && command === 'guild' && args.length > 0) {
               const sub = `guild_${args.shift().toLowerCase()}`;
               if (commands[sub]) {
-                handlerFn = () => commands[sub](client, msg, args);
+                handlerFn = () => commands[sub](client, baileysMsg, args);
               }
             }
 
@@ -606,27 +590,27 @@ async function initialize() {
               const sub = `pet_${args[0].toLowerCase()}`;
               if (commands[sub]) {
                 args.shift();
-                handlerFn = () => commands[sub](client, msg, args);
+                handlerFn = () => commands[sub](client, baileysMsg, args);
               }
             }
 
             if (!handlerFn && commands[command]) {
-              handlerFn = () => commands[command](client, msg, args);
+              handlerFn = () => commands[command](client, baileysMsg, args);
             }
 
             if (!handlerFn) {
               logger.write('WARN', 'command.unknown', { taskId, command, args, senderName, chatLabel });
               inFlightCount = Math.max(0, inFlightCount - 1);
-              return await msg.reply(`❌ Unknown command: *${BOT_PREFIX}${command}*\nType *${BOT_PREFIX}menu* to see what's available.`);
+              return await baileysMsg.reply(`\u274c Unknown command: *${BOT_PREFIX}${command}*\nType *${BOT_PREFIX}menu* to see what's available.`);
             }
 
             // Usage tracking
             let trackedHandlerFn = handlerFn;
             try {
-              const trackChat = await safeGetChatWrapper(msg);
-              const trackContact = await safeGetContactWrapper(msg);
+              const trackChat = await baileysMsg.getChat();
+              const trackContact = await baileysMsg.getContact();
               const usageGroupId = trackChat?.isGroup ? trackChat.id._serialized : 'DM';
-              const usageUserId = trackContact?.id._serialized || (msg.author || msg.from);
+              const usageUserId = trackContact?.id._serialized || (baileysMsg.author || baileysMsg.from);
               trackedHandlerFn = wrapWithUsageTracking(handlerFn, { groupId: usageGroupId, userId: usageUserId, command });
             } catch (err) {
               logger.error('usage.context.failed', err, { command });
@@ -643,7 +627,7 @@ async function initialize() {
                   heavyStatus = 'failed';
                   logger.error('command.heavy.failed', err, { taskId, command, queuePosition: heavyPosition });
                   try {
-                    await msg.reply('❌ An error occurred while processing your request. Please try again.');
+                    await baileysMsg.reply('\u274c An error occurred while processing your request. Please try again.');
                   } catch (replyErr) {
                     logger.error('command.error_reply_failed', replyErr, { taskId, command });
                   }
@@ -657,9 +641,9 @@ async function initialize() {
 
               try {
                 if (command === 'play') {
-                  await msg.react('▶️');
+                  await baileysMsg.react('\u25b6\ufe0f');
                 } else if (command !== 'news') {
-                  await msg.react('⏳');
+                  await baileysMsg.react('\u23f3');
                 }
               } catch (err) {
                 console.error('Failed to react to queued command:', err.message);
@@ -678,7 +662,7 @@ async function initialize() {
                   const User = await import('./models/User.js');
                   const freshUser = await User.default.findOne({ id: registrationCheck.senderId }, 'registration').lean();
                   if (freshUser?.registration?.status === 'active') {
-                    await sendQuickMenu(msg);
+                    await sendQuickMenu(baileysMsg);
                   }
                 } catch (err) {
                   console.error('Post-registration menu send failed:', err.message);
@@ -686,31 +670,31 @@ async function initialize() {
               }
             } catch (err) {
               logger.error('command.normal.failed', err, { taskId, command });
-              await msg.reply('❌ An error occurred. Please try again.');
+              await baileysMsg.reply('\u274c An error occurred. Please try again.');
             } finally {
               inFlightCount = Math.max(0, inFlightCount - 1);
             }
           } catch (err) {
-            logger.error('command.dispatch.failed', err, { chatId: msg.from });
-            await msg.reply('❌ An error occurred. Please try again.').catch(() => {});
+            logger.error('command.dispatch.failed', err, { chatId: baileysMsg.from });
+            await baileysMsg.reply('\u274c An error occurred. Please try again.').catch(() => {});
           }
         });
       } catch (err) {
-        logger.error('message.handler.failed', err, { chatId: msg.from });
+        logger.error('message.handler.failed', err, { chatId: baileysMsg.from });
       }
     });
 
     // Setup other event handlers
-    socketManager.on('qr', (qr) => {
+    wa.on('qr', (qr) => {
       console.log('QR Code:', qr);
     });
 
-    socketManager.on('authenticated', () => {
-      console.log('✅ WhatsApp authenticated');
+    wa.on('authenticated', () => {
+      console.log('\u2705 WhatsApp authenticated');
     });
 
-    socketManager.on('ready', async () => {
-      console.log('✅ WhatsApp ready');
+    wa.on('ready', async () => {
+      console.log('\u2705 WhatsApp ready');
       
       // Initialize background tasks
       const scheduler = await import('./utils/scheduler.js');
@@ -768,16 +752,16 @@ async function initialize() {
       }
     });
 
-    socketManager.on('disconnected', (reason) => {
-      console.log('❌ WhatsApp disconnected:', reason);
+    wa.on('disconnected', (reason) => {
+      console.log('\u274c WhatsApp disconnected:', reason);
     });
 
-    socketManager.on('error', (err) => {
+    wa.on('error', (err) => {
       console.error('Client error:', err);
     });
 
     // Group events
-    socketManager.on('group_join', async (notification) => {
+    wa.on('group_join', async (notification) => {
       try {
         const { commands: cmds } = await import('./commands/admin.js');
         if (cmds && cmds.onJoin) await cmds.onJoin(client, notification);
@@ -786,7 +770,7 @@ async function initialize() {
       }
     });
 
-    socketManager.on('group_leave', async (notification) => {
+    wa.on('group_leave', async (notification) => {
       try {
         const { commands: cmds } = await import('./commands/admin.js');
         if (cmds && cmds.onLeave) await cmds.onLeave(client, notification);
@@ -796,10 +780,10 @@ async function initialize() {
     });
 
     // AFK mention check
-    socketManager.on('message', async (msg) => {
+    wa.on('message', async (msg) => {
       try {
         if (msg.fromMe) return;
-        const contact = await safeGetContactWrapper(msg);
+        const contact = await msg.getContact();
         const { _checkAfkMentions } = await import('./commands/afk.js');
         if (_checkAfkMentions) await _checkAfkMentions(client, msg);
       } catch (err) {
@@ -808,10 +792,10 @@ async function initialize() {
     });
 
     // AFK welcome-back check
-    socketManager.on('message', async (msg) => {
+    wa.on('message', async (msg) => {
       try {
         if (msg.fromMe) return;
-        const contact = await safeGetContactWrapper(msg);
+        const contact = await msg.getContact();
         const { _checkAfkReturn } = await import('./commands/afk.js');
         if (_checkAfkReturn) await _checkAfkReturn(msg, contact.id._serialized);
       } catch (err) {
@@ -819,8 +803,8 @@ async function initialize() {
       }
     });
 
-    // Activity tracking
-    socketManager.on('message', async (msg) => {
+    // Activity tracking for antilink
+    wa.on('message', async (msg) => {
       try {
         if (!msg.from.endsWith('@g.us')) return;
         if (!msg.body) return;
@@ -851,23 +835,23 @@ async function initialize() {
 
         if (action === 'kick') {
           try {
-            await chat.removeParticipants([contact.id._serialized]);
+            await wa.removeParticipants(chat.id._serialized, [contact.id._serialized]);
             await msg.reply(
-              `🚫 @${contact.id.user} was kicked for sending a link.`,
+              `\ud83d\udeab @${contact.id.user} was kicked for sending a link.`,
               undefined,
               { mentions: [contact.id._serialized] }
             );
           } catch (err) {
             console.error('Antilink: kick failed:', err.message);
             await msg.reply(
-              `⚠️ @${contact.id.user} sent a link but couldn't be kicked (am I an admin?).`,
+              `\u26a0\ufe0f @${contact.id.user} sent a link but couldn't be kicked (am I an admin?).`,
               undefined,
               { mentions: [contact.id._serialized] }
             );
           }
         } else {
           await msg.reply(
-            `⚠️ @${contact.id.user} don't send links here!`,
+            `\u26a0\ufe0f @${contact.id.user} don't send links here!`,
             undefined,
             { mentions: [contact.id._serialized] }
           );
@@ -884,12 +868,12 @@ async function initialize() {
     });
 
     // Activity tracking for groups
-    socketManager.on('message', async (msg) => {
+    wa.on('message', async (msg) => {
       try {
         if (!msg.from.endsWith('@g.us')) return;
 
-        const chat = await safeGetChatWrapper(msg);
-        const contact = await safeGetContactWrapper(msg);
+        const chat = await msg.getChat();
+        const contact = await msg.getContact();
         const senderId = contact.id._serialized;
 
         const Group = await import('./models/Group.js');
@@ -906,7 +890,8 @@ async function initialize() {
           { upsert: true }
         ));
 
-        await withRetry(() => GroupActivity.findOneAndUpdate(
+        const GroupActivity = await import('./models/GroupActivity.js');
+        await withRetry(() => GroupActivity.default.findOneAndUpdate(
           { groupId: chat.id._serialized, userId: senderId },
           { $inc: { count: 1 }, $set: { lastAt: new Date() } },
           { upsert: true }
@@ -955,11 +940,11 @@ async function initialize() {
       }
     }, 60000);
 
-    console.log('\n╔═══════════════════════════════════════════════════════════════╗');
-    console.log(`║                    ${BOT_NAME} is ONLINE                      ║`);
-    console.log(`║  Prefix : ${BOT_PREFIX}                                                  ║`);
-    console.log(`║  Commands: ${Object.keys(commands).length}                                               ║`);
-    console.log('╚═══════════════════════════════════════════════════════════════╝\n');
+    console.log('\n\u2554\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2557');
+    console.log(`\u2551                    ${BOT_NAME} is ONLINE                      \u2551`);
+    console.log(`\u2551  Prefix : ${BOT_PREFIX}                                                  \u2551`);
+    console.log(`\u2551  Commands: ${Object.keys(commands).length}                                               \u2551`);
+    console.log('\u255a\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u255d\n');
 
   } catch (error) {
     console.error('Initialization error:', error);

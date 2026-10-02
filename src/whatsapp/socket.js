@@ -1,6 +1,6 @@
 /**
- * Baileys Socket Connection Manager
- * Handles the WebSocket connection to WhatsApp
+ * Socket Manager for WhatsApp Adapter
+ * Handles the WebSocket connection to WhatsApp using Baileys
  * 
  * For Termux on Android:
  * - Uses pairing code instead of QR code
@@ -20,7 +20,7 @@ const __dirname = path.dirname(__filename);
 
 const AUTH_DIR = path.join(__dirname, '../../../auth_info_baileys');
 
-// Logger configuration - silent for production, debug for development
+// Logger configuration
 const logger = pino({
   level: process.env.LOG_LEVEL || 'silent',
 });
@@ -28,14 +28,14 @@ const logger = pino({
 // Signal key store for E2E
 const signalKeyStore = makeCacheableSignalKeyStore(logger);
 
-// Simple in-memory cache for message retry (replaces NodeCache for Termux compatibility)
+// Simple in-memory cache for message retry (Termux compatible)
 const msgRetryCounterCache = new Map();
 
 // Clean up old cache entries periodically
 setInterval(() => {
   const now = Date.now();
   for (const [key, value] of msgRetryCounterCache) {
-    if (now - value.timestamp > 600000) { // 10 minutes
+    if (now - value.timestamp > 600000) {
       msgRetryCounterCache.delete(key);
     }
   }
@@ -50,7 +50,6 @@ class SimpleCache {
     this.stdTTL = stdTTL;
     this.checkperiod = checkperiod;
     
-    // Cleanup interval
     this.interval = setInterval(() => {
       const now = Date.now();
       for (const [key, value] of this.store) {
@@ -79,7 +78,6 @@ class SimpleCache {
   }
 }
 
-// Message retry cache for Termux/low memory
 const simpleMsgRetryCache = new SimpleCache(600, 60);
 
 /**
@@ -108,6 +106,7 @@ class SocketManager {
       group_leave: [],
       group_update: [],
       message_reaction: [],
+      pairing_code: [],
     };
     
     // Bot's own JID (populated after connection)
@@ -116,7 +115,7 @@ class SocketManager {
     // Track bot's sent messages for reaction detection
     this.sentMessages = new Map();
     
-    // Track if event handlers are set up to prevent duplicates
+    // Track if event handlers are set up
     this.eventHandlersSetup = false;
   }
 
@@ -142,6 +141,13 @@ class SocketManager {
    */
   getWid() {
     return this.info?.wid?._serialized || this.sock?.user?.id;
+  }
+
+  /**
+   * Get bot's user info
+   */
+  getUser() {
+    return this.sock?.user;
   }
 
   /**
@@ -174,7 +180,6 @@ class SocketManager {
       return versionInfo;
     } catch (error) {
       logger.warn('Could not fetch latest Baileys version, using fallback');
-      // Fallback to a known working version
       return [2, 2414, 12];
     }
   }
@@ -190,23 +195,25 @@ class SocketManager {
    * Register a sent message for reaction tracking
    */
   registerSentMessage(key, msg) {
-    this.sentMessages.set(key.id, { key, msg, timestamp: Date.now() });
-    // Clean up old messages after 1 hour
-    setTimeout(() => this.sentMessages.delete(key.id), 3600000);
+    const msgKey = key.id || key._serialized;
+    this.sentMessages.set(msgKey, { key, msg, timestamp: Date.now() });
+    setTimeout(() => this.sentMessages.delete(msgKey), 3600000);
   }
 
   /**
    * Check if a message was sent by the bot
    */
   isBotMessage(key) {
-    return this.sentMessages.has(key.id);
+    const msgKey = key.id || key._serialized;
+    return this.sentMessages.has(msgKey);
   }
 
   /**
    * Get the bot's sent message by key
    */
   getBotSentMessage(key) {
-    return this.sentMessages.get(key.id);
+    const msgKey = key.id || key._serialized;
+    return this.sentMessages.get(msgKey);
   }
 
   /**
@@ -224,17 +231,16 @@ class SocketManager {
     }
 
     this.isConnecting = true;
-    logger.info('Initializing Baileys socket...');
+    logger.info('🔌 Initializing Baileys socket...');
 
     try {
-      // Get auth state
+      // Ensure auth is initialized first
+      await authManager.init();
+      
       const authState = authManager.getState();
       const needsPairing = !authManager.isAuthenticated();
-
-      // Get version - await the promise
       const version = await this.getBaileysVersion();
 
-      // Create socket configuration
       const sockConfig = {
         version,
         auth: authState,
@@ -250,42 +256,35 @@ class SocketManager {
         syncFullHistory: false,
         shouldSyncHistoryMessage: (msg) => false,
         generateHighQualityLinkPreview: true,
-        // For Termux - prefer pairing code
-        ...(needsPairing && {
-          getMessage: async (key) => {
-            // Handle message retrieval if needed
-            return {};
-          },
-        }),
+        getMessage: async (key) => {
+          return {};
+        },
       };
 
-      // Create socket
       this.sock = makeWASocket(sockConfig);
 
-      // Store bot info
       this.info = {
         wid: this.sock.user,
         pushname: this.sock.user?.name,
       };
 
-      // Setup event handlers - only once!
       if (!this.eventHandlersSetup) {
         this.setupEventHandlers();
         this.eventHandlersSetup = true;
       }
 
       this.isConnecting = false;
-      logger.info('Baileys socket initialized');
+      logger.info('✅ Baileys socket initialized');
 
     } catch (error) {
       this.isConnecting = false;
-      logger.error('Failed to initialize socket:', error);
+      logger.error('❌ Failed to initialize socket:', error);
       throw error;
     }
   }
 
   /**
-   * Setup event handlers - called only once
+   * Setup event handlers
    */
   setupEventHandlers() {
     if (!this.sock) return;
@@ -294,9 +293,9 @@ class SocketManager {
     this.sock.ev.on('creds.update', async () => {
       try {
         await authManager.saveCreds();
-        logger.info('Credentials updated and saved');
+        logger.info('🔑 Credentials updated and saved');
       } catch (error) {
-        logger.error('Failed to save credentials:', error);
+        logger.error('❌ Failed to save credentials:', error);
       }
     });
 
@@ -317,60 +316,31 @@ class SocketManager {
   }
 
   /**
-   * Handle pairing code generation
-   */
-  async handlePairingCode() {
-    if (!authManager.isAuthenticated()) {
-      try {
-        const phoneNumber = process.env.PHONE_NUMBER;
-        if (phoneNumber) {
-          const pairingCode = await this.sock.requestPairingCode(phoneNumber);
-          logger.info('Pairing code generated:', pairingCode);
-          this.emit('pairing_code', pairingCode);
-        } else {
-          logger.warn('PHONE_NUMBER not set in .env, cannot generate pairing code');
-          // Fall back to QR
-          this.sock.ev.on('connection.update', (update) => {
-            if (update.qr) {
-              this.emit('qr', update.qr);
-            }
-          });
-        }
-      } catch (error) {
-        logger.error('Failed to generate pairing code:', error);
-      }
-    }
-  }
-
-  /**
    * Handle connection update
    */
   async handleConnectionUpdate(update) {
     const { connection, lastDisconnect, qr, isNewLogin } = update;
 
-    // Handle QR code
     if (qr) {
-      logger.info('QR code generated');
+      logger.info('📱 QR code generated');
       this.emit('qr', qr);
     }
 
-    // New login
     if (isNewLogin) {
-      logger.info('New login detected');
+      logger.info('✅ New login detected');
       this.isConnected = true;
       this.reconnectAttempts = 0;
       this.emit('authenticated');
-      this.handlePairingCode();
+      await this.handlePairingCode();
     }
 
-    // Connection states
     switch (connection) {
       case 'connecting':
-        logger.info('Connecting to WhatsApp...');
+        logger.info('🔄 Connecting to WhatsApp...');
         break;
 
       case 'open':
-        logger.info('Connected to WhatsApp');
+        logger.info('✅ Connected to WhatsApp');
         this.isConnected = true;
         this.reconnectAttempts = 0;
         this.emit('ready');
@@ -381,10 +351,10 @@ class SocketManager {
         const shouldReconnect = lastDisconnect?.error instanceof Boom;
         
         if (shouldReconnect) {
-          logger.warn('Connection closed, attempting to reconnect...');
+          logger.warn('⚠️ Connection closed, attempting to reconnect...');
           this.scheduleReconnect(lastDisconnect.error);
         } else {
-          logger.info('Connection closed gracefully');
+          logger.info('ℹ️ Connection closed gracefully');
         }
         
         this.emit('disconnected', lastDisconnect);
@@ -396,10 +366,25 @@ class SocketManager {
   }
 
   /**
+   * Handle pairing code generation
+   */
+  async handlePairingCode() {
+    if (!authManager.isAuthenticated()) {
+      try {
+        const pairingCode = await authManager.getPairingCode(this.sock);
+        this.emit('pairing_code', pairingCode);
+      } catch (error) {
+        logger.error('❌ Failed to generate pairing code:', error);
+        // Fall back to QR
+        logger.info('📱 Falling back to QR code...');
+      }
+    }
+  }
+
+  /**
    * Schedule reconnection
    */
   scheduleReconnect(error) {
-    // Clear existing timeout
     if (this.reconnectTimeout) {
       clearTimeout(this.reconnectTimeout);
     }
@@ -407,19 +392,19 @@ class SocketManager {
     this.reconnectAttempts++;
 
     if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-      logger.error('Max reconnection attempts reached');
+      logger.error('❌ Max reconnection attempts reached');
       this.emit('error', new Error('Max reconnection attempts reached'));
       return;
     }
 
     const delay = this.reconnectDelay * this.reconnectAttempts;
-    logger.info(`Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})...`);
+    logger.info(`⏳ Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})...`);
 
     this.reconnectTimeout = setTimeout(async () => {
       try {
         await this.connect();
       } catch (err) {
-        logger.error('Reconnection failed:', err);
+        logger.error('❌ Reconnection failed:', err);
         this.scheduleReconnect(err);
       }
     }, delay);
@@ -436,7 +421,7 @@ class SocketManager {
     try {
       await this.init();
     } catch (error) {
-      logger.error('Connection failed:', error);
+      logger.error('❌ Connection failed:', error);
       throw error;
     }
   }
@@ -450,9 +435,9 @@ class SocketManager {
     try {
       await this.sock.ws.close();
       this.isConnected = false;
-      logger.info('Disconnected from WhatsApp');
+      logger.info('✅ Disconnected from WhatsApp');
     } catch (error) {
-      logger.error('Error disconnecting:', error);
+      logger.error('❌ Error disconnecting:', error);
     }
   }
 
@@ -462,35 +447,27 @@ class SocketManager {
   async handleMessagesUpsert(upsert) {
     try {
       const messages = upsert.messages;
-      const type = upsert.type;
-
       if (!messages || messages.length === 0) return;
 
-      // Process each message
       for (const baileysMsg of messages) {
         try {
-          // Skip status messages
           if (baileysMsg.key.fromMe || baileysMsg.pushName === 'status@broadcast') {
             continue;
           }
 
-          // Register bot's own sent messages for reaction tracking
           if (baileysMsg.key.fromMe) {
             this.registerSentMessage(baileysMsg.key, baileysMsg);
           }
 
-          // Normalize the message
           const normalizedMsg = this.normalizeMessage(baileysMsg);
-          
-          // Emit message event
           this.emit('message', normalizedMsg);
 
         } catch (error) {
-          logger.error('Error processing message:', error);
+          logger.error('❌ Error processing message:', error);
         }
       }
     } catch (error) {
-      logger.error('Error in messages.upsert handler:', error);
+      logger.error('❌ Error in messages.upsert handler:', error);
     }
   }
 
@@ -501,20 +478,18 @@ class SocketManager {
     try {
       const { key, receipt } = update;
       
-      // Handle reactions
       if (receipt?.type === 'reaction') {
         const reaction = {
           type: 'reaction',
           key,
           receipt,
-          // Check if this is a reaction to bot's own message
           isReactionToBot: this.isBotMessage(key),
           botMessage: this.isBotMessage(key) ? this.getBotSentMessage(key) : null,
         };
         this.emit('message_reaction', reaction);
       }
     } catch (error) {
-      logger.error('Error in message-receipt.update handler:', error);
+      logger.error('❌ Error in message-receipt.update handler:', error);
     }
   }
 
@@ -525,7 +500,7 @@ class SocketManager {
     try {
       this.emit('group_update', update);
     } catch (error) {
-      logger.error('Error in groups.update handler:', error);
+      logger.error('❌ Error in groups.update handler:', error);
     }
   }
 
@@ -542,12 +517,12 @@ class SocketManager {
         this.emit('group_leave', { id, participants });
       }
     } catch (error) {
-      logger.error('Error in group-participants.update handler:', error);
+      logger.error('❌ Error in group-participants.update handler:', error);
     }
   }
 
   /**
-   * Normalize Baileys message to match whatsapp-web.js format
+   * Normalize Baileys message to match expected format
    */
   normalizeMessage(baileysMsg) {
     const { key, pushName, message, participant, timestamp, fromMe } = baileysMsg;
@@ -555,17 +530,15 @@ class SocketManager {
     const isGroup = key.remoteJid?.endsWith('@g.us') || false;
     const fromMeFlag = key.fromMe || fromMe || false;
     
-    // Determine the actual sender
     let author = null;
     let from = key.remoteJid;
     
     if (isGroup && participant) {
       author = participant;
     } else if (!fromMeFlag) {
-      author = key.remoteJid.split('@')[0];
+      author = key.remoteJid?.split('@')[0] || key.remoteJid;
     }
 
-    // Extract message body
     let body = '';
     let type = 'chat';
     let hasMedia = false;
@@ -575,29 +548,22 @@ class SocketManager {
     let quotedMessage = null;
 
     if (message) {
-      // Text message
       if (message.conversation) {
         body = message.conversation;
         type = 'chat';
-      } 
-      // Extended text (with mentions)
-      else if (message.extendedTextMessage) {
+      } else if (message.extendedTextMessage) {
         body = message.extendedTextMessage.text || '';
         type = 'chat';
         
-        // Extract mentions
         if (message.extendedTextMessage.contextInfo?.mentionedJid) {
           mentionedIds = message.extendedTextMessage.contextInfo.mentionedJid;
         }
         
-        // Check for quoted message
         if (message.extendedTextMessage.contextInfo?.quotedMessage) {
           hasQuotedMsg = true;
           quotedMessage = message.extendedTextMessage.contextInfo.quotedMessage;
         }
-      }
-      // Image
-      else if (message.imageMessage) {
+      } else if (message.imageMessage) {
         type = 'image';
         hasMedia = true;
         isMedia = true;
@@ -611,9 +577,7 @@ class SocketManager {
           hasQuotedMsg = true;
           quotedMessage = message.imageMessage.contextInfo.quotedMessage;
         }
-      }
-      // Video
-      else if (message.videoMessage) {
+      } else if (message.videoMessage) {
         type = 'video';
         hasMedia = true;
         isMedia = true;
@@ -627,9 +591,7 @@ class SocketManager {
           hasQuotedMsg = true;
           quotedMessage = message.videoMessage.contextInfo.quotedMessage;
         }
-      }
-      // Sticker
-      else if (message.stickerMessage) {
+      } else if (message.stickerMessage) {
         type = 'sticker';
         hasMedia = true;
         isMedia = true;
@@ -638,49 +600,34 @@ class SocketManager {
           hasQuotedMsg = true;
           quotedMessage = message.stickerMessage.contextInfo.quotedMessage;
         }
-      }
-      // Audio
-      else if (message.audioMessage) {
+      } else if (message.audioMessage) {
         type = 'audio';
         hasMedia = true;
         isMedia = true;
-      }
-      // Voice note (PTT)
-      else if (message.pttMessage) {
+      } else if (message.pttMessage) {
         type = 'ptt';
         hasMedia = true;
         isMedia = true;
-      }
-      // Document
-      else if (message.documentMessage) {
+      } else if (message.documentMessage) {
         type = 'document';
         hasMedia = true;
         isMedia = true;
         body = message.documentMessage.caption || '';
-      }
-      // Reaction
-      else if (message.reactionMessage) {
+      } else if (message.reactionMessage) {
         type = 'reaction';
         body = message.reactionMessage.text || '';
-      }
-      // Buttons response
-      else if (message.buttonsResponseMessage) {
+      } else if (message.buttonsResponseMessage) {
         type = 'buttons_response';
         body = message.buttonsResponseMessage.selectedButtonId || '';
-      }
-      // List response
-      else if (message.listResponseMessage) {
+      } else if (message.listResponseMessage) {
         type = 'list_response';
         body = message.listResponseMessage.selectedRowId || '';
-      }
-      // Template button reply
-      else if (message.templateButtonReplyMessage) {
+      } else if (message.templateButtonReplyMessage) {
         type = 'template_button_reply';
         body = message.templateButtonReplyMessage.selectedId || '';
       }
     }
 
-    // Build normalized message
     const normalizedMsg = {
       id: { _serialized: key.id },
       from: from,
@@ -697,40 +644,41 @@ class SocketManager {
       mentionedIds: mentionedIds,
       hasQuotedMsg: hasQuotedMsg,
       _quoted: quotedMessage,
-      // Store the raw Baileys message for compatibility
       _baileys: baileysMsg,
-      // Store socket reference
       _sock: this.sock,
-      // Bot's own JID
       _client: this,
+      _data: {
+        id: key.id,
+        from: from,
+        to: key.remoteJid,
+        body: body,
+        type: type,
+        timestamp: timestamp ? timestamp * 1000 : Date.now(),
+        fromMe: fromMeFlag,
+        isGroup: isGroup,
+      },
     };
 
-    // Add reply function
     normalizedMsg.reply = async (content, chatId, options = {}) => {
       return this.sendMessage(chatId || from, content, options, normalizedMsg);
     };
 
-    // Add downloadMedia function
     normalizedMsg.downloadMedia = async () => {
       return this.downloadMedia(baileysMsg);
     };
 
-    // Add getChat function
     normalizedMsg.getChat = async () => {
       return this.getChat(key.remoteJid);
     };
 
-    // Add getContact function
     normalizedMsg.getContact = async () => {
       return this.getContact(author || from);
     };
 
-    // Add react function
     normalizedMsg.react = async (emoji) => {
       return this.react(key, emoji);
     };
 
-    // Add getQuotedMessage function
     normalizedMsg.getQuotedMessage = async () => {
       if (hasQuotedMsg && quotedMessage) {
         return this.normalizeMessage(quotedMessage);
@@ -738,26 +686,12 @@ class SocketManager {
       return null;
     };
 
-    // Add delete function
     normalizedMsg.delete = async (everyone = false) => {
       return this.deleteMessage(key, everyone);
     };
 
-    // Add forward function
     normalizedMsg.forward = async (jid) => {
       return this.forwardMessage(jid, baileysMsg);
-    };
-
-    // Add _data for compatibility with old whatsapp-web.js
-    normalizedMsg._data = {
-      id: key.id,
-      from: from,
-      to: key.remoteJid,
-      body: body,
-      type: type,
-      timestamp: timestamp ? timestamp * 1000 : Date.now(),
-      fromMe: fromMeFlag,
-      isGroup: isGroup,
     };
 
     return normalizedMsg;
@@ -772,15 +706,12 @@ class SocketManager {
     }
 
     try {
-      // Handle different content types
       if (typeof content === 'string') {
-        // Text message
         const msgOptions = {
           text: content,
           ...options,
         };
         
-        // Add quoted message if provided
         if (quotedMsg && quotedMsg.id) {
           msgOptions.quoted = {
             id: quotedMsg.id._serialized || quotedMsg.id,
@@ -793,16 +724,13 @@ class SocketManager {
         }
         
         const result = await this.sock.sendMessage(jid, msgOptions);
-        // Register the sent message for reaction tracking
         if (result && result.key) {
           this.registerSentMessage(result.key, result);
         }
         return result;
       } else if (content?.mimetype || content?._data || content?.data) {
-        // Media message (from MessageMedia-like object)
         const media = { ...content };
         
-        // Add quoted message
         if (quotedMsg && quotedMsg.id) {
           media.quoted = {
             id: quotedMsg.id._serialized || quotedMsg.id,
@@ -810,7 +738,6 @@ class SocketManager {
           };
         }
         
-        // Convert MessageMedia format to Baileys format
         if (content.mimetype && content.data) {
           const buffer = Buffer.from(content.data, 'base64');
           
@@ -839,13 +766,11 @@ class SocketManager {
         }
         
         const result = await this.sock.sendMessage(jid, media, options);
-        // Register the sent message for reaction tracking
         if (result && result.key) {
           this.registerSentMessage(result.key, result);
         }
         return result;
       } else {
-        // Unknown content type - try to send as text
         const result = await this.sock.sendMessage(jid, { text: String(content) }, options);
         if (result && result.key) {
           this.registerSentMessage(result.key, result);
@@ -853,7 +778,7 @@ class SocketManager {
         return result;
       }
     } catch (error) {
-      logger.error('Failed to send message:', error);
+      logger.error('❌ Failed to send message:', error);
       throw error;
     }
   }
@@ -867,16 +792,17 @@ class SocketManager {
     }
 
     try {
+      const msgKey = key.id || key._serialized;
       await this.sock.sendMessage(key.remoteJid, {
         delete: {
-          id: key.id,
+          id: msgKey,
           remoteJid: key.remoteJid,
           fromMe: true,
           participant: key.participant,
         },
       });
     } catch (error) {
-      logger.error('Failed to delete message:', error);
+      logger.error('❌ Failed to delete message:', error);
       throw error;
     }
   }
@@ -898,13 +824,12 @@ class SocketManager {
         forward: forwardMsg,
       });
       
-      // Register the forwarded message
       if (result && result.key) {
         this.registerSentMessage(result.key, result);
       }
       return result;
     } catch (error) {
-      logger.error('Failed to forward message:', error);
+      logger.error('❌ Failed to forward message:', error);
       throw error;
     }
   }
@@ -918,12 +843,10 @@ class SocketManager {
     }
 
     const { message, key } = baileysMsg;
-    
     if (!message) {
       throw new Error('No message to download media from');
     }
 
-    // Determine media type
     let mediaMessage = null;
     let mediaType = null;
 
@@ -951,7 +874,6 @@ class SocketManager {
       throw new Error('No media found in message');
     }
 
-    // Download the media
     try {
       const stream = await this.sock.downloadMediaMessage(mediaMessage);
       const chunks = [];
@@ -968,7 +890,7 @@ class SocketManager {
         filename: mediaMessage.fileName,
       };
     } catch (error) {
-      logger.error('Failed to download media:', error);
+      logger.error('❌ Failed to download media:', error);
       throw error;
     }
   }
@@ -997,7 +919,7 @@ class SocketManager {
           })),
         };
       } catch (error) {
-        logger.error('Failed to get group metadata:', error);
+        logger.error('❌ Failed to get group metadata:', error);
         return {
           id: { _serialized: jid },
           name: jid.split('@')[0],
@@ -1023,14 +945,13 @@ class SocketManager {
     }
 
     try {
-      // For now, return basic contact info
       return {
         id: { _serialized: jid },
         name: jid.split('@')[0],
         pushName: jid.split('@')[0],
       };
     } catch (error) {
-      logger.error('Failed to get contact:', error);
+      logger.error('❌ Failed to get contact:', error);
       throw error;
     }
   }
@@ -1051,7 +972,7 @@ class SocketManager {
         },
       });
     } catch (error) {
-      logger.error('Failed to react:', error);
+      logger.error('❌ Failed to react:', error);
       throw error;
     }
   }
@@ -1072,7 +993,5 @@ class SocketManager {
   }
 }
 
-// Singleton instance
 const socketManager = new SocketManager();
-
 export default socketManager;
