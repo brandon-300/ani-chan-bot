@@ -122,7 +122,7 @@ function wrapWithUsageTracking(handlerFn, context) {
   };
 }
 
-module.exports = {
+export default {
   runWithCommandContext,
   getCurrentContext,
   recordCommandUsage,

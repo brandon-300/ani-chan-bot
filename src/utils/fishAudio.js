@@ -129,4 +129,4 @@ async function synthesizeSpeech(text, { voiceId, persona, overrides } = {}) {
   }
 }
 
-module.exports = { synthesizeSpeech, _resolveVoiceId: resolveVoiceId, _buildTtsPayload: buildTtsPayload };
+export default { synthesizeSpeech, _resolveVoiceId: resolveVoiceId, _buildTtsPayload: buildTtsPayload };

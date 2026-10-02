@@ -330,4 +330,4 @@ async function init(readyClient) {
   });
 }
 
-module.exports = { registerHandler, scheduleTask, scheduleIfMissing, cancelTask, init };
+export default { registerHandler, scheduleTask, scheduleIfMissing, cancelTask, init };

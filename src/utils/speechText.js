@@ -179,7 +179,7 @@ function applyExpressionCue(text, cue = inferExpressionCue(text)) {
   return `[${cue}] ${clean}`;
 }
 
-module.exports = {
+export default {
   EMOJI_SEQUENCE,
   SAFE_CUES,
   stripEmojis,

@@ -59,4 +59,4 @@ function _reset() { entries.clear(); clock = () => Date.now(); }
 function _setClock(fn) { clock = typeof fn === 'function' ? fn : () => Date.now(); }
 function _size() { return entries.size; }
 
-module.exports = { remember, get, markReacted, _reset, _setClock, _size };
+export default { remember, get, markReacted, _reset, _setClock, _size };

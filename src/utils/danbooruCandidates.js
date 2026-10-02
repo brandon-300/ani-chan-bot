@@ -149,4 +149,4 @@ async function searchCandidateImages(name, series, { limit = 8, excludePostId = 
   }
 }
 
-module.exports = { searchCandidateImages, isConfigured };
+export default { searchCandidateImages, isConfigured };

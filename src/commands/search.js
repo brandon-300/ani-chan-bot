@@ -29,7 +29,7 @@ function stripLrcTimestamps(syncedLyrics) {
     .trim();
 }
 
-module.exports = {
+export default {
   // .pinterest [query]
   // .pinterest [query]
   // Uses "Pinterest Pin Search" (pinterest-pin-search.p.rapidapi.com) — a

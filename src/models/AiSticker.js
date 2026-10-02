@@ -72,4 +72,4 @@ AiStickerSchema.index({ personaId: 1, analysisStatus: 1, createdAt: -1 }, { name
 AiStickerSchema.index({ hash: 1 }, { name: 'ai_sticker_hash_lookup' });
 AiStickerSchema.index({ animeId: 1, hash: 1 }, { name: 'ai_sticker_anime_hash_lookup' });
 
-module.exports = mongoose.models.AiSticker || mongoose.model('AiSticker', AiStickerSchema);
+export default mongoose.models.AiSticker || mongoose.model('AiSticker', AiStickerSchema);

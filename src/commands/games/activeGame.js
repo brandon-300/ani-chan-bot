@@ -50,4 +50,4 @@ function release(chatId, type) {
   if (current && current.type === type) activeGames.delete(chatId);
 }
 
-module.exports = { isChatBusy, claim, release, LABELS };
+export default { isChatBusy, claim, release, LABELS };

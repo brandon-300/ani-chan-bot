@@ -52,4 +52,4 @@ function withGuildLock(guildId, fn) {
   return run;
 }
 
-module.exports = { withGuildLock };
+export default { withGuildLock };

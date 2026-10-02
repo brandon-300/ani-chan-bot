@@ -680,4 +680,4 @@ async function renderCard(client, catalogue) {
   return { buffer, url: null, cached: false };
 }
 
-module.exports = { renderCard, fetchImageAsDataUri, CARD_RENDER_VERSION };
+export default { renderCard, fetchImageAsDataUri, CARD_RENDER_VERSION };

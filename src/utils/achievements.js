@@ -154,4 +154,4 @@ function formatUnlockNotice(newlyUnlocked) {
   return `\n\n🏆 *Achievement Unlocked!*\n${lines.join('\n')}`;
 }
 
-module.exports = { ACHIEVEMENTS, checkAchievements, formatUnlockNotice };
+export default { ACHIEVEMENTS, checkAchievements, formatUnlockNotice };

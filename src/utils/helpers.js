@@ -553,7 +553,7 @@ async function generateUniqueCode(Model, field = 'code') {
   return code;
 }
 
-module.exports = {
+export default {
   boldSans,
   doubleStruck,
   cleanDescription,

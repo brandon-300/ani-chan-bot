@@ -223,7 +223,7 @@ const GEMINI_COMMANDS = process.env.GEMINI_COMMANDS === undefined
 const GEMINI_BUSY_MESSAGE = (process.env.GEMINI_BUSY_MESSAGE || '').trim()
   || '⏳ This command is currently unavailable. Please try again later.';
 
-module.exports = {
+export default {
   BOT_NAME,
   BOT_PREFIX,
   MENU_IMAGE_URL,

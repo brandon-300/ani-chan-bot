@@ -337,7 +337,7 @@ async function requireAdmin(msg) {
   return true;
 }
 
-module.exports = {
+export default {
   // .news — admin-only (WhatsApp group admin, or the bot owner). Takes no
   // arguments — always sends exactly the next anime/manga/manhwa/donghua
   // article this chat hasn't already been sent, ranked by content relevance

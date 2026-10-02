@@ -29,4 +29,4 @@ const GuildChallengeSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now },
 });
 
-module.exports = mongoose.model('GuildChallenge', GuildChallengeSchema);
+export default mongoose.model('GuildChallenge', GuildChallengeSchema);

@@ -99,4 +99,4 @@ async function uploadBufferToCloud(buffer, { folder, publicId, resourceType = 'i
   });
 }
 
-module.exports = { uploadToCloud, uploadBufferToCloud, deleteFromCloud, isCloudConfigured };
+export default { uploadToCloud, uploadBufferToCloud, deleteFromCloud, isCloudConfigured };

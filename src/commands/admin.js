@@ -319,7 +319,7 @@ async function _sweepInactiveUsers(client) {
   }
 }
 
-module.exports = {
+export default {
   commands: { onJoin, onLeave },
   _seedParticipants,
   _resumePendingMutes,

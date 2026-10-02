@@ -9,4 +9,4 @@ const SentPinSchema = new mongoose.Schema({
 // One chat can't have the same pin recorded twice
 SentPinSchema.index({ chatId: 1, pinId: 1 }, { unique: true });
 
-module.exports = mongoose.model('SentPin', SentPinSchema);
+export default mongoose.model('SentPin', SentPinSchema);

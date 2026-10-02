@@ -52,4 +52,4 @@ const AiConversationSchema = new mongoose.Schema({
 // its own via the TTL field above — nothing reads or writes it again.
 AiConversationSchema.index({ chatId: 1, senderId: 1 }, { unique: true });
 
-module.exports = mongoose.model('AiConversation', AiConversationSchema);
+export default mongoose.model('AiConversation', AiConversationSchema);

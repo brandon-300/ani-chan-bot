@@ -25,4 +25,4 @@ async function getNextSequence(key) {
   return doc.value;
 }
 
-module.exports = { Counter, getNextSequence };
+export default { Counter, getNextSequence };

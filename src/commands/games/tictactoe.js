@@ -262,7 +262,7 @@ async function _initTTT(client) {
   }
 }
 
-module.exports = {
+export default {
   tttGames,
   tttLobbies,
   _initTTT,

@@ -482,7 +482,7 @@ async function resolveMultimodalInput(msg, args) {
   return { prompt: typed, image: null, images: [], stickerReply: false };
 }
 
-module.exports = {
+export default {
   _parseAiControls: parseAiControls,
   _stripSpeechFormatting: stripSpeechFormatting,
   _buildPersonaSystemPrompt: buildPersonaSystemPrompt,

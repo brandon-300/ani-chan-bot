@@ -307,7 +307,7 @@ async function _initChess(client) {
   }
 }
 
-module.exports = {
+export default {
   chessGames,
   chessLobbies,
   _initChess,

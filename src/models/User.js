@@ -251,4 +251,4 @@ UserSchema.statics.findOrCreate = async function (id, name) {
   return user;
 };
 
-module.exports = mongoose.model('User', UserSchema);
+export default mongoose.model('User', UserSchema);

@@ -345,4 +345,4 @@ async function searchCandidateImages(name, series, aliases) {
   return []; // genuinely nothing found under the name or any alias
 }
 
-module.exports = { searchCandidateImages, isConfigured, buildQuery };
+export default { searchCandidateImages, isConfigured, buildQuery };

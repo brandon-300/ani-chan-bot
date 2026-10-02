@@ -354,4 +354,4 @@ async function renderAnimatedMemeFrames(client, imageBuffer, mimetype, captions 
   }
 }
 
-module.exports = { renderMemeImage, renderAnimatedMemeFrames };
+export default { renderMemeImage, renderAnimatedMemeFrames };

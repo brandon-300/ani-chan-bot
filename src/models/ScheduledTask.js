@@ -61,4 +61,4 @@ const ScheduledTaskSchema = new mongoose.Schema({
 // ones) to find the soonest 'pending' one.
 ScheduledTaskSchema.index({ status: 1, runAt: 1 });
 
-module.exports = mongoose.model('ScheduledTask', ScheduledTaskSchema);
+export default mongoose.model('ScheduledTask', ScheduledTaskSchema);

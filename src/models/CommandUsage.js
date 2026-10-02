@@ -22,4 +22,4 @@ const CommandUsageSchema = new mongoose.Schema({
 
 CommandUsageSchema.index({ groupId: 1, userId: 1, command: 1 }, { unique: true });
 
-module.exports = mongoose.model('CommandUsage', CommandUsageSchema);
+export default mongoose.model('CommandUsage', CommandUsageSchema);

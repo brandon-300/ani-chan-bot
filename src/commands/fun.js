@@ -340,7 +340,7 @@ const DUALITY_PAIRS = [
   ['The One Who Plans', 'The One Who Does Whatever'],
 ];
 
-module.exports = {
+export default {
   // .gay
   async gay(client, msg, args) {
     const contact = await msg.getContact();

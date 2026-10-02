@@ -30,4 +30,4 @@ const SeasonSchema = new mongoose.Schema({
   guildsResetComplete: { type: Boolean, default: false },
 });
 
-module.exports = mongoose.model('Season', SeasonSchema);
+export default mongoose.model('Season', SeasonSchema);

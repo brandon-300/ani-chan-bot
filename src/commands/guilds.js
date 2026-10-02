@@ -491,7 +491,7 @@ async function _removeMemberFromGuild(userId) {
   return { disbanded: false, guildName: guild.name };
 }
 
-module.exports = {
+export default {
   _removeMemberFromGuild,
   _formatQuestCompletionNote,
 

@@ -37,4 +37,4 @@ function chooseAction(botHp, opponentHp, difficulty = 'medium') {
   return 'attack';
 }
 
-module.exports = { chooseAction };
+export default { chooseAction };

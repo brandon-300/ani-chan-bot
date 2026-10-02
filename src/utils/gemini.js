@@ -315,4 +315,4 @@ async function transcribeAudio({ base64Audio, mimeType }) {
   }
 }
 
-module.exports = { generateText, generateVision, generateImage, transcribeAudio };
+export default { generateText, generateVision, generateImage, transcribeAudio };

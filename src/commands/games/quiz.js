@@ -1022,7 +1022,7 @@ async function _initQuiz(client) {
   }
 }
 
-module.exports = {
+export default {
   quizGames,
   quizLobbies,
   quiz,

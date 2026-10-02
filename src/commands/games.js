@@ -37,7 +37,7 @@ const AKI_QUESTIONS = [
   'Is your character popular worldwide? (yes/no)',
 ];
 
-module.exports = {
+export default {
   battleGames: battle.battleGames,
   ttt: tictactoe.ttt,
   tttGames: tictactoe.tttGames,

@@ -411,7 +411,7 @@ function scoreCandidate({ candidate, dims, domainTier, textMatch, vision, format
   return { score, hardReject, reasons };
 }
 
-module.exports = {
+export default {
   downloadImageBuffer,
   getImageDimensions,
   sha256Hex,

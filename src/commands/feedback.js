@@ -14,7 +14,7 @@ function box(title, bodyLines) {
   ].join('\n');
 }
 
-module.exports = {
+export default {
   // .feedback [message] — forwards the message privately to the bot owner.
   // Works the same whether sent in a group or a DM. The owner themself
   // can't use it (there's no one to forward it to) — this relies entirely

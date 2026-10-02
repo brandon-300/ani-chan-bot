@@ -35,4 +35,4 @@ const AgeVerificationSchema = new mongoose.Schema({
   expiresAt: { type: Date, required: true, index: { expires: 0 } },
 });
 
-module.exports = mongoose.model('AgeVerification', AgeVerificationSchema);
+export default mongoose.model('AgeVerification', AgeVerificationSchema);

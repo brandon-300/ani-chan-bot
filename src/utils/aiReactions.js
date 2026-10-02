@@ -140,4 +140,4 @@ function createReactionHandler({
   return { handle };
 }
 
-module.exports = { createReactionHandler, pickReactionEmoji, FAMILIES };
+export default { createReactionHandler, pickReactionEmoji, FAMILIES };

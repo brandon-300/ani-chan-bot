@@ -353,7 +353,7 @@ async function _initCatalogueGrowth(client) {
   }
 }
 
-module.exports = {
+export default {
   _initCatalogueGrowth,
   // .addcard <character name> [tier]
   async addcard(client, msg, args) {

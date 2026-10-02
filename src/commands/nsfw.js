@@ -352,7 +352,7 @@ async function handleGalleryLinks(msg, site, query) {
   );
 }
 
-module.exports = {
+export default {
   async nsfw(client, msg, args) {
     const chat = await safeGetChat(msg).catch(() => null);
     if (!chat) return msg.reply('⚠️ WhatsApp connection hiccup — please try again in a moment.');

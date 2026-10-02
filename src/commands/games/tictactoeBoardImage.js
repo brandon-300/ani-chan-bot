@@ -160,4 +160,4 @@ function renderBoardImage(board, opts = {}) {
   return encodePNG(pixels, IMG_SIZE, IMG_SIZE, 3);
 }
 
-module.exports = { renderBoardImage };
+export default { renderBoardImage };

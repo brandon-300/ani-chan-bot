@@ -1169,7 +1169,7 @@ function _setAdaptersForTests({ Model, storage, mongoConnected } = {}) {
   geminiGate.setReservationProvider(analysisReservesGemini);
 }
 
-module.exports = {
+export default {
   startImportMode,
   stopImportMode,
   handleIncomingSticker,

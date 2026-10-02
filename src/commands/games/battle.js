@@ -76,7 +76,7 @@ async function _initBattle() {
   }
 }
 
-module.exports = {
+export default {
   battleGames,
   _initBattle,
 

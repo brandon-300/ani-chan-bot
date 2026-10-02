@@ -43,7 +43,7 @@ const HORSES = [
   { name: 'Eclipse', emoji: '⚡', odds: 15 },
 ];
 
-module.exports = {
+export default {
   // .slots [amount]
   async slots(client, msg, args) {
     const contact = await msg.getContact();

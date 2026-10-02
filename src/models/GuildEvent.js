@@ -22,4 +22,4 @@ const GuildEventSchema = new mongoose.Schema({
   triggeredAt: { type: Number, default: () => Date.now() },
 });
 
-module.exports = mongoose.model('GuildEvent', GuildEventSchema);
+export default mongoose.model('GuildEvent', GuildEventSchema);

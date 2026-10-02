@@ -9,4 +9,4 @@ const AiStickerMessageSchema = new mongoose.Schema({
   expiresAt: { type: Date, required: true, expires: 0 },
 }, { timestamps: true });
 
-module.exports = mongoose.models.AiStickerMessage || mongoose.model('AiStickerMessage', AiStickerMessageSchema);
+export default mongoose.models.AiStickerMessage || mongoose.model('AiStickerMessage', AiStickerMessageSchema);

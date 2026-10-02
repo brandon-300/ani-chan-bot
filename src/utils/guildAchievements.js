@@ -103,4 +103,4 @@ function formatGuildUnlockNotice(newlyUnlocked) {
   return `\n\n🏆 *Guild Achievement Unlocked!*\n${lines.join('\n')}`;
 }
 
-module.exports = { GUILD_ACHIEVEMENTS, checkGuildAchievements, formatGuildUnlockNotice };
+export default { GUILD_ACHIEVEMENTS, checkGuildAchievements, formatGuildUnlockNotice };

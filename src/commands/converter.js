@@ -152,7 +152,7 @@ async function uploadToCatbox(buffer, filename) {
   return text;
 }
 
-module.exports = {
+export default {
   // .sticker — convert image/gif/video to sticker
   async sticker(client, msg, args) {
     const targetMsg = await getTargetMessage(msg);

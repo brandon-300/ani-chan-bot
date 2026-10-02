@@ -770,4 +770,4 @@ GuildSchema.statics.ensureGuildState = async function (guild) {
   return guild;
 };
 
-module.exports = mongoose.model('Guild', GuildSchema);
+export default mongoose.model('Guild', GuildSchema);

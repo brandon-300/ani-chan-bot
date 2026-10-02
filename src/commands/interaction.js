@@ -266,7 +266,7 @@ async function buildAction(msg, { solo, pair, requireTarget = false }) {
 
 const NO_TARGET_MSG = 'Please mention or reply to a user to use this command.';
 
-module.exports = {
+export default {
   // ─── Required-target actions ─────────────────────────────────────────
   // Unchanged behavior: no mention/reply => NO_TARGET_MSG, exact same
   // wording as before.

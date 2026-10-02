@@ -169,7 +169,7 @@ function hungerStatus(hunger) {
   return '😋 Well fed';
 }
 
-module.exports = {
+export default {
   // .pet — view pet
   async pet(client, msg, args) {
     const contact = await msg.getContact();

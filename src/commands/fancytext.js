@@ -333,7 +333,7 @@ function buildGallery() {
   );
 }
 
-module.exports = {
+export default {
   // .fancy — shows usage + a gallery of all styles applied to a demo word.
   // .fancy <styleNumber> <text> — applies that style to the given text.
   async fancy(client, msg, args) {

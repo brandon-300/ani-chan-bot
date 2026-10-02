@@ -205,7 +205,7 @@ function usageText() {
   );
 }
 
-module.exports = {
+export default {
   // .loan request|repay|status — see usageText() above for the full help
   // text shown when no valid subcommand is given.
   async loan(client, msg, args) {

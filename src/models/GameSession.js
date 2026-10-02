@@ -27,4 +27,4 @@ const GameSessionSchema = new mongoose.Schema({
   state: { type: mongoose.Schema.Types.Mixed, default: {} },
 }, { timestamps: true });
 
-module.exports = mongoose.model('GameSession', GameSessionSchema);
+export default mongoose.model('GameSession', GameSessionSchema);

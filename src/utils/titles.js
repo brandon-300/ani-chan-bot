@@ -51,4 +51,4 @@ function formatTitleUnlockNotice(newTitle) {
   return `\n\n🎖️ *New Title Unlocked!*\n${titleLabel(newTitle)}`;
 }
 
-module.exports = { TITLES, highestEarnedTitle, titleLabel, checkTitle, formatTitleUnlockNotice };
+export default { TITLES, highestEarnedTitle, titleLabel, checkTitle, formatTitleUnlockNotice };

@@ -193,7 +193,7 @@ async function buildStatsReport(client, { isDigest = false } = {}) {
   return isDigest ? `📅 *Daily Stats Digest*\n\n${report}` : report;
 }
 
-module.exports = {
+export default {
   // .rules — view this group's rules
   async rules(client, msg, args) {
     const chat = await safeGetChat(msg).catch(() => null);

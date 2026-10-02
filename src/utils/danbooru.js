@@ -542,7 +542,7 @@ async function fetchRandomImage(tagSets, { ratingLetters = null } = {}) {
   return null;
 }
 
-module.exports = {
+export default {
   findCharacterArtwork,
   fetchArtworkForExactTag,
   searchPosts,

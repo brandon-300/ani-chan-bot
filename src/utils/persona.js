@@ -117,4 +117,4 @@ function getActivePersonaSafe() {
   }
 }
 
-module.exports = { loadPersona, listPersonaIds, getActivePersona, getActivePersonaSafe };
+export default { loadPersona, listPersonaIds, getActivePersona, getActivePersonaSafe };

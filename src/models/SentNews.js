@@ -21,4 +21,4 @@ const SentNewsSchema = new mongoose.Schema({
 // One chat can't have the same article recorded twice
 SentNewsSchema.index({ chatId: 1, articleId: 1 }, { unique: true });
 
-module.exports = mongoose.model('SentNews', SentNewsSchema);
+export default mongoose.model('SentNews', SentNewsSchema);

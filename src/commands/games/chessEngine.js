@@ -137,4 +137,4 @@ function getBestMove(chess, { maxDepth = 3, timeLimitMs = 2500 } = {}) {
   return bestMoveOverall;
 }
 
-module.exports = { getBestMove };
+export default { getBestMove };

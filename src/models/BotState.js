@@ -10,4 +10,4 @@ const BotStateSchema = new mongoose.Schema({
   value: { type: String, default: null },
 });
 
-module.exports = mongoose.model('BotState', BotStateSchema);
+export default mongoose.model('BotState', BotStateSchema);

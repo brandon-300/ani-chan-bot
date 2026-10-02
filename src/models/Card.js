@@ -268,7 +268,7 @@ const CatalogueGrowthStateSchema = new mongoose.Schema({
   lastError: { type: String, default: null },
 });
 
-module.exports = {
+export default {
   CardCatalogue: mongoose.model('CardCatalogue', CardCatalogueSchema),
   OwnedCard: mongoose.model('OwnedCard', OwnedCardSchema),
   Auction: mongoose.model('Auction', AuctionSchema),

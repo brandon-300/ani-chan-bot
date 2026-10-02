@@ -139,7 +139,7 @@ function extractYtProgressiveStream(content) {
   return progressive?.url || null;
 }
 
-module.exports = {
+export default {
 
   // .ig [url]
   async ig(client, msg, args) {

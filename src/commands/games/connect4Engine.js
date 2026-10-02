@@ -198,4 +198,4 @@ function getBestMove(board, botPiece, humanPiece, { maxDepth = 4, timeLimitMs = 
   return bestColOverall;
 }
 
-module.exports = { getBestMove };
+export default { getBestMove };

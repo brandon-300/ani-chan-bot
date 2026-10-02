@@ -55,7 +55,7 @@ async function handleSfwImage(msg, tagSets, caption) {
   await sendAnimeImg(msg, post.url, caption);
 }
 
-module.exports = {
+export default {
   // .waifu
   async waifu(client, msg) {
     await handleSfwImage(msg, sfwSets('1girl', '2girls'), '🌸 Waifu');

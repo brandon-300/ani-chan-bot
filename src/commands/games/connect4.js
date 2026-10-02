@@ -263,7 +263,7 @@ async function _initC4(client) {
   }
 }
 
-module.exports = {
+export default {
   c4Games,
   c4Lobbies,
   _initC4,

@@ -21,4 +21,4 @@ const SentNsfwLinkSchema = new mongoose.Schema({
 // The same gallery must never be flagged twice, even across restarts/queries
 SentNsfwLinkSchema.index({ url: 1 }, { unique: true });
 
-module.exports = mongoose.model('SentNsfwLink', SentNsfwLinkSchema);
+export default mongoose.model('SentNsfwLink', SentNsfwLinkSchema);

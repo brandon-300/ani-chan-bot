@@ -55,7 +55,7 @@ function assertAvailable({ bypass = false } = {}) {
   if (!bypass && isReserved()) throw makeBusyError();
 }
 
-module.exports = {
+export default {
   setReservationProvider,
   isReserved,
   isGeminiCommand,

@@ -346,4 +346,4 @@ const COMMAND_REFERENCE = [
   },
 ];
 
-module.exports = { COMMAND_REFERENCE };
+export default { COMMAND_REFERENCE };

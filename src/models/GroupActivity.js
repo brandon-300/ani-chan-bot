@@ -31,4 +31,4 @@ GroupActivitySchema.index({ groupId: 1, userId: 1 }, { unique: true });
 // within one group.
 GroupActivitySchema.index({ groupId: 1, count: -1 });
 
-module.exports = mongoose.model('GroupActivity', GroupActivitySchema);
+export default mongoose.model('GroupActivity', GroupActivitySchema);

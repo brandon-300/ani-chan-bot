@@ -231,7 +231,7 @@ const ROAST_LINES = [
   "You're why some people prefer talking to walls."
 ];
 
-module.exports = {
+export default {
   // .reg — begin or resume the existing profile-registration flow. It does
   // not activate an account; the current four verified profile steps do that.
   async reg(client, msg, args) {

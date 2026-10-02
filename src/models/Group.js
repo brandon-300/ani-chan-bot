@@ -32,4 +32,4 @@ const GroupSchema = new mongoose.Schema({
   rules: { type: String, default: null }, // null = not set yet, per .rules/.setrules
 });
 
-module.exports = mongoose.model('Group', GroupSchema);
+export default mongoose.model('Group', GroupSchema);

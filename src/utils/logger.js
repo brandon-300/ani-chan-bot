@@ -319,4 +319,4 @@ function getSequence() {
   return sequence;
 }
 
-module.exports = { write, start, run, error, debug, safeValue, redactUrl, getSequence, LOG_LEVEL, LOG_FORMAT, inspect: util.inspect };
+export default { write, start, run, error, debug, safeValue, redactUrl, getSequence, LOG_LEVEL, LOG_FORMAT, inspect: util.inspect };

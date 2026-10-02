@@ -154,4 +154,4 @@ function renderBoardImage(state = {}) {
   return encodePNG(pixels, IMG_W, IMG_H, 3);
 }
 
-module.exports = { renderBoardImage };
+export default { renderBoardImage };

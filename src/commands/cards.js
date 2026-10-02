@@ -532,7 +532,7 @@ async function _initCardLending() {
 }
 
 // ─── Commands ─────────────────────────────────────────────────────────────────
-module.exports = {
+export default {
   _initCardDrops,
   _initCardLending,
   // .cards on/off
