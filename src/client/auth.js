@@ -1,11 +1,10 @@
 /**
- * Baileys Authentication State Management
- * Uses multi-file auth state for persistence across restarts
+ * Auth Manager
+ * Handles authentication state for Baileys
+ * Uses multi-file auth state for Termux compatibility
  */
 
-import { useMultiFileAuthState, DisconnectReason } from '@whiskeysockets/baileys';
-import { Boom } from '@hapi/boom';
-import NodeCache from 'node-cache';
+import { useMultiFileAuthState } from '@whiskeysockets/baileys';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -14,98 +13,103 @@ const __dirname = path.dirname(__filename);
 
 const AUTH_DIR = path.join(__dirname, '../../../auth_info_baileys');
 
-// Create auth state
-const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
-
 /**
- * Authentication state manager
- * Handles auth state persistence and connection recovery
+ * Auth Manager
+ * Manages authentication state and credentials
  */
 class AuthManager {
   constructor() {
-    this.state = state;
-    this.saveCreds = saveCreds;
-    this.authDir = AUTH_DIR;
-    this.pairingCode = null;
-    this.pairingNumber = null;
+    this.state = null;
+    this.saveCreds = null;
+    this.isAuthenticatedFlag = false;
   }
 
   /**
-   * Check if already authenticated
+   * Initialize auth state
    */
-  isAuthenticated() {
-    return this.state.creds && this.state.creds.registered;
-  }
-
-  /**
-   * Check if pairing code is available
-   */
-  hasPairingCode() {
-    return !!this.pairingCode;
-  }
-
-  /**
-   * Get current auth state
-   */
-  getState() {
-    return this.state;
-  }
-
-  /**
-   * Get save creds function
-   */
-  getSaveCreds() {
-    return this.saveCreds;
-  }
-
-  /**
-   * Request pairing code
-   * @param {string} phoneNumber - Phone number in international format
-   * @returns {Promise<string>} Pairing code
-   */
-  async requestPairingCode(phoneNumber) {
+  async init() {
     try {
-      this.pairingNumber = phoneNumber;
-      // Note: In Baileys, pairing code is requested through the socket
-      // This will be called from the socket initialization
-      return this.pairingCode;
+      const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
+      this.state = state;
+      this.saveCreds = saveCreds;
+      
+      // Check if authenticated
+      this.isAuthenticatedFlag = this.checkAuthenticated();
+      
+      console.log('Auth state initialized');
     } catch (error) {
-      console.error('Failed to request pairing code:', error);
+      console.error('Failed to initialize auth state:', error);
       throw error;
     }
   }
 
   /**
-   * Set pairing code (called from socket event)
-   * @param {string} code - Pairing code
+   * Check if authenticated
    */
-  setPairingCode(code) {
-    this.pairingCode = code;
+  checkAuthenticated() {
+    if (!this.state) return false;
+    return this.state.creds && this.state.creds.registered;
   }
 
   /**
-   * Get pairing code
+   * Check if currently authenticated
    */
-  getPairingCode() {
-    return this.pairingCode;
+  isAuthenticated() {
+    return this.isAuthenticatedFlag;
   }
 
   /**
-   * Get pairing number
+   * Get auth state
    */
-  getPairingNumber() {
-    return this.pairingNumber;
+  getState() {
+    if (!this.state) {
+      throw new Error('Auth state not initialized. Call init() first.');
+    }
+    return this.state;
   }
 
   /**
-   * Clear pairing code
+   * Save credentials
    */
-  clearPairingCode() {
-    this.pairingCode = null;
-    this.pairingNumber = null;
+  async saveCreds() {
+    if (!this.saveCreds) {
+      throw new Error('saveCreds not initialized. Call init() first.');
+    }
+    return this.saveCreds();
+  }
+
+  /**
+   * Get saveCreds function (for compatibility)
+   */
+  getSaveCreds() {
+    if (!this.saveCreds) {
+      throw new Error('saveCreds not initialized. Call init() first.');
+    }
+    return this.saveCreds;
+  }
+
+  /**
+   * Clear auth state
+   */
+  async clear() {
+    try {
+      // For now, just reset the flag
+      // Actual file cleanup would need to delete the auth directory
+      this.isAuthenticatedFlag = false;
+      console.log('Auth state cleared');
+    } catch (error) {
+      console.error('Failed to clear auth state:', error);
+      throw error;
+    }
   }
 }
 
+// Singleton instance
 const authManager = new AuthManager();
+
+// Initialize immediately
+authManager.init().catch(err => {
+  console.error('Failed to initialize auth manager:', err);
+});
 
 export default authManager;

@@ -1,13 +1,19 @@
 /**
  * Baileys Socket Connection Manager
  * Handles the WebSocket connection to WhatsApp
+ * 
+ * For Termux on Android:
+ * - Uses pairing code instead of QR code
+ * - Optimized for low memory environments
+ * - Automatic reconnection
  */
 
-import { makeWASocket, useSingleFileAuthState, DisconnectReason, fetchLatestBaileysVersion, makeCacheableSignalKeyStore, Browsers } from '@whiskeysockets/baileys';
+import { makeWASocket, DisconnectReason, fetchLatestBaileysVersion, makeCacheableSignalKeyStore, Browsers } from '@whiskeysockets/baileys';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import NodeCache from 'node-cache';
 import authManager from './auth.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -15,24 +21,20 @@ const __dirname = path.dirname(__filename);
 
 const AUTH_DIR = path.join(__dirname, '../../../auth_info_baileys');
 
-// Logger configuration
+// Logger configuration - silent for production, debug for development
 const logger = pino({
-  level: process.env.LOG_LEVEL || 'info',
-  transport: {
-    target: 'pino-pretty',
-    options: {
-      colorize: true,
-      ignore: 'pid,hostname',
-    },
-  },
+  level: process.env.LOG_LEVEL || 'silent',
 });
 
 // Signal key store for E2E
 const signalKeyStore = makeCacheableSignalKeyStore(logger);
 
+// Message retry cache for Termux/low memory
+const msgRetryCounterCache = new NodeCache({ stdTTL: 600, checkperiod: 60 });
+
 /**
  * Socket Manager
- * Manages the Baileys WebSocket connection
+ * Singleton that manages the Baileys WebSocket connection
  */
 class SocketManager {
   constructor() {
@@ -40,14 +42,92 @@ class SocketManager {
     this.isConnected = false;
     this.isConnecting = false;
     this.reconnectAttempts = 0;
-    this.maxReconnectAttempts = 5;
-    this.reconnectDelay = 5000; // 5 seconds
+    this.maxReconnectAttempts = 10;
+    this.reconnectDelay = 5000;
+    this.reconnectTimeout = null;
     this.messageQueue = [];
     this.eventHandlers = {
       connection: [],
       message: [],
-      group: [],
+      qr: [],
+      authenticated: [],
+      ready: [],
+      disconnected: [],
+      error: [],
+      group_join: [],
+      group_leave: [],
+      group_update: [],
+      message_reaction: [],
     };
+    
+    // Bot's own JID (populated after connection)
+    this.info = null;
+  }
+
+  /**
+   * Get the singleton instance
+   */
+  static getInstance() {
+    if (!this.instance) {
+      this.instance = new SocketManager();
+    }
+    return this.instance;
+  }
+
+  /**
+   * Get the socket instance
+   */
+  getSocket() {
+    return this.sock;
+  }
+
+  /**
+   * Get bot's own JID
+   */
+  getWid() {
+    return this.info?.wid?._serialized || this.sock?.user?.id;
+  }
+
+  /**
+   * Event emitter pattern
+   */
+  on(event, handler) {
+    if (this.eventHandlers[event]) {
+      this.eventHandlers[event].push(handler);
+    }
+  }
+
+  emit(event, ...args) {
+    if (this.eventHandlers[event]) {
+      for (const handler of this.eventHandlers[event]) {
+        try {
+          handler(...args);
+        } catch (error) {
+          logger.error(`Error in ${event} handler:`, error);
+        }
+      }
+    }
+  }
+
+  /**
+   * Get Baileys version (async)
+   */
+  async getBaileysVersion() {
+    try {
+      const versionInfo = await fetchLatestBaileysVersion();
+      return versionInfo;
+    } catch (error) {
+      logger.warn('Could not fetch latest Baileys version, using fallback');
+      // Fallback to a known working version
+      return [2, 2414, 12];
+    }
+  }
+
+  /**
+   * Check if authenticated
+   */
+  isAuthenticated() {
+    return this.isConnected && this.sock && authManager.isAuthenticated();
   }
 
   /**
@@ -59,60 +139,58 @@ class SocketManager {
       return;
     }
 
+    if (this.isConnected) {
+      logger.info('Socket already connected');
+      return;
+    }
+
     this.isConnecting = true;
     logger.info('Initializing Baileys socket...');
 
     try {
-      // Check if we need to generate a pairing code
+      // Get auth state
+      const authState = authManager.getState();
       const needsPairing = !authManager.isAuthenticated();
+
+      // Get version
+      const version = await this.getBaileysVersion();
 
       // Create socket configuration
       const sockConfig = {
-        version: this.getBaileysVersion(),
-        auth: authManager.getState(),
-        printQRInTerminal: false, // We'll handle QR/pairing code manually
+        version,
+        auth: authState,
+        printQRInTerminal: false,
         logger: pino({ level: 'silent' }),
         browser: Browsers.ubuntu('Chrome'),
         signalKeyStore,
-        // For Termux/low memory environments
-        msgRetryCounterCache: new NodeCache({ stdTTL: 600, checkperiod: 60 }),
+        msgRetryCounterCache,
         transactionOpts: {
           maxCommitRetries: 10,
           delayBetweenCommitMs: 3000,
         },
-        // Important for Termux
         syncFullHistory: false,
         shouldSyncHistoryMessage: (msg) => false,
-        // Pairing code callback
         generateHighQualityLinkPreview: true,
+        // For Termux - prefer pairing code
         ...(needsPairing && {
-          // This will trigger pairing code generation
+          getMessage: async (key) => {
+            // Handle message retrieval if needed
+            return {};
+          },
         }),
       };
 
       // Create socket
       this.sock = makeWASocket(sockConfig);
 
-      // Setup event handlers
+      // Store bot info
+      this.info = {
+        wid: this.sock.user,
+        pushname: this.sock.user?.name,
+      };
+
+      // Setup event handlers - only once!
       this.setupEventHandlers();
-
-      // Setup auth update handler
-      this.sock.ev.on('creds.update', this.handleCredsUpdate.bind(this));
-
-      // Setup connection update handler
-      this.sock.ev.on('connection.update', this.handleConnectionUpdate.bind(this));
-
-      // Setup messages upsert handler
-      this.sock.ev.on('messages.upsert', this.handleMessagesUpsert.bind(this));
-
-      // Setup message reaction handler
-      this.sock.ev.on('message-receipt.update', this.handleMessageReceipt.bind(this));
-
-      // Setup groups update handler
-      this.sock.ev.on('groups.update', this.handleGroupsUpdate.bind(this));
-
-      // Setup group participants update handler
-      this.sock.ev.on('group-participants.update', this.handleGroupParticipantsUpdate.bind(this));
 
       this.isConnecting = false;
       logger.info('Baileys socket initialized');
@@ -125,48 +203,63 @@ class SocketManager {
   }
 
   /**
-   * Get Baileys version
-   */
-  getBaileysVersion() {
-    // Use the latest version or fallback
-    try {
-      const versionInfo = fetchLatestBaileysVersion();
-      return versionInfo;
-    } catch (error) {
-      logger.warn('Could not fetch latest Baileys version, using fallback');
-      return [2, 2414, 12]; // Fallback version
-    }
-  }
-
-  /**
-   * Setup event handlers
+   * Setup event handlers - called only once
    */
   setupEventHandlers() {
+    if (!this.sock) return;
+
+    // Credentials update - save auth state
+    this.sock.ev.on('creds.update', async () => {
+      try {
+        await authManager.saveCreds();
+        logger.info('Credentials updated and saved');
+      } catch (error) {
+        logger.error('Failed to save credentials:', error);
+      }
+    });
+
     // Connection update
-    this.sock.ev.on('connection.update', (update) => {
-      this.emit('connection', update);
-    });
+    this.sock.ev.on('connection.update', this.handleConnectionUpdate.bind(this));
 
-    // Messages
-    this.sock.ev.on('messages.upsert', (upsert) => {
-      this.emit('message', upsert);
-    });
+    // Messages upsert
+    this.sock.ev.on('messages.upsert', this.handleMessagesUpsert.bind(this));
 
-    // Groups
-    this.sock.ev.on('groups.update', (update) => {
-      this.emit('group', update);
-    });
+    // Message reactions
+    this.sock.ev.on('message-receipt.update', this.handleMessageReceipt.bind(this));
+
+    // Groups update
+    this.sock.ev.on('groups.update', this.handleGroupsUpdate.bind(this));
+
+    // Group participants update
+    this.sock.ev.on('group-participants.update', this.handleGroupParticipantsUpdate.bind(this));
+
+    // Pairing code callback
+    this.sock.ev.on('creds.update', this.handlePairingCode.bind(this));
   }
 
   /**
-   * Handle credentials update
+   * Handle pairing code generation
    */
-  async handleCredsUpdate() {
-    try {
-      await authManager.getSaveCreds()();
-      logger.info('Credentials updated and saved');
-    } catch (error) {
-      logger.error('Failed to save credentials:', error);
+  async handlePairingCode() {
+    if (!authManager.isAuthenticated()) {
+      try {
+        const phoneNumber = process.env.PHONE_NUMBER;
+        if (phoneNumber) {
+          const pairingCode = await this.sock.requestPairingCode(phoneNumber);
+          logger.info('Pairing code generated:', pairingCode);
+          this.emit('pairing_code', pairingCode);
+        } else {
+          logger.warn('PHONE_NUMBER not set in .env, cannot generate pairing code');
+          // Fall back to QR
+          this.sock.ev.on('connection.update', (update) => {
+            if (update.qr) {
+              this.emit('qr', update.qr);
+            }
+          });
+        }
+      } catch (error) {
+        logger.error('Failed to generate pairing code:', error);
+      }
     }
   }
 
@@ -176,42 +269,111 @@ class SocketManager {
   async handleConnectionUpdate(update) {
     const { connection, lastDisconnect, qr, isNewLogin } = update;
 
+    // Handle QR code
     if (qr) {
-      // QR code generated - we prefer pairing code for Termux
-      logger.info('QR code generated, but pairing code is recommended for Termux');
+      logger.info('QR code generated');
       this.emit('qr', qr);
     }
 
+    // New login
     if (isNewLogin) {
       logger.info('New login detected');
       this.isConnected = true;
       this.reconnectAttempts = 0;
       this.emit('authenticated');
+      this.handlePairingCode();
     }
 
-    if (connection === 'connecting') {
-      logger.info('Connecting to WhatsApp...');
+    // Connection states
+    switch (connection) {
+      case 'connecting':
+        logger.info('Connecting to WhatsApp...');
+        break;
+
+      case 'open':
+        logger.info('Connected to WhatsApp');
+        this.isConnected = true;
+        this.reconnectAttempts = 0;
+        this.emit('ready');
+        break;
+
+      case 'close':
+        this.isConnected = false;
+        const shouldReconnect = lastDisconnect?.error instanceof Boom;
+        
+        if (shouldReconnect) {
+          logger.warn('Connection closed, attempting to reconnect...');
+          this.scheduleReconnect(lastDisconnect.error);
+        } else {
+          logger.info('Connection closed gracefully');
+        }
+        
+        this.emit('disconnected', lastDisconnect);
+        break;
+
+      default:
+        logger.debug('Connection state:', connection);
+    }
+  }
+
+  /**
+   * Schedule reconnection
+   */
+  scheduleReconnect(error) {
+    // Clear existing timeout
+    if (this.reconnectTimeout) {
+      clearTimeout(this.reconnectTimeout);
     }
 
-    if (connection === 'open') {
-      logger.info('Connected to WhatsApp');
-      this.isConnected = true;
-      this.reconnectAttempts = 0;
-      this.emit('ready');
+    this.reconnectAttempts++;
+
+    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+      logger.error('Max reconnection attempts reached');
+      this.emit('error', new Error('Max reconnection attempts reached'));
+      return;
     }
 
-    if (connection === 'close') {
-      this.isConnected = false;
-      const shouldReconnect = lastDisconnect.error instanceof Boom;
-      
-      if (shouldReconnect) {
-        logger.warn('Connection closed, attempting to reconnect...');
-        this.scheduleReconnect(lastDisconnect.error);
-      } else {
-        logger.info('Connection closed gracefully');
+    const delay = this.reconnectDelay * this.reconnectAttempts;
+    logger.info(`Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})...`);
+
+    this.reconnectTimeout = setTimeout(async () => {
+      try {
+        await this.connect();
+      } catch (err) {
+        logger.error('Reconnection failed:', err);
+        this.scheduleReconnect(err);
       }
-      
-      this.emit('disconnected', lastDisconnect);
+    }, delay);
+  }
+
+  /**
+   * Connect or reconnect
+   */
+  async connect() {
+    if (this.isConnected) {
+      return;
+    }
+
+    try {
+      await this.init();
+    } catch (error) {
+      logger.error('Connection failed:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Disconnect
+   */
+  async disconnect() {
+    if (!this.sock) return;
+
+    try {
+      await this.sock.ws.close();
+      this.isConnected = false;
+      logger.info('Disconnected from WhatsApp');
+    } catch (error) {
+      logger.error('Error disconnecting:', error);
     }
   }
 
@@ -223,18 +385,18 @@ class SocketManager {
       const messages = upsert.messages;
       const type = upsert.type;
 
-      if (!messages) return;
+      if (!messages || messages.length === 0) return;
 
       // Process each message
-      for (const msg of messages) {
+      for (const baileysMsg of messages) {
         try {
-          // Skip status messages and other non-user messages
-          if (msg.key.fromMe || msg.pushName === 'status@broadcast') {
+          // Skip status messages
+          if (baileysMsg.key.fromMe || baileysMsg.pushName === 'status@broadcast') {
             continue;
           }
 
           // Normalize the message
-          const normalizedMsg = this.normalizeMessage(msg);
+          const normalizedMsg = this.normalizeMessage(baileysMsg);
           
           // Emit message event
           this.emit('message', normalizedMsg);
@@ -256,7 +418,7 @@ class SocketManager {
       const { key, receipt } = update;
       
       // Handle reactions
-      if (receipt.type === 'reaction') {
+      if (receipt?.type === 'reaction') {
         const reaction = {
           type: 'reaction',
           key,
@@ -303,8 +465,8 @@ class SocketManager {
   normalizeMessage(baileysMsg) {
     const { key, pushName, message, participant, timestamp } = baileysMsg;
     
-    const isGroup = key.remoteJid.endsWith('@g.us');
-    const fromMe = key.fromMe;
+    const isGroup = key.remoteJid?.endsWith('@g.us') || false;
+    const fromMe = key.fromMe || false;
     
     // Determine the actual sender
     let author = null;
@@ -312,7 +474,7 @@ class SocketManager {
     
     if (isGroup && participant) {
       author = participant;
-    } else if (!fromMe) {
+    } else if (!fromMe && key.remoteJid) {
       author = key.remoteJid.split('@')[0];
     }
 
@@ -321,37 +483,113 @@ class SocketManager {
     let type = 'chat';
     let hasMedia = false;
     let isMedia = false;
+    let mentionedIds = [];
+    let hasQuotedMsg = false;
+    let quotedMessage = null;
 
     if (message) {
+      // Text message
       if (message.conversation) {
         body = message.conversation;
         type = 'chat';
-      } else if (message.extendedTextMessage) {
-        body = message.extendedTextMessage.text;
+      } 
+      // Extended text (with mentions)
+      else if (message.extendedTextMessage) {
+        body = message.extendedTextMessage.text || '';
         type = 'chat';
-      } else if (message.imageMessage) {
+        
+        // Extract mentions
+        if (message.extendedTextMessage.contextInfo?.mentionedJid) {
+          mentionedIds = message.extendedTextMessage.contextInfo.mentionedJid;
+        }
+        
+        // Check for quoted message
+        if (message.extendedTextMessage.contextInfo?.quotedMessage) {
+          hasQuotedMsg = true;
+          quotedMessage = message.extendedTextMessage.contextInfo.quotedMessage;
+        }
+      }
+      // Image
+      else if (message.imageMessage) {
         type = 'image';
         hasMedia = true;
         isMedia = true;
-      } else if (message.videoMessage) {
+        body = message.imageMessage.caption || '';
+        
+        if (message.imageMessage.contextInfo?.mentionedJid) {
+          mentionedIds = message.imageMessage.contextInfo.mentionedJid;
+        }
+        
+        if (message.imageMessage.contextInfo?.quotedMessage) {
+          hasQuotedMsg = true;
+          quotedMessage = message.imageMessage.contextInfo.quotedMessage;
+        }
+      }
+      // Video
+      else if (message.videoMessage) {
         type = 'video';
         hasMedia = true;
         isMedia = true;
-      } else if (message.stickerMessage) {
+        body = message.videoMessage.caption || '';
+        
+        if (message.videoMessage.contextInfo?.mentionedJid) {
+          mentionedIds = message.videoMessage.contextInfo.mentionedJid;
+        }
+        
+        if (message.videoMessage.contextInfo?.quotedMessage) {
+          hasQuotedMsg = true;
+          quotedMessage = message.videoMessage.contextInfo.quotedMessage;
+        }
+      }
+      // Sticker
+      else if (message.stickerMessage) {
         type = 'sticker';
         hasMedia = true;
         isMedia = true;
-      } else if (message.audioMessage) {
+        
+        if (message.stickerMessage.contextInfo?.quotedMessage) {
+          hasQuotedMsg = true;
+          quotedMessage = message.stickerMessage.contextInfo.quotedMessage;
+        }
+      }
+      // Audio
+      else if (message.audioMessage) {
         type = 'audio';
         hasMedia = true;
         isMedia = true;
-      } else if (message.pttMessage) {
+      }
+      // Voice note (PTT)
+      else if (message.pttMessage) {
         type = 'ptt';
         hasMedia = true;
         isMedia = true;
-      } else if (message.reactionMessage) {
+      }
+      // Document
+      else if (message.documentMessage) {
+        type = 'document';
+        hasMedia = true;
+        isMedia = true;
+        body = message.documentMessage.caption || '';
+      }
+      // Reaction
+      else if (message.reactionMessage) {
         type = 'reaction';
-        body = message.reactionMessage.text;
+        body = message.reactionMessage.text || '';
+      }
+      // Buttons response
+      else if (message.buttonsResponseMessage) {
+        type = 'buttons_response';
+        body = message.buttonsResponseMessage.selectedButtonId || '';
+      }
+      // List response
+      else if (message.listResponseMessage) {
+        type = 'list_response';
+        body = message.listResponseMessage.selectedRowId || '';
+      }
+      // Template button reply
+      else if (message.templateButtonReplyMessage) {
+        type = 'template_button_reply';
+        body = message.templateButtonReplyMessage.selectedId || '';
       }
     }
 
@@ -369,93 +607,126 @@ class SocketManager {
       pushName: pushName,
       isGroup: isGroup,
       chatId: key.remoteJid,
-      // Add raw Baileys message for compatibility
+      mentionedIds: mentionedIds,
+      hasQuotedMsg: hasQuotedMsg,
+      _quoted: quotedMessage,
+      // Store the raw Baileys message for compatibility
       _baileys: baileysMsg,
-      // Add reply function
-      reply: async (content, chatId, options = {}) => {
-        return this.sendMessage(chatId || from, content, options);
-      },
-      // Add downloadMedia function
-      downloadMedia: async () => {
-        return this.downloadMedia(baileysMsg);
-      },
-      // Add getChat function
-      getChat: async () => {
-        return this.getChat(key.remoteJid);
-      },
-      // Add getContact function
-      getContact: async () => {
-        return this.getContact(author || from);
-      },
+      // Store socket reference
+      _sock: this.sock,
+      // Bot's own JID
+      _client: this,
     };
 
-    // Add quoted message support
-    if (message && message.quotedMessage) {
-      normalizedMsg.hasQuotedMsg = true;
-      normalizedMsg._quoted = message.quotedMessage;
-    }
+    // Add reply function
+    normalizedMsg.reply = async (content, chatId, options = {}) => {
+      return this.sendMessage(chatId || from, content, options, normalizedMsg);
+    };
+
+    // Add downloadMedia function
+    normalizedMsg.downloadMedia = async () => {
+      return this.downloadMedia(baileysMsg);
+    };
+
+    // Add getChat function
+    normalizedMsg.getChat = async () => {
+      return this.getChat(key.remoteJid);
+    };
+
+    // Add getContact function
+    normalizedMsg.getContact = async () => {
+      return this.getContact(author || from);
+    };
+
+    // Add react function
+    normalizedMsg.react = async (emoji) => {
+      return this.react(key, emoji);
+    };
+
+    // Add getQuotedMessage function
+    normalizedMsg.getQuotedMessage = async () => {
+      if (hasQuotedMsg && quotedMessage) {
+        return this.normalizeMessage(quotedMessage);
+      }
+      return null;
+    };
 
     return normalizedMsg;
   }
 
   /**
-   * Emit event to handlers
+   * Send a message
    */
-  emit(event, data) {
-    if (this.eventHandlers[event]) {
-      for (const handler of this.eventHandlers[event]) {
-        try {
-          handler(data);
-        } catch (error) {
-          logger.error(`Error in ${event} handler:`, error);
-        }
-      }
+  async sendMessage(jid, content, options = {}, quotedMsg = null) {
+    if (!this.sock) {
+      throw new Error('Socket not initialized');
     }
-  }
 
-  /**
-   * On event
-   */
-  on(event, handler) {
-    if (!this.eventHandlers[event]) {
-      this.eventHandlers[event] = [];
-    }
-    this.eventHandlers[event].push(handler);
-  }
-
-  /**
-   * Remove event handler
-   */
-  off(event, handler) {
-    if (this.eventHandlers[event]) {
-      const index = this.eventHandlers[event].indexOf(handler);
-      if (index > -1) {
-        this.eventHandlers[event].splice(index, 1);
-      }
-    }
-  }
-
-  /**
-   * Send message
-   */
-  async sendMessage(jid, content, options = {}) {
     try {
-      if (!this.sock) {
-        throw new Error('Socket not initialized');
-      }
-
       // Handle different content types
       if (typeof content === 'string') {
         // Text message
-        await this.sock.sendMessage(jid, { text: content }, options);
-      } else if (content.mimetype || content._data) {
-        // Media message (from MessageMedia-like object)
-        const media = {
-          ...content,
+        const msgOptions = {
+          text: content,
+          ...options,
         };
+        
+        // Add quoted message if provided
+        if (quotedMsg && quotedMsg.id) {
+          msgOptions.quoted = {
+            id: quotedMsg.id._serialized || quotedMsg.id,
+            remoteJid: jid,
+          };
+        }
+        
+        if (options.mentions) {
+          msgOptions.mentions = options.mentions;
+        }
+        
+        await this.sock.sendMessage(jid, msgOptions);
+      } else if (content?.mimetype || content?._data || content?.data) {
+        // Media message (from MessageMedia-like object)
+        const media = { ...content };
+        
+        // Add quoted message
+        if (quotedMsg && quotedMsg.id) {
+          media.quoted = {
+            id: quotedMsg.id._serialized || quotedMsg.id,
+            remoteJid: jid,
+          };
+        }
+        
+        // Convert MessageMedia format to Baileys format
+        if (content.mimetype && content.data) {
+          const buffer = Buffer.from(content.data, 'base64');
+          
+          if (content.mimetype.startsWith('image/')) {
+            media.image = buffer;
+            delete media.data;
+            delete media.mimetype;
+          } else if (content.mimetype.startsWith('video/')) {
+            media.video = buffer;
+            delete media.data;
+            delete media.mimetype;
+          } else if (content.mimetype.startsWith('audio/') || content.mimetype === 'audio/ogg') {
+            media.audio = buffer;
+            media.ptt = content.mimetype.includes('ogg');
+            delete media.data;
+            delete media.mimetype;
+          } else if (content.mimetype === 'application/pdf' || content.mimetype.startsWith('application/')) {
+            media.document = buffer;
+            delete media.data;
+            delete media.mimetype;
+          } else if (content.mimetype.startsWith('image/') && content.filename?.endsWith('.webp')) {
+            media.sticker = buffer;
+            delete media.data;
+            delete media.mimetype;
+          }
+        }
+        
         await this.sock.sendMessage(jid, media, options);
       } else {
-        // Unknown content type
+        // Unknown content type - try to send as text
         await this.sock.sendMessage(jid, { text: String(content) }, options);
       }
     } catch (error) {
@@ -465,46 +736,49 @@ class SocketManager {
   }
 
   /**
-   * Download media from message
+   * Download media from a message
    */
   async downloadMedia(baileysMsg) {
+    if (!this.sock) {
+      throw new Error('Socket not initialized');
+    }
+
+    const { message, key } = baileysMsg;
+    
+    if (!message) {
+      throw new Error('No message to download media from');
+    }
+
+    // Determine media type
+    let mediaMessage = null;
+    let mediaType = null;
+
+    if (message.imageMessage) {
+      mediaMessage = message.imageMessage;
+      mediaType = 'image';
+    } else if (message.videoMessage) {
+      mediaMessage = message.videoMessage;
+      mediaType = 'video';
+    } else if (message.stickerMessage) {
+      mediaMessage = message.stickerMessage;
+      mediaType = 'sticker';
+    } else if (message.audioMessage) {
+      mediaMessage = message.audioMessage;
+      mediaType = 'audio';
+    } else if (message.pttMessage) {
+      mediaMessage = message.pttMessage;
+      mediaType = 'ptt';
+    } else if (message.documentMessage) {
+      mediaMessage = message.documentMessage;
+      mediaType = 'document';
+    }
+
+    if (!mediaMessage) {
+      throw new Error('No media found in message');
+    }
+
+    // Download the media
     try {
-      if (!this.sock) {
-        throw new Error('Socket not initialized');
-      }
-
-      const { message, key } = baileysMsg;
-      
-      if (!message) {
-        throw new Error('No message to download media from');
-      }
-
-      // Determine media type
-      let mediaMessage = null;
-      let mediaType = null;
-
-      if (message.imageMessage) {
-        mediaMessage = message.imageMessage;
-        mediaType = 'image';
-      } else if (message.videoMessage) {
-        mediaMessage = message.videoMessage;
-        mediaType = 'video';
-      } else if (message.stickerMessage) {
-        mediaMessage = message.stickerMessage;
-        mediaType = 'sticker';
-      } else if (message.audioMessage) {
-        mediaMessage = message.audioMessage;
-        mediaType = 'audio';
-      } else if (message.pttMessage) {
-        mediaMessage = message.pttMessage;
-        mediaType = 'ptt';
-      }
-
-      if (!mediaMessage) {
-        throw new Error('No media found in message');
-      }
-
-      // Download the media
       const stream = await this.sock.downloadMediaMessage(mediaMessage);
       const chunks = [];
       
@@ -516,7 +790,7 @@ class SocketManager {
 
       return {
         data: buffer.toString('base64'),
-        mimetype: mediaMessage.mimetype,
+        mimetype: mediaMessage.mimetype || this.getMimeTypeFromMediaType(mediaType),
         filename: mediaMessage.fileName,
       };
     } catch (error) {
@@ -529,21 +803,40 @@ class SocketManager {
    * Get chat info
    */
   async getChat(jid) {
-    try {
-      if (!this.sock) {
-        throw new Error('Socket not initialized');
-      }
+    if (!this.sock) {
+      throw new Error('Socket not initialized');
+    }
 
-      // For now, return basic chat info
-      // Baileys doesn't have a direct getChat method
+    const isGroup = jid?.endsWith('@g.us') || false;
+    
+    if (isGroup) {
+      try {
+        const metadata = await this.sock.groupMetadata(jid);
+        return {
+          id: { _serialized: jid },
+          name: metadata.subject,
+          isGroup: true,
+          participants: metadata.participants.map(p => ({
+            id: { _serialized: p.id },
+            isAdmin: p.isAdmin || false,
+            isSuperAdmin: p.isSuperAdmin || false,
+          })),
+        };
+      } catch (error) {
+        logger.error('Failed to get group metadata:', error);
+        return {
+          id: { _serialized: jid },
+          name: jid.split('@')[0],
+          isGroup: true,
+          participants: [],
+        };
+      }
+    } else {
       return {
         id: { _serialized: jid },
-        isGroup: jid.endsWith('@g.us'),
+        isGroup: false,
         name: jid.split('@')[0],
       };
-    } catch (error) {
-      logger.error('Failed to get chat:', error);
-      throw error;
     }
   }
 
@@ -551,15 +844,16 @@ class SocketManager {
    * Get contact info
    */
   async getContact(jid) {
-    try {
-      if (!this.sock) {
-        throw new Error('Socket not initialized');
-      }
+    if (!this.sock) {
+      throw new Error('Socket not initialized');
+    }
 
+    try {
       // For now, return basic contact info
       return {
         id: { _serialized: jid },
         name: jid.split('@')[0],
+        pushName: jid.split('@')[0],
       };
     } catch (error) {
       logger.error('Failed to get contact:', error);
@@ -568,81 +862,43 @@ class SocketManager {
   }
 
   /**
-   * Request pairing code
+   * React to a message
    */
-  async requestPairingCode(phoneNumber) {
-    try {
-      if (!this.sock) {
-        throw new Error('Socket not initialized');
-      }
+  async react(key, emoji) {
+    if (!this.sock) {
+      throw new Error('Socket not initialized');
+    }
 
-      const code = await this.sock.requestPairingCode(phoneNumber);
-      authManager.setPairingCode(code);
-      authManager.setPairingNumber(phoneNumber);
-      
-      logger.info(`Pairing code requested for ${phoneNumber}: ${code}`);
-      
-      return code;
+    try {
+      await this.sock.sendMessage(key.remoteJid, {
+        react: {
+          text: emoji,
+          key: key,
+        },
+      });
     } catch (error) {
-      logger.error('Failed to request pairing code:', error);
+      logger.error('Failed to react:', error);
       throw error;
     }
   }
 
   /**
-   * Disconnect socket
+   * Get MIME type from media type
    */
-  async disconnect() {
-    try {
-      if (this.sock) {
-        await this.sock.ws.close();
-        this.isConnected = false;
-        logger.info('Socket disconnected');
-      }
-    } catch (error) {
-      logger.error('Error disconnecting socket:', error);
-    }
-  }
-
-  /**
-   * Schedule reconnect
-   */
-  scheduleReconnect(error) {
-    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-      logger.error('Max reconnection attempts reached');
-      return;
-    }
-
-    this.reconnectAttempts++;
-    const delay = this.reconnectDelay * this.reconnectAttempts;
-
-    logger.info(`Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})...`);
-
-    setTimeout(async () => {
-      try {
-        await this.init();
-      } catch (error) {
-        logger.error('Reconnection failed:', error);
-        this.scheduleReconnect(error);
-      }
-    }, delay);
-  }
-
-  /**
-   * Get socket instance
-   */
-  getSocket() {
-    return this.sock;
-  }
-
-  /**
-   * Check if connected
-   */
-  isSocketConnected() {
-    return this.isConnected;
+  getMimeTypeFromMediaType(mediaType) {
+    const mimeTypes = {
+      image: 'image/jpeg',
+      video: 'video/mp4',
+      sticker: 'image/webp',
+      audio: 'audio/mpeg',
+      ptt: 'audio/ogg',
+      document: 'application/octet-stream',
+    };
+    return mimeTypes[mediaType] || 'application/octet-stream';
   }
 }
 
+// Singleton instance
 const socketManager = new SocketManager();
 
 export default socketManager;
