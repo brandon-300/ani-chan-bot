@@ -11,14 +11,14 @@ import fs from 'fs';
 import { execSync } from 'child_process';
 
 // Import utilities
-import { safeGetQuotedMessage, safeGetChat, safeGetContact, resolveSenderName, withRetry, decodeIdKey, isOwner, isMod, buildRegistrationIntroText, buildRegistrationProgressText } from '../utils/helpers.js';
-import { BOT_NAME, MONGODB_URI, BOT_PREFIX, AI_CALL_NAMES_OVERRIDE } from '../utils/config.js';
-import { getActivePersonaSafe } from '../utils/persona.js';
-import aiStickers from '../utils/aiStickers.js';
-import { instrumentHttpClients, wrapWithUsageTracking } from '../utils/usageTracking.js';
-import logger from '../utils/logger.js';
-import geminiGate from '../utils/geminiGate.js';
-import { tryHandleQuizAnswer } from '../commands/games/quiz.js';
+import { safeGetQuotedMessage, safeGetChat, safeGetContact, resolveSenderName, withRetry, decodeIdKey, isOwner, isMod, buildRegistrationIntroText, buildRegistrationProgressText } from './utils/helpers.js';
+import { BOT_NAME, MONGODB_URI, BOT_PREFIX, AI_CALL_NAMES_OVERRIDE } from './utils/config.js';
+import { getActivePersonaSafe } from './utils/persona.js';
+import aiStickers from './utils/aiStickers.js';
+import { instrumentHttpClients, wrapWithUsageTracking } from './utils/usageTracking.js';
+import logger from './utils/logger.js';
+import geminiGate from './utils/geminiGate.js';
+import { tryHandleQuizAnswer } from './commands/games/quiz.js';
 
 // Import Baileys components
 import socketManager from './client/socket.js';
@@ -56,14 +56,14 @@ async function connectMongo() {
     });
 
     // Sync AiConversation indexes
-    const AiConversation = require('../models/AiConversation.js');
+    const AiConversation = (await import('./models/AiConversation.js')).default;
     AiConversation.syncIndexes().catch(err => {
       logger.error('background.ai_conversation_indexes.failed', err);
     });
 
     // Migrate group activity log
-    const GroupActivity = require('../models/GroupActivity.js');
-    const Group = require('../models/Group.js');
+    const GroupActivity = (await import('./models/GroupActivity.js')).default;
+    const Group = (await import('./models/Group.js')).default;
     
     async function migrateGroupActivityLog() {
       const groups = await Group.find({ activityLog: { $exists: true, $ne: {} } })
@@ -158,7 +158,7 @@ function enqueueCommand(chatId, task) {
 
 // Load commands
 const commands = {};
-const commandDir = path.join(__dirname, '../commands');
+const commandDir = path.join(__dirname, './commands');
 
 try {
   const fs = await import('fs');
@@ -210,7 +210,7 @@ const aliases = {
 };
 
 // Command reference
-const { COMMAND_REFERENCE } = await import('../utils/commandReference.js');
+const { COMMAND_REFERENCE } = await import('./utils/commandReference.js');
 
 // Extract menu commands
 function extractMenuCommands(cmdField) {
@@ -322,7 +322,7 @@ async function checkRegistrationGate(msg, command) {
 
   let existingUser = null;
   try {
-    const User = await import('../models/User.js');
+    const User = await import('./models/User.js');
     existingUser = await User.default.findOne({ id: senderId }, 'registration').lean();
   } catch (err) {
     console.error('Registration gate: user lookup failed, allowing command through:', err.message);
@@ -675,7 +675,7 @@ async function initialize() {
               // Post-registration menu send
               if (REGISTRATION_BYPASS_COMMANDS.has(command) && registrationCheck.senderId && !registrationCheck.wasActive) {
                 try {
-                  const User = await import('../models/User.js');
+                  const User = await import('./models/User.js');
                   const freshUser = await User.default.findOne({ id: registrationCheck.senderId }, 'registration').lean();
                   if (freshUser?.registration?.status === 'active') {
                     await sendQuickMenu(msg);
@@ -709,21 +709,21 @@ async function initialize() {
       console.log('✅ WhatsApp authenticated');
     });
 
-    socketManager.on('ready', () => {
+    socketManager.on('ready', async () => {
       console.log('✅ WhatsApp ready');
       
       // Initialize background tasks
-      const scheduler = await import('../utils/scheduler.js');
-      const { _initCardLending } = await import('../commands/cards.js');
-      const { _initCardDrops } = await import('../commands/cards.js');
-      const { _seedParticipants } = await import('../commands/admin.js');
-      const { _resumePendingMutes } = await import('../commands/admin.js');
-      const { _initAfk } = await import('../commands/afk.js');
-      const { _initTTT } = await import('../commands/games/tictactoe.js');
-      const { _initC4 } = await import('../commands/games/connect4.js');
-      const { _initBattle } = await import('../commands/games/battle.js');
-      const { _initChess } = await import('../commands/games/chess.js');
-      const { _initQuiz } = await import('../commands/games/quiz.js');
+      const scheduler = await import('./utils/scheduler.js');
+      const { _initCardLending } = await import('./commands/cards.js');
+      const { _initCardDrops } = await import('./commands/cards.js');
+      const { _seedParticipants } = await import('./commands/admin.js');
+      const { _resumePendingMutes } = await import('./commands/admin.js');
+      const { _initAfk } = await import('./commands/afk.js');
+      const { _initTTT } = await import('./commands/games/tictactoe.js');
+      const { _initC4 } = await import('./commands/games/connect4.js');
+      const { _initBattle } = await import('./commands/games/battle.js');
+      const { _initChess } = await import('./commands/games/chess.js');
+      const { _initQuiz } = await import('./commands/games/quiz.js');
 
       runLoggedBackgroundTask('scheduler_init', {}, () => scheduler.default.init(client)).catch(err => logger.error('background.scheduler_init.failed', err));
       
@@ -779,7 +779,7 @@ async function initialize() {
     // Group events
     socketManager.on('group_join', async (notification) => {
       try {
-        const { commands: cmds } = await import('../commands/admin.js');
+        const { commands: cmds } = await import('./commands/admin.js');
         if (cmds && cmds.onJoin) await cmds.onJoin(client, notification);
       } catch (err) {
         console.error('group_join error:', err.message);
@@ -788,7 +788,7 @@ async function initialize() {
 
     socketManager.on('group_leave', async (notification) => {
       try {
-        const { commands: cmds } = await import('../commands/admin.js');
+        const { commands: cmds } = await import('./commands/admin.js');
         if (cmds && cmds.onLeave) await cmds.onLeave(client, notification);
       } catch (err) {
         console.error('group_leave error:', err.message);
@@ -800,7 +800,7 @@ async function initialize() {
       try {
         if (msg.fromMe) return;
         const contact = await safeGetContactWrapper(msg);
-        const { _checkAfkMentions } = await import('../commands/afk.js');
+        const { _checkAfkMentions } = await import('./commands/afk.js');
         if (_checkAfkMentions) await _checkAfkMentions(client, msg);
       } catch (err) {
         console.error('AFK mention check error:', err.message);
@@ -812,7 +812,7 @@ async function initialize() {
       try {
         if (msg.fromMe) return;
         const contact = await safeGetContactWrapper(msg);
-        const { _checkAfkReturn } = await import('../commands/afk.js');
+        const { _checkAfkReturn } = await import('./commands/afk.js');
         if (_checkAfkReturn) await _checkAfkReturn(msg, contact.id._serialized);
       } catch (err) {
         console.error('AFK welcome-back check failed:', err.message);
@@ -837,7 +837,7 @@ async function initialize() {
         }
         if (!chat.isGroup) return;
 
-        const Group = await import('../models/Group.js');
+        const Group = await import('./models/Group.js');
         const group = await Group.default.findOne({ id: chat.id._serialized });
         if (!group?.antilink) return;
 
@@ -892,7 +892,7 @@ async function initialize() {
         const contact = await safeGetContactWrapper(msg);
         const senderId = contact.id._serialized;
 
-        const Group = await import('../models/Group.js');
+        const Group = await import('./models/Group.js');
         
         await withRetry(() => Group.default.findOneAndUpdate(
           { id: chat.id._serialized },
@@ -917,39 +917,39 @@ async function initialize() {
     });
 
     // Heartbeat
-    setInterval(() => {
+    setInterval(async () => {
       runLoggedBackgroundTask('heartbeat', {}, async () => {
         logger.write('INFO', 'heartbeat', { inFlightCommands: inFlightCount, heavyQueueLength: heavyQueue.length, activeChatQueues: commandQueues.size });
       }).catch(err => logger.error('background.heartbeat.unhandled', err));
     }, 60000);
 
     // Daily stats digest
-    setInterval(() => {
-      const { _maybeSendDailyStats } = await import('../commands/general.js');
+    setInterval(async () => {
+      const { _maybeSendDailyStats } = await import('./commands/general.js');
       if (_maybeSendDailyStats) {
         runLoggedBackgroundTask('daily_stats_digest_check', {}, () => _maybeSendDailyStats(client)).catch(err => logger.error('background.daily_stats_digest_check.unhandled', err));
       }
     }, 60000);
 
     // Inactive user cleanup
-    setInterval(() => {
-      const { _sweepInactiveUsers } = await import('../commands/admin.js');
+    setInterval(async () => {
+      const { _sweepInactiveUsers } = await import('./commands/admin.js');
       if (_sweepInactiveUsers) {
         runLoggedBackgroundTask('inactive_user_sweep_check', {}, () => _sweepInactiveUsers(client)).catch(err => logger.error('background.inactive_user_sweep_check.unhandled', err));
       }
     }, 60000);
 
     // Guild events
-    setInterval(() => {
-      const { _maybeSendGuildEvents } = await import('../commands/guilds.js');
+    setInterval(async () => {
+      const { _maybeSendGuildEvents } = await import('./commands/guilds.js');
       if (_maybeSendGuildEvents) {
         runLoggedBackgroundTask('guild_events_check', {}, () => _maybeSendGuildEvents(client)).catch(err => logger.error('background.guild_events_check.unhandled', err));
       }
     }, 60000);
 
     // Daily news broadcast
-    setInterval(() => {
-      const { _maybeSendDailyNews } = await import('../commands/news.js');
+    setInterval(async () => {
+      const { _maybeSendDailyNews } = await import('./commands/news.js');
       if (_maybeSendDailyNews) {
         runLoggedBackgroundTask('daily_news_broadcast_check', {}, () => _maybeSendDailyNews(client)).catch(err => logger.error('background.daily_news_broadcast_check.unhandled', err));
       }
