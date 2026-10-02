@@ -11,10 +11,11 @@
 //   the library -> cheap generic Gemini screening (throttled, retried, cached)
 //   -> pick the most varied reactions to reach TARGET per anime -> upload each
 //   physical asset to Cloudinary once -> insert ONE shared Mongo record.
-// Persona analysis is NOT done here: the bot's existing delayed background
-// queue does it on the next start, using the anime/character/generic metadata
-// stored below. Safe to re-run: existing hashes are skipped and an anime that
-// already has TARGET stickers is left alone.
+// Persona analysis is NOT done here, and is not automatic either: after the
+// import, send .stickeranalyze new to the bot in your private DM. That judges
+// every character from the generic descriptions stored below, in a handful of
+// batched requests. Safe to re-run: existing hashes are skipped and an anime
+// that already has TARGET stickers is left alone.
 
 const path = require('node:path');
 const crypto = require('node:crypto');
@@ -500,7 +501,7 @@ async function main() {
     failures.forEach(line => console.error(` - ${line}`));
     process.exitCode = 1;
   }
-  if (totalImported > 0) console.log('Restart the bot so it loads the new library and queues persona analysis: pm2 restart ani-chan-bot');
+  if (totalImported > 0) console.log('Next: pm2 restart ani-chan-bot (loads the new library), then send .stickeranalyze new to the bot in your private DM. Nothing is analysed automatically.');
 }
 
 if (require.main === module) {

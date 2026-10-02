@@ -125,7 +125,9 @@ function positiveEnvInt(name, fallback) {
 // ─── Persona-aware AI and Cloudinary/Mongo sticker library ──────────────────
 const AI_PERSONA = (process.env.AI_PERSONA || 'marin').trim().toLowerCase();
 const AI_STICKERS_ENABLED = envBool('AI_STICKERS_ENABLED', false);
-const AI_STICKER_AUTO_ANALYZE = envBool('AI_STICKER_AUTO_ANALYZE', true);
+// Retired: sticker analysis is manual now (.stickeranalyze). The value is only read
+// so the bot can tell an owner whose .env still sets it that it is ignored.
+const AI_STICKER_AUTO_ANALYZE = envBool('AI_STICKER_AUTO_ANALYZE', false);
 const AI_STICKER_IMPORT_TIMEOUT_MINUTES = positiveEnvInt('AI_STICKER_IMPORT_TIMEOUT_MINUTES', 10);
 const AI_STICKER_MAX_BYTES = positiveEnvInt('AI_STICKER_MAX_BYTES', 2 * 1024 * 1024);
 const AI_STICKER_DOWNLOAD_TIMEOUT_MS = positiveEnvInt('AI_STICKER_DOWNLOAD_TIMEOUT_MS', 30000);
@@ -201,6 +203,17 @@ const AI_STICKER_MATCH_THRESHOLD = positiveEnvInt('AI_STICKER_MATCH_THRESHOLD', 
 const AI_STICKER_MIN_PERSONA_FIT = Math.max(0, Math.min(1, Number(process.env.AI_STICKER_MIN_PERSONA_FIT ?? 0.6) || 0.6));
 const AI_STICKER_ANALYSIS_DELAY_MS = envInt('AI_STICKER_ANALYSIS_DELAY_MS', 8000);
 
+// ─── Sticker analysis cost control ──────────────────────────────────────────
+// Analysis is MANUAL (.stickeranalyze in the owner's private DM): nothing runs
+// at startup, after an update, or when a sticker is imported. When it does run,
+// one Gemini request covers many stickers and every persona at once:
+//   FIT_BATCH    stickers judged per text request (all personas included)
+//   VISION_BATCH stickers looked at per image request, only for stickers that
+//                have no description yet (one look is shared by all personas)
+// A library of N stickers costs about N/FIT_BATCH requests to analyse.
+const AI_STICKER_FIT_BATCH = positiveEnvInt('AI_STICKER_FIT_BATCH', 20);
+const AI_STICKER_VISION_BATCH = positiveEnvInt('AI_STICKER_VISION_BATCH', 6);
+
 // ─── Gemini quota protection ────────────────────────────────────────────────
 // When Gemini reports the quota is used up, the background sticker-analysis
 // queue pauses instead of failing every remaining sticker. It waits this long
@@ -265,6 +278,8 @@ module.exports = {
   AI_VOICE_MAX_OUTPUT_TOKENS,
   AI_STICKER_CATALOGUE_MAX,
   AI_STICKER_RECENT_EXCLUDE,
+  AI_STICKER_FIT_BATCH,
+  AI_STICKER_VISION_BATCH,
   AI_REACT_TO_REACTIONS,
   AI_REACT_CHANCE,
   AI_REACT_COOLDOWN_MS,

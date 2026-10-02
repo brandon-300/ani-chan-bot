@@ -239,10 +239,11 @@ const COMMAND_REFERENCE = [
     emoji: '🤖',
     title: 'AI',
     items: [
-      { cmd: '.copilot [msg]', desc: 'Full context-aware AI chat as the active persona (Gemini) — text reply without emojis' },
+      { cmd: '.copilot [msg]', desc: 'Full context-aware AI chat as the active persona (Gemini) — replies in words, an emoji reaction, a sticker, or a mix' },
       { cmd: '.gpt [msg]', desc: 'Single-turn AI question as the selected persona (Gemini) — text reply' },
       { cmd: '.voice [msg]', desc: 'Same AI chat as .copilot, replied as a spoken voice note (Fish Audio TTS)' },
       { cmd: '.stickerimport [on|off]', desc: 'Owner only, private DM: add WebP stickers once to the shared Cloudinary/Mongo AI library used by every persona' },
+      { cmd: '.stickeranalyze [new|redo confirm|stop]', desc: 'Owner only, private DM: analyse stickers so the AI can use them. Nothing is analysed automatically; send it alone to see what needs analysing and the cost' },
       { cmd: '.imagine [prompt]', desc: 'AI image generation (Gemini 2.5 Flash Image)' },
       { cmd: '.upscale', desc: 'Upscale a replied image' },
       { cmd: '.translate [lang] [text] / .tt', desc: 'Translate text' },

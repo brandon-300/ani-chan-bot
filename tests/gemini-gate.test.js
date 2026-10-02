@@ -48,7 +48,7 @@ function makeLibrary(hashes) {
     animeName: 'Naruto',
     animeId: 'naruto',
     characters: [],
-    genericAnalysis: null,
+    genericAnalysis: { expression: 'smug grin', emotions: ['playful'], moods: ['light'], uses: ['reply'], reactions: ['teasing'], diversityScore: 0.5 },
     personaAnalyses: [],
   }]));
   const clone = value => (value ? JSON.parse(JSON.stringify(value)) : value);
@@ -68,10 +68,17 @@ function makeLibrary(hashes) {
   };
 }
 
-const CLASSIFICATION = JSON.stringify({
-  emotions: ['playful'], moods: ['light'], uses: ['reply'], reactions: ['amused'],
-  intensity: 'medium', personaFit: 0.9, note: 'test',
-});
+// A well-formed answer to the persona-fit prompt: every numbered sticker, for every
+// character listed in the prompt. Built from the prompt itself so the tests keep
+// working whatever the batch size is.
+function fitReply(prompt, { fit = 0.9, reactions = ['amused'] } = {}) {
+  const personaIds = [...prompt.matchAll(/^\[([a-z0-9_-]+)\] /gm)].map(m => m[1]);
+  const section = prompt.slice(prompt.indexOf('Stickers (described in words):'));
+  const ids = [...section.matchAll(/^(\d+)\. /gm)].map(m => Number(m[1]));
+  return JSON.stringify({
+    results: ids.map(id => ({ id, p: Object.fromEntries(personaIds.map(pid => [pid, { fit, reactions, intensity: 'medium' }])) })),
+  });
+}
 
 function quotaError(message = 'You exceeded your current quota, please check your plan and billing details.') {
   const err = new Error(`Gemini vision analysis failed: ${message}`);
@@ -158,16 +165,15 @@ test('queue: a quota error pauses the queue, keeps every task queued, saves no f
   aiStickers._setAdaptersForTests({ Model: library, storage: { isCloudConfigured: () => true }, mongoConnected: () => true });
 
   const originalGet = axios.get;
-  const originalVision = gemini.generateVision;
-  axios.get = async () => ({ data: Buffer.from('fake-webp-bytes') });
+  const originalText = gemini.generateText;
   let calls = 0;
   let quotaLeft = 2; // the first two attempts hit the quota wall
   const bypassFlags = [];
-  gemini.generateVision = async options => {
+  gemini.generateText = async options => {
     calls += 1;
     bypassFlags.push(options.bypassGate);
     if (quotaLeft > 0) { quotaLeft -= 1; throw quotaError(); }
-    return CLASSIFICATION;
+    return fitReply(options.prompt);
   };
 
   try {
@@ -177,19 +183,17 @@ test('queue: a quota error pauses the queue, keeps every task queued, saves no f
 
     await waitFor(() => aiStickers._getAnalysisState().pausedForQuota, 'first quota pause');
     let state = aiStickers._getAnalysisState();
-    assert.equal(state.queued, 3, 'the failed task went back to the queue, none were dropped');
+    assert.equal(state.queued, 3, 'the whole batch went back to the queue, none were dropped');
     assert.equal(state.quotaStreak, 1);
-    assert.equal(calls, 1, 'stopped after the first quota error instead of burning through the rest');
+    assert.equal(calls, 1, 'one request for the whole batch, then it stopped instead of burning through the rest');
     assert.equal(geminiGate.isReserved(), true, 'still reserved while paused');
     assert.equal(library.records.get('h1').personaAnalyses.length, 0, 'no failed status was written for a quota error');
 
-    // Cooldown 80 ms -> retry hits quota again -> doubled cooldown (160 ms).
     await waitFor(() => aiStickers._getAnalysisState().quotaStreak === 2, 'second quota pause');
     state = aiStickers._getAnalysisState();
     assert.equal(state.queued, 3);
     assert.ok(state.resumeAt - Date.now() > 100, `cooldown should have doubled, remaining ${state.resumeAt - Date.now()} ms`);
 
-    // Then it recovers on its own and finishes everything.
     await waitFor(() => !geminiGate.isReserved(), 'queue to drain', 6000);
     state = aiStickers._getAnalysisState();
     assert.deepEqual({ busy: state.busy, queued: state.queued, paused: state.pausedForQuota, streak: state.quotaStreak }, { busy: false, queued: 0, paused: false, streak: 0 });
@@ -197,41 +201,64 @@ test('queue: a quota error pauses the queue, keeps every task queued, saves no f
       const analyses = library.records.get(hash).personaAnalyses;
       assert.equal(analyses.length, 1, `${hash} analysed exactly once`);
       assert.equal(analyses[0].analysisStatus, 'classified');
+      assert.deepEqual(analyses[0].reactions, ['amused']);
     }
     assert.ok(bypassFlags.every(flag => flag === true), 'the analysis queue always calls Gemini with bypassGate');
-    assert.equal(calls, 5, '2 quota failures + 3 successful analyses');
+    assert.equal(calls, 3, '2 quota failures + ONE successful request for all 3 stickers');
   } finally {
     axios.get = originalGet;
-    gemini.generateVision = originalVision;
+    gemini.generateText = originalText;
     aiStickers._setAdaptersForTests();
   }
 });
 
-test('queue: ordinary failures (timeouts) are recorded and do not pause the queue', async () => {
+test('queue: an ordinary failure is recorded for that batch, does not pause the queue, and never overwrites a good analysis', async () => {
   const library = makeLibrary(['a1', 'a2']);
+  library.records.get('a2').personaAnalyses = [{ personaId: 'marin', analysisVersion: 1, personaVersion: 'old', analysisStatus: 'classified', emotions: [], moods: [], uses: [], reactions: ['happy'], intensity: 'medium', personaFit: 0.8, notes: '' }];
   aiStickers._setAdaptersForTests({ Model: library, storage: { isCloudConfigured: () => true }, mongoConnected: () => true });
-  const originalGet = axios.get;
-  const originalVision = gemini.generateVision;
-  axios.get = async () => ({ data: Buffer.from('fake-webp-bytes') });
+  const originalText = gemini.generateText;
   let calls = 0;
-  gemini.generateVision = async () => {
-    calls += 1;
-    if (calls === 1) throw new Error('Gemini vision analysis failed: read ECONNABORTED');
-    return CLASSIFICATION;
-  };
+  gemini.generateText = async () => { calls += 1; throw new Error('Gemini request failed: read ECONNABORTED'); };
+  const logs = [];
+  const originalWarn = console.warn; const originalLog = console.log;
+  console.warn = (...a) => logs.push(a.join(' ')); console.log = (...a) => logs.push(a.join(' '));
   try {
     aiStickers._enqueueAnalysis('marin', 'a1');
     aiStickers._enqueueAnalysis('marin', 'a2');
     await waitFor(() => !geminiGate.isReserved(), 'queue to drain');
-    assert.equal(calls, 2, 'a timeout is an ordinary failure: it is recorded and the queue moves on');
+    assert.equal(calls, 1, 'one request for the batch; a timeout is not retried in a loop');
     const first = library.records.get('a1').personaAnalyses[0];
     assert.equal(first.analysisStatus, 'unclassified');
-    assert.match(first.analysisError, /ECONNABORTED/);
-    assert.equal(library.records.get('a2').personaAnalyses[0].analysisStatus, 'classified');
+    assert.match(first.analysisError, /No usable result/);
+    const second = library.records.get('a2').personaAnalyses[0];
+    assert.equal(second.analysisStatus, 'classified', 'a failed redo must not destroy a working analysis');
+    assert.deepEqual(second.reactions, ['happy']);
     assert.equal(aiStickers._getAnalysisState().quotaStreak, 0);
+    assert.match(logs.join('\n'), /Could not read Gemini's persona-fit reply for 2 sticker\(s\): .*ECONNABORTED/);
   } finally {
-    axios.get = originalGet;
-    gemini.generateVision = originalVision;
+    console.warn = originalWarn; console.log = originalLog;
+    gemini.generateText = originalText;
+    aiStickers._setAdaptersForTests();
+  }
+});
+
+test('queue: an unreadable reply is split in half and retried, not given up on', async () => {
+  const library = makeLibrary(['s1', 's2', 's3', 's4']);
+  aiStickers._setAdaptersForTests({ Model: library, storage: { isCloudConfigured: () => true }, mongoConnected: () => true });
+  const originalText = gemini.generateText;
+  const sizes = [];
+  gemini.generateText = async options => {
+    const count = [...options.prompt.slice(options.prompt.indexOf('Stickers (described in words):')).matchAll(/^(\d+)\. /gm)].length;
+    sizes.push(count);
+    return count > 2 ? 'sorry, I cannot do that as JSON' : fitReply(options.prompt);
+  };
+  try {
+    for (const hash of ['s1', 's2', 's3', 's4']) aiStickers._enqueueAnalysis('marin', hash);
+    await waitFor(() => !geminiGate.isReserved(), 'queue to drain');
+    assert.deepEqual(sizes, [4, 2, 2], 'whole batch first, then two halves');
+    for (const hash of ['s1', 's2', 's3', 's4']) assert.equal(library.records.get(hash).personaAnalyses[0].analysisStatus, 'classified');
+  } finally {
+    gemini.generateText = originalText;
     aiStickers._setAdaptersForTests();
   }
 });
@@ -239,14 +266,12 @@ test('queue: ordinary failures (timeouts) are recorded and do not pause the queu
 test('queue: a Gemini "retry in Ns" hint sets the pause length (bounded by the configured maximum)', async () => {
   const library = makeLibrary(['r1']);
   aiStickers._setAdaptersForTests({ Model: library, storage: { isCloudConfigured: () => true }, mongoConnected: () => true });
-  const originalGet = axios.get;
-  const originalVision = gemini.generateVision;
-  axios.get = async () => ({ data: Buffer.from('fake-webp-bytes') });
+  const originalText = gemini.generateText;
   let calls = 0;
-  gemini.generateVision = async () => {
+  gemini.generateText = async options => {
     calls += 1;
     if (calls === 1) throw quotaError('Quota exceeded for metric requests per minute. Please retry in 20s.');
-    return CLASSIFICATION;
+    return fitReply(options.prompt);
   };
   try {
     aiStickers._enqueueAnalysis('marin', 'r1');
@@ -259,8 +284,7 @@ test('queue: a Gemini "retry in Ns" hint sets the pause length (bounded by the c
     assert.equal(library.records.get('r1').personaAnalyses[0].analysisStatus, 'classified');
     assert.equal(calls, 2);
   } finally {
-    axios.get = originalGet;
-    gemini.generateVision = originalVision;
+    gemini.generateText = originalText;
     aiStickers._setAdaptersForTests();
   }
 });

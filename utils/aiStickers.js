@@ -22,6 +22,8 @@ const {
   AI_STICKER_QUOTA_MAX_COOLDOWN_MS,
   AI_STICKER_CATALOGUE_MAX,
   AI_STICKER_RECENT_EXCLUDE,
+  AI_STICKER_FIT_BATCH,
+  AI_STICKER_VISION_BATCH,
 } = require('./config');
 const { getActivePersonaSafe, listPersonaIds, loadPersona } = require('./persona');
 const logger = require('./logger');
@@ -120,10 +122,14 @@ function plainSticker(doc) {
   };
 }
 
+// A fingerprint of the character DEFINITION only (not the reply-style, emoji or
+// voice prompts). It is stored with each analysis for information; nothing
+// compares it any more, because editing a persona file must never cause the
+// whole library to be re-analysed behind the owner's back.
 function personaVersion(persona) {
   if (!persona) return '';
   return crypto.createHash('sha256')
-    .update([persona.id, persona.personality, persona.text].join('\n'))
+    .update([persona.id, persona.personality].join('\n'))
     .digest('hex')
     .slice(0, 16);
 }
@@ -155,21 +161,17 @@ function getPersonaAnalysis(record, personaId) {
   return legacy?.personaId === personaId ? legacy : null;
 }
 
-function stalePersonaIds(record) {
-  return listPersonaIds().filter(personaId => {
-    try {
-      const analysis = getPersonaAnalysis(record, personaId);
-      const currentVersion = personaVersion(loadPersona(personaId));
-      return !analysis
-        || analysis.analysisStatus !== 'classified'
-        || analysis.analysisVersion !== AI_STICKER_ANALYSIS_VERSION
-        || analysis.personaVersion !== currentVersion;
-    } catch (err) {
-      logger.error('background.ai_sticker_analysis.persona_check_failed', err, { personaId, hash: record?.hash });
-      return false;
-    }
-  });
+// An analysis is usable when it exists and produced labels. Nothing else makes
+// it "stale": not a changed persona prompt, not a new analysis version. Doing
+// the analysis again is the owner's decision (.stickeranalyze redo).
+function isUsableAnalysis(analysis) {
+  return Boolean(analysis) && analysis.analysisStatus === 'classified';
 }
+
+function personaIdsNeedingAnalysis(record, personaIds) {
+  return personaIds.filter(personaId => !isUsableAnalysis(getPersonaAnalysis(record, personaId)));
+}
+
 
 function withMergedAnalyses(records) {
   const byHash = new Map();
@@ -249,7 +251,7 @@ function enqueueAnalysis(personaId, hash) {
   if (queuedAnalysis.has(key)) return;
   queuedAnalysis.add(key);
   analysisQueue.push({ personaId, hash });
-  logger.write('INFO', 'background.ai_sticker_analysis.queued', { personaId, hash, queueLength: analysisQueue.length });
+  logger.write('DEBUG', 'background.ai_sticker_analysis.queued', { personaId, hash, queueLength: analysisQueue.length });
   setImmediate(runAnalysisQueue);
 }
 
@@ -296,36 +298,49 @@ function pauseForQuota(retryHintMs, remaining) {
   });
 }
 
+// Takes the next group of queued tasks: up to AI_STICKER_FIT_BATCH different
+// stickers, with every persona that is queued for each of them.
+function takeBatch() {
+  const batch = [];
+  const hashes = new Set();
+  while (analysisQueue.length) {
+    const next = analysisQueue[0];
+    if (!hashes.has(next.hash) && hashes.size >= AI_STICKER_FIT_BATCH) break;
+    hashes.add(next.hash);
+    batch.push(analysisQueue.shift());
+  }
+  return batch;
+}
+
 async function runAnalysisQueue() {
   if (analysisBusy || quotaResumeTimer) return;
   analysisBusy = true;
   logger.write('INFO', 'background.ai_sticker_analysis.worker.start', { queued: analysisQueue.length });
   try {
     while (analysisQueue.length) {
-      const task = analysisQueue.shift();
-      const key = analysisKey(task.personaId, task.hash);
-      const operation = logger.start('background.ai_sticker_analysis.task', { personaId: task.personaId, hash: task.hash, remaining: analysisQueue.length });
+      const batch = takeBatch();
+      const stickers = new Set(batch.map(task => task.hash)).size;
+      const operation = logger.start('background.ai_sticker_analysis.batch', { stickers, tasks: batch.length, remaining: analysisQueue.length });
       let requeued = false;
       let retryHintMs = null;
       try {
-        const result = await analyzeSticker(task.personaId, task.hash);
-        if (result?.quota) {
-          retryHintMs = result.retryHintMs || null;
-          // Not this sticker's fault: keep it queued (at the front) and wait
-          // for the quota instead of marking it failed.
+        const result = await analyzeBatch(batch);
+        if (result.quota) {
+          // Not the stickers' fault: put the whole batch back at the front and
+          // wait for the quota instead of marking anything failed.
           operation.finish('failed', { error: new Error(result.error) });
-          analysisQueue.unshift(task);
+          analysisQueue.unshift(...batch);
           requeued = true;
+          retryHintMs = result.retryHintMs || null;
         } else {
           quotaStreak = 0;
-          if (result?.failed) operation.finish('failed', { error: new Error(result.error) });
-          else operation.finish('success', { reactions: result?.reactions || [] });
+          operation.finish(result.failed ? 'partial' : 'success', { analysed: result.ok, failed: result.failed, requests: result.requests, stickers });
         }
       } catch (err) {
         operation.finish('failed', { error: err });
-        logger.error('background.ai_sticker_analysis.task.unhandled', err, { personaId: task.personaId, hash: task.hash });
+        logger.error('background.ai_sticker_analysis.batch.unhandled', err, { tasks: batch.length });
       } finally {
-        if (!requeued) queuedAnalysis.delete(key);
+        if (!requeued) for (const task of batch) queuedAnalysis.delete(analysisKey(task.personaId, task.hash));
       }
       if (requeued) {
         pauseForQuota(retryHintMs, analysisQueue.length);
@@ -405,104 +420,465 @@ async function fetchImageBuffer(url) {
   return bytes;
 }
 
-async function analyzeSticker(sourcePersona, hash) {
-  const personaId = typeof sourcePersona === 'string' ? sourcePersona : sourcePersona?.id;
-  if (!personaId || personaId === SHARED_LIBRARY_KEY) return;
-  const persona = typeof sourcePersona === 'object' ? sourcePersona : loadPersona(personaId);
-  const version = personaVersion(persona);
-  let document;
+// ─── Analysis: one request covers many stickers and every persona ───────────
+// Old design: one IMAGE request per sticker per persona (3 personas x 100
+// stickers = 300 requests, every time). Now:
+//   1. A sticker with no description yet gets looked at ONCE (several stickers
+//      per image request). Imported stickers already have one from the import.
+//   2. How well each persona would use each sticker is judged from those words
+//      in a single TEXT request for up to AI_STICKER_FIT_BATCH stickers and
+//      every persona together (100 stickers = 5 requests).
+// Failures never overwrite an analysis that already worked.
+
+const MAX_REQUESTS_PER_BATCH = 8;
+
+function chunk(list, size) {
+  const out = [];
+  for (let i = 0; i < list.length; i += size) out.push(list.slice(i, i + size));
+  return out;
+}
+
+function hasDescription(doc) {
+  const generic = doc?.genericAnalysis;
+  return Boolean(generic && (String(generic.expression || '').trim() || (Array.isArray(generic.reactions) && generic.reactions.length)));
+}
+
+function parseJsonObject(rawText, what) {
+  const text = String(rawText || '').replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  const fail = detail => Object.assign(new Error(`Gemini ${detail} for ${what}.`), { code: 'ANALYSIS_PARSE' });
+  if (start < 0 || end <= start) throw fail('returned no JSON object');
   try {
-    await ensureDatabaseReady();
-    document = await findSticker({ personaId: SHARED_LIBRARY_KEY, hash }) || await findSticker({ hash });
-    if (!document || !document.cloudinaryUrl) return;
-
-    const image = await fetchImageBuffer(document.cloudinaryUrl);
-    const result = await gemini.generateVision({
-      systemPrompt: `You are analyzing a ${document.animeName || 'unknown anime'} reaction sticker for the specific character ${persona.displayName}. Personality: ${persona.personality} Conversational and reaction behavior: ${persona.text}`,
-      prompt: `The sticker belongs to anime ${document.animeName || 'unknown anime'} and may contain these characters: ${(document.characters || []).join(', ') || 'unknown'}. Existing generic metadata: ${JSON.stringify(document.genericAnalysis || {})}. Analyze this sticker as a reaction that ${persona.displayName} would realistically use in conversation, following both the character personality and the stated conversational/reaction behavior. Return only JSON with arrays emotions, moods, uses, reactions, a string intensity, personaFit from 0 to 1, and a short note no longer than 160 characters. Allowed reaction labels: ${[...ALLOWED_REACTIONS].join(', ')}. Keep labels short and lowercase. Interpret the image through this character's personality and behavior, not as a neutral generic sticker.`,
-      base64Image: image.toString('base64'),
-      mimeType: 'image/webp',
-      maxOutputTokens: 512,
-      bypassGate: true,
-    });
-    const classification = parseClassification(result);
-    if (!classification.emotions.length && !classification.moods.length && !classification.uses.length && !classification.reactions.length && !classification.notes) {
-      throw new Error('Sticker classification contained no usable labels.');
-    }
-
-    const analyses = (document.personaAnalyses || []).filter(analysis => analysis.personaId !== personaId);
-    analyses.push({
-      personaId,
-      analysisVersion: AI_STICKER_ANALYSIS_VERSION,
-      personaVersion: version,
-      analysisStatus: 'classified',
-      ...classification,
-      analysisError: null,
-      analyzedAt: new Date(),
-    });
-    const filter = { personaId: document.personaId === SHARED_LIBRARY_KEY ? SHARED_LIBRARY_KEY : document.personaId, hash };
-    const updated = await updateSticker(filter, {
-      $set: { personaAnalyses: analyses },
-    });
-    if (updated) setCachedSticker(SHARED_LIBRARY_KEY, updated);
-    return classification;
-  } catch (err) {
-    const analysisError = String(err.message || err).slice(0, 300);
-    if (isQuotaError(err)) {
-      // Quota problems are temporary and say nothing about this sticker, so do
-      // NOT write a failed status (that could overwrite an earlier good
-      // analysis). The worker re-queues the task and waits.
-      logger.write('WARN', 'background.ai_sticker_analysis.quota_hit', { personaId, hash, error: analysisError });
-      return { failed: true, quota: true, error: analysisError, retryHintMs: parseRetryDelayMs(err.message) };
-    }
-    try {
-      const existing = document || await findSticker({ personaId: SHARED_LIBRARY_KEY, hash }) || await findSticker({ hash });
-      if (existing) {
-        const analyses = (existing.personaAnalyses || []).filter(analysis => analysis.personaId !== personaId);
-        analyses.push({
-          personaId,
-          analysisVersion: AI_STICKER_ANALYSIS_VERSION,
-          personaVersion: version,
-          analysisStatus: 'unclassified',
-          analysisError,
-          analyzedAt: new Date(),
-        });
-        const filter = { personaId: existing.personaId, hash };
-        const updated = await updateSticker(filter, { $set: { personaAnalyses: analyses } });
-        if (updated) setCachedSticker(SHARED_LIBRARY_KEY, updated);
-      }
-    } catch (persistError) {
-      logger.error('background.ai_sticker_analysis.status_save_failed', persistError, {
-        personaId,
-        hash,
-      });
-    }
-    logger.error('background.ai_sticker_analysis.failed', new Error(analysisError), {
-      personaId,
-      hash,
-    });
-    return { failed: true, error: analysisError };
+    return JSON.parse(text.slice(start, end + 1));
+  } catch (_err) {
+    throw fail('returned JSON that could not be read');
   }
 }
 
-async function initialize() {
-  const records = await loadSharedStickers();
-  if (AI_STICKER_AUTO_ANALYZE) {
-    for (const record of records) {
-      for (const personaId of listPersonaIds()) {
-        let persona;
-        try { persona = loadPersona(personaId); } catch (err) {
-          console.error(`Skipping sticker analysis for invalid persona ${personaId}:`, err.message);
-          continue;
-        }
-        const analysis = getPersonaAnalysis(record, personaId);
-        const currentVersion = personaVersion(persona);
-        const stale = !analysis || analysis.analysisStatus !== 'classified' || analysis.analysisVersion !== AI_STICKER_ANALYSIS_VERSION || analysis.personaVersion !== currentVersion;
-        if (stale) enqueueAnalysis(personaId, record.hash);
-      }
+const DESCRIBE_SYSTEM_PROMPT = 'You are a concise anime sticker cataloguer for a shared reaction library. Describe only what each sticker shows and the feeling it conveys; do not role-play or infer a persona.';
+
+function describePrompt(docs) {
+  const list = docs.map((doc, index) => `${index + 1}. ${doc.animeName || 'unknown anime'}${(doc.characters || []).length ? ` (may show: ${doc.characters.join(', ')})` : ''}`).join('\n');
+  return `${docs.length} sticker image(s) are attached in this order:\n${list}\nReturn only JSON for every one: {"stickers":[{"id":1,"expression":"what it conveys in under 12 words, including any text printed on it","emotions":[],"moods":[],"uses":[],"reactions":[],"diversityScore":0.5}]}. Use short lowercase labels. reactions may only use: ${[...ALLOWED_REACTIONS].join(', ')}. Describe the feeling and situation, not the artwork.`;
+}
+
+function parseDescribeResponse(rawText, count) {
+  const parsed = parseJsonObject(rawText, 'the sticker descriptions');
+  const rows = Array.isArray(parsed.stickers) ? parsed.stickers : [];
+  const byId = new Map();
+  for (const row of rows) {
+    const id = Number(row?.id);
+    if (!Number.isInteger(id) || id < 1 || id > count || byId.has(id)) continue;
+    const analysis = {
+      expression: String(row.expression || '').replace(/\s+/g, ' ').trim().slice(0, 160),
+      emotions: normalizeLabelList(row.emotions),
+      moods: normalizeLabelList(row.moods),
+      uses: normalizeLabelList(row.uses),
+      reactions: normalizeLabelList(row.reactions, 8).filter(tag => ALLOWED_REACTIONS.has(tag)),
+      diversityScore: Math.max(0, Math.min(1, Number(row.diversityScore) || 0)),
+    };
+    if (analysis.expression || analysis.reactions.length) byId.set(id, analysis);
+  }
+  return byId;
+}
+
+const FIT_SYSTEM_PROMPT = 'You decide which reaction stickers a specific character would naturally send in a chat. You get character profiles and a numbered list of stickers described in words. Answer with JSON only.';
+
+function fitPrompt(docs, personas) {
+  const characters = personas.map(persona => `[${persona.id}] ${persona.displayName}${persona.series ? ` (${persona.series})` : ''}: ${clip(persona.personality, 700)}`).join('\n');
+  const list = docs.map((doc, index) => {
+    const g = doc.genericAnalysis || {};
+    const cast = (doc.characters || []).length ? ` (${doc.characters.join(', ')})` : '';
+    return `${index + 1}. ${doc.animeName || 'unknown anime'}${cast}: "${clip(g.expression, 80)}" | emotions: ${(g.emotions || []).join(', ') || '-'} | moods: ${(g.moods || []).join(', ') || '-'} | uses: ${(g.uses || []).join(', ') || '-'} | reactions: ${(g.reactions || []).join(', ') || '-'}`;
+  }).join('\n');
+  const example = personas.map(persona => `"${persona.id}":{"fit":0.8,"reactions":["amused"],"intensity":"medium"}`).join(',');
+  return `Characters:\n${characters}\n\nStickers (described in words):\n${list}\n\nFor EVERY sticker and EVERY character decide how naturally that character would send this sticker. fit is 0 to 1 (0 = completely out of character, 1 = perfectly in character); use the full range and be discriminating, since most stickers suit some characters better than others. reactions: up to 3 labels that character would use it for. intensity: low, medium or high.\nReturn only JSON: {"results":[{"id":1,"p":{${example}}}]}. Allowed reaction labels: ${[...ALLOWED_REACTIONS].join(', ')}.`;
+}
+
+// Map(id -> Map(personaId -> { personaFit, reactions, intensity } | absent))
+function parseFitResponse(rawText, count, personaIds) {
+  const parsed = parseJsonObject(rawText, 'the persona fit');
+  const rows = Array.isArray(parsed.results) ? parsed.results : [];
+  const byId = new Map();
+  for (const row of rows) {
+    const id = Number(row?.id);
+    if (!Number.isInteger(id) || id < 1 || id > count || byId.has(id)) continue;
+    const perPersona = new Map();
+    for (const personaId of personaIds) {
+      const entry = row.p?.[personaId];
+      if (!entry || typeof entry !== 'object') continue;
+      const reactions = normalizeLabelList(entry.reactions, 8).filter(tag => ALLOWED_REACTIONS.has(tag));
+      if (!reactions.length || !Number.isFinite(Number(entry.fit))) continue;
+      perPersona.set(personaId, {
+        personaFit: Math.max(0, Math.min(1, Number(entry.fit))),
+        reactions,
+        intensity: ['low', 'medium', 'high'].includes(String(entry.intensity || '').toLowerCase()) ? String(entry.intensity).toLowerCase() : 'medium',
+      });
+    }
+    byId.set(id, perPersona);
+  }
+  return byId;
+}
+
+// Step 1. Looks at stickers that have no description. Several per request; when
+// a reply cannot be read the group is split, down to single stickers.
+async function describeStickers(docs, outcome, failures) {
+  if (!docs.length) return;
+  if (outcome.requests >= MAX_REQUESTS_PER_BATCH) {
+    for (const doc of docs) failures.set(doc.hash, 'Gave up after too many requests in one batch.');
+    return;
+  }
+  const withImages = [];
+  for (const doc of docs) {
+    try {
+      const bytes = await fetchImageBuffer(doc.cloudinaryUrl);
+      withImages.push({ doc, image: { base64: bytes.toString('base64'), mimeType: 'image/webp' } });
+    } catch (err) {
+      failures.set(doc.hash, `Could not download the sticker image: ${String(err.message || err).slice(0, 160)}`);
     }
   }
+  if (!withImages.length) return;
+  const group = withImages.map(item => item.doc);
+  outcome.requests += 1;
+  let described;
+  try {
+    const raw = await gemini.generateVision({
+      systemPrompt: DESCRIBE_SYSTEM_PROMPT,
+      prompt: describePrompt(group),
+      images: withImages.map(item => item.image),
+      maxOutputTokens: 1024 + group.length * 256,
+      bypassGate: true,
+    });
+    described = parseDescribeResponse(raw, group.length);
+  } catch (err) {
+    if (isQuotaError(err)) throw err;
+    if (err.code === 'ANALYSIS_PARSE' && group.length > 1) {
+      const middle = Math.ceil(group.length / 2);
+      await describeStickers(group.slice(0, middle), outcome, failures);
+      await describeStickers(group.slice(middle), outcome, failures);
+      return;
+    }
+    for (const doc of group) failures.set(doc.hash, String(err.message || err).slice(0, 300));
+    return;
+  }
+  for (let index = 0; index < group.length; index += 1) {
+    const doc = group[index];
+    const analysis = described.get(index + 1);
+    if (!analysis) { failures.set(doc.hash, 'Gemini returned no usable description for this sticker.'); continue; }
+    const generic = { ...analysis, analyzedAt: new Date() };
+    const updated = await updateSticker({ personaId: doc.personaId, hash: doc.hash }, { $set: { genericAnalysis: generic } });
+    doc.genericAnalysis = generic;
+    if (updated) setCachedSticker(SHARED_LIBRARY_KEY, updated);
+  }
+}
+
+// Step 2. One text request judges every (sticker, persona) pair in `docs`.
+async function judgeFit(docs, personas, outcome) {
+  const results = new Map();
+  const attempt = async list => {
+    if (!list.length || outcome.requests >= MAX_REQUESTS_PER_BATCH) return;
+    outcome.requests += 1;
+    let parsed;
+    try {
+      const raw = await gemini.generateText({
+        systemPrompt: FIT_SYSTEM_PROMPT,
+        prompt: fitPrompt(list, personas),
+        maxOutputTokens: 1024 + list.length * personas.length * 90,
+        bypassGate: true,
+      });
+      parsed = parseFitResponse(raw, list.length, personas.map(persona => persona.id));
+    } catch (err) {
+      if (isQuotaError(err)) throw err;
+      if (err.code === 'ANALYSIS_PARSE' && list.length > 1) {
+        const middle = Math.ceil(list.length / 2);
+        await attempt(list.slice(0, middle));
+        await attempt(list.slice(middle));
+        return;
+      }
+      logger.write('WARN', 'background.ai_sticker_analysis.fit_failed', { stickers: list.length, error: String(err.message || err).slice(0, 200) });
+      return;
+    }
+    list.forEach((doc, index) => results.set(doc.hash, parsed.get(index + 1) || new Map()));
+  };
+  await attempt(docs);
+  return results;
+}
+
+// Merges new per-persona results into the sticker record. A failure is only
+// written when there is no working analysis yet, so a failed redo never
+// destroys a good result.
+async function savePersonaAnalyses(doc, entries) {
+  const keep = new Map((doc.personaAnalyses || []).map(analysis => [analysis.personaId, analysis]));
+  const generic = doc.genericAnalysis || {};
+  for (const entry of entries) {
+    const base = { personaId: entry.personaId, analysisVersion: AI_STICKER_ANALYSIS_VERSION, personaVersion: personaVersion(entry.persona) };
+    if (entry.classification) {
+      keep.set(entry.personaId, {
+        ...base,
+        analysisStatus: 'classified',
+        emotions: generic.emotions || [],
+        moods: generic.moods || [],
+        uses: generic.uses || [],
+        reactions: entry.classification.reactions,
+        intensity: entry.classification.intensity,
+        personaFit: entry.classification.personaFit,
+        notes: '',
+        analysisError: null,
+        analyzedAt: new Date(),
+      });
+    } else if (!isUsableAnalysis(keep.get(entry.personaId))) {
+      keep.set(entry.personaId, { ...base, analysisStatus: 'unclassified', analysisError: String(entry.error || 'Analysis failed.').slice(0, 300), analyzedAt: new Date() });
+    }
+  }
+  const updated = await updateSticker({ personaId: doc.personaId, hash: doc.hash }, { $set: { personaAnalyses: [...keep.values()] } });
+  if (updated) setCachedSticker(SHARED_LIBRARY_KEY, updated);
+  return updated;
+}
+
+// Analyses one batch of queued tasks ({ personaId, hash }). Never throws.
+// Returns { ok, failed, requests, quota, error, retryHintMs }.
+async function analyzeBatch(tasks) {
+  const outcome = { ok: 0, failed: 0, requests: 0, quota: false, error: null, retryHintMs: null };
+  const wanted = new Map();
+  for (const task of tasks) {
+    if (!task?.personaId || task.personaId === SHARED_LIBRARY_KEY) continue;
+    if (!wanted.has(task.hash)) wanted.set(task.hash, new Set());
+    wanted.get(task.hash).add(task.personaId);
+  }
+  if (!wanted.size) return outcome;
+
+  try {
+    await ensureDatabaseReady();
+    const docs = new Map();
+    for (const [hash, personaIds] of wanted) {
+      const doc = await findSticker({ personaId: SHARED_LIBRARY_KEY, hash }) || await findSticker({ hash });
+      if (doc && doc.cloudinaryUrl) docs.set(hash, doc);
+      else outcome.failed += personaIds.size;
+    }
+
+    const personas = new Map();
+    for (const personaId of new Set([...wanted.values()].flatMap(ids => [...ids]))) {
+      try { personas.set(personaId, loadPersona(personaId)); } catch (err) {
+        logger.error('background.ai_sticker_analysis.persona_unavailable', err, { personaId });
+      }
+    }
+
+    // Step 1: describe the stickers that have no description yet.
+    const undescribed = [...docs.values()].filter(doc => !hasDescription(doc));
+    const describeFailures = new Map();
+    for (const group of chunk(undescribed, AI_STICKER_VISION_BATCH)) await describeStickers(group, outcome, describeFailures);
+
+    // Step 2: one text request judges every sticker x persona in this batch.
+    const ready = [...docs.values()].filter(hasDescription);
+    const involved = [...personas.values()].filter(persona => ready.some(doc => wanted.get(doc.hash).has(persona.id)));
+    const verdicts = ready.length && involved.length ? await judgeFit(ready, involved, outcome) : new Map();
+
+    for (const doc of docs.values()) {
+      const entries = [...wanted.get(doc.hash)].filter(personaId => personas.has(personaId)).map(personaId => {
+        const classification = verdicts.get(doc.hash)?.get(personaId) || null;
+        const error = describeFailures.get(doc.hash) || 'No usable result for this character in the response.';
+        return { personaId, persona: personas.get(personaId), classification, error };
+      });
+      try {
+        await savePersonaAnalyses(doc, entries);
+      } catch (persistError) {
+        logger.error('background.ai_sticker_analysis.status_save_failed', persistError, { hash: doc.hash });
+      }
+      for (const entry of entries) {
+        if (entry.classification) outcome.ok += 1;
+        else outcome.failed += 1;
+      }
+    }
+    return outcome;
+  } catch (err) {
+    const message = String(err.message || err).slice(0, 300);
+    if (isQuotaError(err)) {
+      logger.write('WARN', 'background.ai_sticker_analysis.quota_hit', { tasks: tasks.length, error: message });
+      return { ...outcome, quota: true, error: message, retryHintMs: parseRetryDelayMs(err.message) };
+    }
+    logger.error('background.ai_sticker_analysis.failed', new Error(message), { tasks: tasks.length });
+    outcome.failed += Math.max(0, tasks.length - outcome.ok);
+    return outcome;
+  }
+}
+
+// Single-sticker convenience used by tests and tools.
+async function analyzeSticker(sourcePersona, hash) {
+  const personaId = typeof sourcePersona === 'string' ? sourcePersona : sourcePersona?.id;
+  return analyzeBatch([{ personaId, hash }]);
+}
+
+// Library summary used by the startup log and by .stickeranalyze status.
+// Reads only; spends nothing.
+function summarizeLibrary(records, personaIds) {
+  const personas = {};
+  for (const personaId of personaIds) {
+    const row = { ready: 0, missing: 0, failed: 0, outdated: 0 };
+    for (const record of records) {
+      const analysis = getPersonaAnalysis(record, personaId);
+      if (!analysis) row.missing += 1;
+      else if (!isUsableAnalysis(analysis)) row.failed += 1;
+      else {
+        row.ready += 1;
+        if (Number(analysis.analysisVersion || 1) !== AI_STICKER_ANALYSIS_VERSION) row.outdated += 1;
+      }
+    }
+    personas[personaId] = row;
+  }
+  return { library: records.length, undescribed: records.filter(record => !hasDescription(record)).length, personas };
+}
+
+// About how many Gemini requests a manual run would take.
+function estimateRequests(records, personaIds, mode) {
+  const target = mode === 'redo' ? records : records.filter(record => personaIdsNeedingAnalysis(record, personaIds).length);
+  const undescribed = target.filter(record => !hasDescription(record)).length;
+  const vision = Math.ceil(undescribed / AI_STICKER_VISION_BATCH);
+  const fit = Math.ceil(target.length / AI_STICKER_FIT_BATCH);
+  return { stickers: target.length, undescribed, vision, fit, requests: vision + fit };
+}
+
+let autoAnalyzeNoticeLogged = false;
+
+async function initialize() {
+  const records = await loadSharedStickers();
+  // Starting the bot or deploying an update NEVER spends Gemini requests on
+  // stickers. Analysis happens only when the owner asks (.stickeranalyze).
+  if (AI_STICKER_AUTO_ANALYZE && !autoAnalyzeNoticeLogged) {
+    autoAnalyzeNoticeLogged = true;
+    logger.write('WARN', 'background.ai_sticker_analysis.auto_ignored', {});
+  }
+  try {
+    const personaIds = listPersonaIds();
+    const summary = summarizeLibrary(records, personaIds);
+    const needing = records.filter(record => personaIdsNeedingAnalysis(record, personaIds).length).length;
+    logger.write('INFO', 'background.ai_sticker_analysis.overview', { ...summary, needing });
+  } catch (err) {
+    logger.error('background.ai_sticker_analysis.overview_failed', err);
+  }
   return records;
+}
+
+// ─── Manual analysis (owner only, via .stickeranalyze) ──────────────────────
+async function queueManualAnalysis({ mode, personaIds }) {
+  const records = await loadSharedStickers();
+  const stickers = new Set();
+  let tasks = 0;
+  for (const record of records) {
+    for (const personaId of personaIds) {
+      if (mode === 'new' && isUsableAnalysis(getPersonaAnalysis(record, personaId))) continue;
+      if (queuedAnalysis.has(analysisKey(personaId, record.hash))) continue;
+      enqueueAnalysis(personaId, record.hash);
+      stickers.add(record.hash);
+      tasks += 1;
+    }
+  }
+  const estimate = estimateRequests(records, personaIds, mode);
+  logger.write('INFO', 'background.ai_sticker_analysis.manual', { mode, personas: personaIds, stickers: stickers.size, tasks, requests: estimate.requests });
+  return { stickers: stickers.size, tasks, estimate };
+}
+
+function cancelQueuedAnalysis() {
+  const cancelled = analysisQueue.length;
+  for (const task of analysisQueue) queuedAnalysis.delete(analysisKey(task.personaId, task.hash));
+  analysisQueue.length = 0;
+  if (quotaResumeTimer) clearTimeout(quotaResumeTimer);
+  quotaResumeTimer = null;
+  quotaResumeAt = 0;
+  logger.write('INFO', 'background.ai_sticker_analysis.cancelled', { cancelled });
+  return cancelled;
+}
+
+const ANALYZE_USAGE = [
+  'Usage:',
+  '.stickeranalyze            show what is analysed and what a run would cost',
+  '.stickeranalyze new        analyse only stickers that have no working analysis',
+  '.stickeranalyze redo confirm   redo every sticker (judged again from the saved descriptions)',
+  '.stickeranalyze stop       cancel what is still waiting',
+  'Add a persona name (for example: new marin) to limit it to one character.',
+].join('\n');
+
+function queueStateText() {
+  if (quotaResumeTimer) {
+    const when = new Date(quotaResumeAt).toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit' });
+    return `paused for Gemini quota, ${analysisQueue.length} waiting (retrying about ${when})`;
+  }
+  if (analysisBusy || analysisQueue.length) return `running, ${analysisQueue.length} waiting`;
+  return 'idle';
+}
+
+async function analyzeCommand(client, msg, args) {
+  const verified = await verifyOwnerPrivateChat(msg);
+  if (!verified) {
+    await msg.reply('❌ Sticker analysis is available only to the bot owner in a private DM.');
+    return false;
+  }
+  const words = (args || []).map(word => String(word).toLowerCase());
+  const known = ['status', 'new', 'redo', 'stop'];
+  const action = words.length === 0 ? 'status' : known.includes(words[0]) ? words[0] : null;
+  const confirmed = words.includes('confirm');
+  const rest = words.slice(1).filter(word => word !== 'confirm');
+  if (!action || rest.length > 1) {
+    await msg.reply(ANALYZE_USAGE);
+    return false;
+  }
+  const allIds = listPersonaIds();
+  let personaIds = allIds;
+  if (rest[0] && rest[0] !== 'all') {
+    if (!allIds.includes(rest[0])) {
+      await msg.reply(`❌ Unknown persona "${rest[0]}". Available: ${allIds.join(', ')}.`);
+      return false;
+    }
+    personaIds = [rest[0]];
+  }
+
+  if (action === 'stop') {
+    const cancelled = cancelQueuedAnalysis();
+    await msg.reply(cancelled ? `🛑 Cancelled ${cancelled} waiting analysis task(s). A request already in progress will finish.` : 'Nothing was waiting.');
+    return true;
+  }
+
+  let records;
+  try {
+    records = await loadSharedStickers();
+  } catch (err) {
+    await msg.reply(`❌ Could not read the sticker library: ${unavailableStorageMessage(err)}`);
+    return false;
+  }
+
+  if (action === 'status') {
+    const summary = summarizeLibrary(records, personaIds);
+    const fresh = estimateRequests(records, personaIds, 'new');
+    const everything = estimateRequests(records, personaIds, 'redo');
+    const lines = [`🎴 *Sticker analysis*`, `Library: ${summary.library} stickers (${summary.undescribed} without a description yet)`];
+    for (const personaId of personaIds) {
+      const row = summary.personas[personaId];
+      lines.push(`• ${personaId}: ${row.ready} ready, ${row.missing} not analysed, ${row.failed} failed${row.outdated ? `, ${row.outdated} from an older analysis version` : ''}`);
+    }
+    lines.push(`Queue: ${queueStateText()}`, '');
+    lines.push(fresh.stickers ? `*new* would analyse ${fresh.stickers} sticker(s): about ${fresh.requests} request(s).` : 'Nothing needs analysing.');
+    lines.push(`*redo* would redo all ${everything.stickers}: about ${everything.requests} request(s).`);
+    lines.push('', 'Nothing is analysed automatically, not at startup and not after an update.');
+    await msg.reply(lines.join('\n'));
+    return true;
+  }
+
+  if (!process.env.GEMINI_API_KEY) {
+    await msg.reply('❌ GEMINI_API_KEY is not set in .env, so stickers cannot be analysed.');
+    return false;
+  }
+  const estimate = estimateRequests(records, personaIds, action);
+  if (action === 'redo' && !confirmed) {
+    await msg.reply(`⚠️ This redoes the analysis of all ${estimate.stickers} sticker(s) for ${personaIds.join(', ')}: about ${estimate.requests} Gemini request(s).\nTo go ahead send: .stickeranalyze redo${rest[0] ? ` ${rest[0]}` : ''} confirm`);
+    return false;
+  }
+  if (action === 'new' && estimate.stickers === 0) {
+    await msg.reply('✅ Every sticker already has a working analysis. Nothing to do.');
+    return true;
+  }
+  const result = await queueManualAnalysis({ mode: action, personaIds });
+  await msg.reply(`✅ Analysing ${result.stickers} sticker(s) for ${personaIds.join(', ')}: about ${estimate.requests} Gemini request(s), done in a few minutes. Gemini commands are unavailable until it finishes; progress is in the logs. Send .stickeranalyze to check.`);
+  return true;
 }
 
 function sessionKey(ownerId, chatId) {
@@ -637,13 +1013,7 @@ async function persistStickerRecord(sourcePersona, hash, bytes) {
     }
     setCachedSticker(SHARED_LIBRARY_KEY, shared || existing);
     const normalized = shared || existing;
-    const stalePersonaIdsToAnalyze = AI_STICKER_AUTO_ANALYZE ? stalePersonaIds(normalized) : [];
-    return {
-      record: normalized,
-      duplicate: true,
-      shouldAnalyze: stalePersonaIdsToAnalyze.length > 0,
-      analysisPersonaIds: stalePersonaIdsToAnalyze,
-    };
+    return { record: normalized, duplicate: true, shouldAnalyze: false, analysisPersonaIds: [] };
   }
 
   const uploaded = await cloudinaryStorage.uploadBufferToCloud(bytes, {
@@ -685,8 +1055,8 @@ async function persistStickerRecord(sourcePersona, hash, bytes) {
   if (!record) record = await findSticker(sharedFilter);
   if (!record) throw new Error('Sticker image uploaded, but its MongoDB metadata could not be read back. Please retry the import.');
   setCachedSticker(SHARED_LIBRARY_KEY, record);
-  const analysisPersonaIds = AI_STICKER_AUTO_ANALYZE ? stalePersonaIds(record) : [];
-  return { record, duplicate: false, shouldAnalyze: analysisPersonaIds.length > 0, analysisPersonaIds };
+  // Analysis is manual: the owner runs .stickeranalyze when they have finished adding stickers.
+  return { record, duplicate: false, shouldAnalyze: false, analysisPersonaIds: [] };
 }
 
 async function saveSticker(sourcePersona, hash, bytes) {
@@ -789,15 +1159,10 @@ async function handleIncomingSticker(client, msg) {
     const hash = crypto.createHash('sha256').update(bytes).digest('hex');
     const sourcePersonaId = getActivePersonaSafe()?.id || SHARED_LIBRARY_KEY;
     const result = await saveSticker(sourcePersonaId, hash, bytes);
-    if (result.shouldAnalyze) {
-      for (const personaId of (result.analysisPersonaIds || [])) enqueueAnalysis(personaId, hash);
-    }
-
     if (result.duplicate) {
       await msg.reply('ℹ️ That sticker is already in the shared AI sticker library; it was not uploaded again.');
     } else {
-      const analysis = result.shouldAnalyze ? ' Gemini will classify it in the background.' : '';
-      await msg.reply(`✅ Sticker saved to the shared AI sticker library.${analysis}`);
+      await msg.reply('✅ Sticker saved to the shared AI sticker library. The AI cannot use it until it has been analysed: send .stickeranalyze new when you have finished adding stickers.');
     }
     return true;
   } catch (err) {
@@ -1176,11 +1541,19 @@ module.exports = {
   sendReactionSticker,
   buildStickerCatalogue,
   sendCatalogueSticker,
+  analyzeCommand,
+  queueManualAnalysis,
+  cancelQueuedAnalysis,
   initialize,
   ALLOWED_REACTIONS,
   _parseClassification: parseClassification,
   _selectSticker: selectSticker,
   _analyzeSticker: analyzeSticker,
+  _analyzeBatch: analyzeBatch,
+  _personaVersion: personaVersion,
+  _isUsableAnalysis: isUsableAnalysis,
+  _estimateRequests: estimateRequests,
+  _summarizeLibrary: summarizeLibrary,
   _persistStickerRecord: persistStickerRecord,
   _setAdaptersForTests,
   _isQuotaError: isQuotaError,

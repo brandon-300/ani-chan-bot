@@ -216,13 +216,21 @@ function textLineBody(record) {
   if (event.startsWith('queue.')) return `[queue] ${event.slice(6).replace(/[._]/g, ' ')}`;
 
   if (event === 'background.ai_sticker_analysis.queued') return `[sticker] Queued analysis for ${details.personaId || 'persona'} (${details.queueLength || 0} waiting)`;
-  if (event === 'background.ai_sticker_analysis.task.start') return `[sticker] Analyzing sticker for ${details.personaId || 'persona'}${details.remaining != null ? ` (${details.remaining} left)` : ''}`;
-  if (event === 'background.ai_sticker_analysis.task.end') return details.status === 'success'
-    ? `[sticker] Classified for ${details.personaId || 'persona'}: ${(details.reactions || []).join(', ') || 'no reactions'}${details.durationMs != null ? ` (${details.durationMs}ms)` : ''}`
-    : `[sticker] Analysis failed: ${shortError(details)}`;
+  if (event === 'background.ai_sticker_analysis.batch.start') return `[sticker] Analysing ${details.stickers || 0} sticker(s) for every character together (${details.tasks || 0} tasks, ${details.remaining || 0} still waiting)`;
+  if (event === 'background.ai_sticker_analysis.batch.end') return details.status === 'failed'
+    ? `[sticker] Analysis batch failed: ${shortError(details)}`
+    : `[sticker] Batch ${details.status === 'partial' ? 'finished with problems' : 'done'}: ${details.analysed || 0} analysed${details.failed ? `, ${details.failed} failed` : ''} using ${details.requests ?? '?'} Gemini request(s)${details.durationMs != null ? ` (${details.durationMs}ms)` : ''}`;
+  if (event === 'background.ai_sticker_analysis.overview') {
+    const rows = Object.entries(details.personas || {}).map(([id, r]) => `${id} ${r.ready}/${details.library} ready${r.missing || r.failed ? ` (${r.missing} missing, ${r.failed} failed)` : ''}`).join(' · ');
+    return `[sticker] Library: ${details.library ?? 0} stickers · ${rows || 'no personas'} · ${details.needing ? `${details.needing} need analysis` : 'nothing needs analysis'} · analysis is manual (.stickeranalyze)`;
+  }
+  if (event === 'background.ai_sticker_analysis.manual') return `[sticker] Owner started analysis (${details.mode}): ${details.stickers || 0} sticker(s) for ${(details.personas || []).join(', ')}, about ${details.requests ?? '?'} Gemini request(s)`;
+  if (event === 'background.ai_sticker_analysis.cancelled') return `[sticker] Owner cancelled ${details.cancelled || 0} waiting analysis task(s)`;
+  if (event === 'background.ai_sticker_analysis.auto_ignored') return '[sticker] AI_STICKER_AUTO_ANALYZE is ignored now: analysis is manual (send .stickeranalyze in your private DM)';
+  if (event === 'background.ai_sticker_analysis.fit_failed') return `[sticker] Could not read Gemini's persona-fit reply for ${details.stickers || 0} sticker(s): ${shorten(details.error || '', 120)}`;
   if (event === 'background.ai_sticker_analysis.worker.start') return `[sticker] Analysis worker started (${details.queued || 0} queued)`;
   if (event === 'background.ai_sticker_analysis.worker.idle') return '[sticker] Analysis worker idle';
-  if (event === 'background.ai_sticker_analysis.quota_hit') return `[sticker] Gemini quota error while analysing for ${details.personaId || 'persona'} - the sticker stays queued: ${shorten(details.error || '', 120)}`;
+  if (event === 'background.ai_sticker_analysis.quota_hit') return `[sticker] Gemini quota error during sticker analysis - ${details.tasks || 'the'} task(s) stay queued: ${shorten(details.error || '', 120)}`;
   if (event === 'background.ai_sticker_analysis.quota_pause') return `[sticker] Gemini quota used up: sticker analysis paused for ${Math.round((details.cooldownMs || 0) / 60000) || '<1'} min (resumes about ${clockOf(details.resumeAt)}), ${details.remaining ?? '?'} waiting${details.streak > 1 ? `, ${details.streak} quota pauses in a row` : ''}`;
   if (event === 'background.ai_sticker_analysis.quota_resume') return `[sticker] Trying Gemini again: sticker analysis resumed (${details.queued || 0} waiting)`;
   if (event === 'background.ai_sticker.classified') return `[sticker] Classified for ${details.personaId || 'persona'}: ${(details.reactions || []).join(', ') || 'no reactions'}`;

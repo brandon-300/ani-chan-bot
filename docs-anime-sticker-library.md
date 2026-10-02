@@ -35,8 +35,10 @@ untouched, so simply re-run. Only `ai-stickers/` IDs can ever be deleted.
 ```bash
 node scripts/import-anime-sticker-packs.js --dry-run        # extract + validate only
 node scripts/import-anime-sticker-packs.js                  # real import
-pm2 restart ani-chan-bot                                    # loads library, queues persona analysis
+pm2 restart ani-chan-bot                                    # loads the new library
 ```
+
+Then, in your private DM with the bot, send `.stickeranalyze new`.
 
 Per pack: extract -> keep valid `.webp` only -> SHA-256 dedupe -> skip hashes
 already in the library -> screen up to 40 candidates with Gemini (one at a time,
@@ -50,9 +52,25 @@ most varied reactions -> upload once -> insert one shared record.
 - Options: `--target=N`, `--max-candidates=N`, `--delay-ms=N`, `--no-screen`,
   `--dir=DIR`, `--manifest=FILE`.
 
-Persona analysis is NOT done by the importer. On restart the bot's existing queue
-analyses each sticker for each persona, `AI_STICKER_ANALYSIS_DELAY_MS` apart
-(10 anime x 10 stickers x 3 personas = about 300 requests).
+## Analysing stickers (manual)
+
+Nothing is analysed at startup, after an update, or on import. Stickers become
+usable when you send these to the bot in your private DM (owner only):
+
+```text
+.stickeranalyze                 what is analysed, what is missing, what a run costs
+.stickeranalyze new             analyse only stickers without a working analysis
+.stickeranalyze new marin       the same, for one character
+.stickeranalyze redo confirm    redo everything (asks for "confirm" first)
+.stickeranalyze stop            cancel what is still waiting
+```
+
+One request judges up to `AI_STICKER_FIT_BATCH` (20) stickers for every character
+together, from the saved descriptions; a sticker with no description is looked at
+once (`AI_STICKER_VISION_BATCH`, 6 per request) and that look is shared by all
+characters. 100 stickers is about 5 requests; 1000 is about 50. Editing a
+persona file never triggers re-analysis. Gemini commands are unavailable while a
+run is in progress; the logs show each step.
 
 ## Tests
 

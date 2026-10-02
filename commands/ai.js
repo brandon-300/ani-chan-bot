@@ -506,6 +506,13 @@ module.exports = {
       : aiStickers.startImportMode(client, msg);
   },
 
+  // .stickeranalyze [status|new|redo confirm|stop] [persona] — owner-only,
+  // private DM. The ONLY way stickers get analysed: nothing runs at startup or
+  // after an update. See utils/aiStickers.js analyzeCommand.
+  async stickeranalyze(client, msg, args) {
+    return aiStickers.analyzeCommand(client, msg, args);
+  },
+
   // .copilot [prompt] — full context-aware AI chat (Gemini). Also works
   // replying to a voice note (transcribed and used as the prompt) or an
   // image (analyzed with Gemini vision — you must also say what to do
