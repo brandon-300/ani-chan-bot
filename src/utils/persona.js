@@ -118,3 +118,5 @@ function getActivePersonaSafe() {
 }
 
 export default { loadPersona, listPersonaIds, getActivePersona, getActivePersonaSafe };
+
+export { loadPersona, listPersonaIds, getActivePersona, getActivePersonaSafe };

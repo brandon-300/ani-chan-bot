@@ -24,17 +24,17 @@
 // while FEN behaves identically (and correctly) whether or not a skip
 // happened. A real but narrow tradeoff, not something worth more
 // complexity to fully close.
-import GameSession from './../models/GameSession.js';
-import Guild from './../models/Guild.js';
-import logger from './../utils/logger.js';
-import { BOT_NAME } from './../utils/config.js';
+import GameSession from '../../models/GameSession.js';
+import Guild from '../../models/Guild.js';
+import logger from '../../utils/logger.js';
+import { BOT_NAME } from '../../utils/config.js';
 import { Chess } from 'chess.js';
-import { MessageMedia } from '../services/media.js';
-import { _formatQuestCompletionNote } from './guilds.js';
+import { MessageMedia } from '../../whatsapp/media.js';
+import { _formatQuestCompletionNote } from '../guilds.js';
 import { getBestMove } from './chessEngine.js';
 import { isChatBusy, claim, release } from './activeGame.js';
 import { renderBoardImage } from './chessBoardImage.js';
-import { safeGetChat, resolveNameById } from './../utils/helpers.js';
+import { safeGetChat, resolveNameById } from '../../utils/helpers.js';
 function saveChessSession(chatId, game) {
   const { chess, turnTimer, ...rest } = game;
   const state = { ...rest, fen: chess.fen() };
@@ -196,9 +196,9 @@ function scheduleTurnTimeout(chat, chatId, game) {
   if (game.turnTimer) clearTimeout(game.turnTimer);
 
   const skippedColor = game.chess.turn();
-  logger.write('INFO', 'background.game_turn_timeout.armed', { game: __filename.split('/').pop(), chatId, timeoutMs: 30000 });
+  logger.write('INFO', 'background.game_turn_timeout.armed', { game: 'chess.js', chatId, timeoutMs: 30000 });
   game.turnTimer = setTimeout(async () => {
-    logger.write('INFO', 'background.game_turn_timeout.fired', { game: __filename.split('/').pop(), chatId });
+    logger.write('INFO', 'background.game_turn_timeout.fired', { game: 'chess.js', chatId });
     if (chessGames.get(chatId) !== game) return;
     if (game.chess.turn() !== skippedColor) return;
 
@@ -342,7 +342,7 @@ export default {
       claim(chatId, 'chess');
       const lobby = { players: [], timer: null };
       chessLobbies.set(chatId, lobby);
-      logger.write('INFO', 'background.game_lobby_timeout.armed', { game: __filename.split('/').pop(), chatId, timeoutMs: LOBBY_WINDOW_MS });
+      logger.write('INFO', 'background.game_lobby_timeout.armed', { game: 'chess.js', chatId, timeoutMs: LOBBY_WINDOW_MS });
     lobby.timer = setTimeout(() => {
         // Still here means it never filled — see connect4.js's identical
         // comment on its own lobby timeout for why this check is enough.

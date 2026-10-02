@@ -1,11 +1,11 @@
 
-import Group from './models/Group.js';
+import Group from '../models/Group.js';
 import axios from 'axios';
-import logger from './utils/logger.js';
-import { CardCatalogue, OwnedCard, CatalogueGrowthState } from './models/Card.js';
-import { MessageMedia } from '../services/media.js';
-import { findCharacterArtwork, fetchArtworkForExactTag } from './utils/danbooru.js';
-import { isOwner, rollTier, tierEmoji, safeGetChat, cardValue, cleanDescription } from './utils/helpers.js';
+import logger from '../utils/logger.js';
+import { CardCatalogue, OwnedCard, CatalogueGrowthState } from '../models/Card.js';
+import { MessageMedia } from '../whatsapp/media.js';
+import { findCharacterArtwork, fetchArtworkForExactTag } from '../utils/danbooru.js';
+import { isOwner, rollTier, tierEmoji, safeGetChat, cardValue, cleanDescription } from '../utils/helpers.js';
 const TIERS = ['C', 'B', 'A', 'S', 'SS', 'SSS'];
 const EDITABLE_FIELDS = ['name', 'series', 'tier', 'description', 'imageUrl'];
 const ANILIST_URL = 'https://graphql.anilist.co';

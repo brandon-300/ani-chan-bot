@@ -1,6 +1,6 @@
 
 // Tracks "which command is currently executing" across async boundaries.
-import CommandUsage from './models/CommandUsage.js';
+import CommandUsage from '../models/CommandUsage.js';
 import axios from 'axios';
 import logger from './logger.js';
 import { AsyncLocalStorage } from 'async_hooks';
@@ -130,3 +130,4 @@ export default {
   instrumentHttpClients,
   wrapWithUsageTracking,
 };
+export { instrumentHttpClients, wrapWithUsageTracking };

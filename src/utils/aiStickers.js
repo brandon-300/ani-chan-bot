@@ -1,5 +1,5 @@
-import AiSticker from './models/AiSticker.js';
-import AiStickerMessage from './models/AiStickerMessage.js';
+import AiSticker from '../models/AiSticker.js';
+import AiStickerMessage from '../models/AiStickerMessage.js';
 import aiMessageLedger from './aiMessageLedger.js';
 import axios from 'axios';
 import cloudinary from './cloudinary.js';
@@ -8,25 +8,16 @@ import gemini from './gemini.js';
 import geminiGate from './geminiGate.js';
 import logger from './logger.js';
 import mongoose from 'mongoose';
-import { MessageMedia } from '../services/media.js';
+import { MessageMedia } from '../whatsapp/media.js';
 import { getActivePersonaSafe, listPersonaIds, loadPersona } from './persona.js';
 import { safeGetChat, safeGetContact, isOwner } from './helpers.js';
-const {
-  AI_STICKERS_ENABLED,
-  AI_STICKER_AUTO_ANALYZE,
-  AI_STICKER_IMPORT_TIMEOUT_MINUTES,
-  AI_STICKER_MAX_BYTES,
-  AI_STICKER_DOWNLOAD_TIMEOUT_MS,
-  BOT_NAME,
-  AI_STICKER_ANALYSIS_VERSION,
-  AI_STICKER_MATCH_THRESHOLD,
-  AI_STICKER_MIN_PERSONA_FIT,
-  AI_STICKER_ANALYSIS_DELAY_MS,
-  AI_STICKER_QUOTA_COOLDOWN_MS,
-  AI_STICKER_QUOTA_MAX_COOLDOWN_MS,
-  AI_STICKER_CATALOGUE_MAX,
-  AI_STICKER_RECENT_EXCLUDE,
-} = require('./config');
+import {
+  AI_STICKERS_ENABLED, AI_STICKER_AUTO_ANALYZE, AI_STICKER_IMPORT_TIMEOUT_MINUTES,
+  AI_STICKER_MAX_BYTES, AI_STICKER_DOWNLOAD_TIMEOUT_MS, BOT_NAME,
+  AI_STICKER_ANALYSIS_VERSION, AI_STICKER_MATCH_THRESHOLD, AI_STICKER_MIN_PERSONA_FIT,
+  AI_STICKER_ANALYSIS_DELAY_MS, AI_STICKER_QUOTA_COOLDOWN_MS,
+  AI_STICKER_QUOTA_MAX_COOLDOWN_MS, AI_STICKER_CATALOGUE_MAX, AI_STICKER_RECENT_EXCLUDE,
+} from './config.js';
 
 const ALLOWED_REACTIONS = new Set([
   'amused', 'happy', 'laughing', 'love', 'excited', 'sad', 'angry', 'confused',

@@ -5,16 +5,16 @@
 // turnTimer is a live setTimeout handle, not data, so it's deliberately
 // excluded — a restored game always gets a freshly-armed timer instead of
 // trying to resurrect the old handle (see _initTTT).
-import GameSession from './../models/GameSession.js';
-import Guild from './../models/Guild.js';
-import logger from './../utils/logger.js';
-import { BOT_NAME } from './../utils/config.js';
-import { MessageMedia } from '../services/media.js';
-import { _formatQuestCompletionNote } from './guilds.js';
+import GameSession from '../../models/GameSession.js';
+import Guild from '../../models/Guild.js';
+import logger from '../../utils/logger.js';
+import { BOT_NAME } from '../../utils/config.js';
+import { MessageMedia } from '../../whatsapp/media.js';
+import { _formatQuestCompletionNote } from '../guilds.js';
 import { getBestMove } from './tictactoeEngine.js';
 import { isChatBusy, claim, release } from './activeGame.js';
 import { renderBoardImage } from './tictactoeBoardImage.js';
-import { safeGetChat, resolveNameById } from './../utils/helpers.js';
+import { safeGetChat, resolveNameById } from '../../utils/helpers.js';
 function saveTTTSession(chatId, game) {
   const { turnTimer, ...state } = game;
   GameSession.findOneAndUpdate(
@@ -162,9 +162,9 @@ function scheduleTurnTimeout(chat, chatId, game) {
 
   const skippedIdx = game.turn;
   const skippedId = game.players[skippedIdx];
-  logger.write('INFO', 'background.game_turn_timeout.armed', { game: __filename.split('/').pop(), chatId, timeoutMs: 30000 });
+  logger.write('INFO', 'background.game_turn_timeout.armed', { game: 'tictactoe.js', chatId, timeoutMs: 30000 });
   game.turnTimer = setTimeout(async () => {
-    logger.write('INFO', 'background.game_turn_timeout.fired', { game: __filename.split('/').pop(), chatId });
+    logger.write('INFO', 'background.game_turn_timeout.fired', { game: 'tictactoe.js', chatId });
     if (tttGames.get(chatId) !== game) return;
     if (game.turn !== skippedIdx) return;
 
@@ -397,7 +397,7 @@ export default {
       claim(chatId, 'ttt');
       const lobby = { players: [], timer: null };
       tttLobbies.set(chatId, lobby);
-      logger.write('INFO', 'background.game_lobby_timeout.armed', { game: __filename.split('/').pop(), chatId, timeoutMs: LOBBY_WINDOW_MS });
+      logger.write('INFO', 'background.game_lobby_timeout.armed', { game: 'tictactoe.js', chatId, timeoutMs: LOBBY_WINDOW_MS });
     lobby.timer = setTimeout(() => {
         // Still here means it never filled — see connect4.js's identical
         // comment on its own lobby timeout for why this check is enough.

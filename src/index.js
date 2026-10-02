@@ -60,7 +60,7 @@ async function connectMongo() {
     // Migrate group activity log
     const GroupActivity = (await import('./models/GroupActivity.js')).default;
     const Group = (await import('./models/Group.js')).default;
-    
+
     async function migrateGroupActivityLog() {
       const groups = await Group.find({ activityLog: { $exists: true, $ne: {} } })
         .select('id activityLog updatedAt');
@@ -78,7 +78,7 @@ async function connectMongo() {
         }
       }
     }
-    
+
     migrateGroupActivityLog().catch(err => {
       logger.error('background.group_activity_migration.failed', err);
     });
@@ -159,10 +159,10 @@ const commandDir = path.join(__dirname, './commands');
 try {
   const fs = await import('fs');
   const files = fs.readdirSync(commandDir);
-  
+
   for (const file of files) {
     if (!file.endsWith('.js')) continue;
-    
+
     try {
       const module = await import(path.join(commandDir, file));
       Object.entries(module.default || module).forEach(([name, fn]) => {
@@ -410,7 +410,7 @@ function isCallingBotByName(rawBody) {
   const stripped = body.replace(GREETING_PREFIX_RE, '');
   const persona = getActivePersonaSafe();
   const callNames = persona ? persona.callNames : (AI_CALL_NAMES_OVERRIDE || []);
-  
+
   for (const name of callNames) {
     const escaped = name.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+');
     if (!escaped) continue;
@@ -433,9 +433,7 @@ function isCallingBotByName(rawBody) {
 // Initialize and setup event handlers
 async function initialize() {
   try {
-    // Initialize WhatsApp adapter
-    await wa.init();
-    
+    // Register event listeners before starting WhatsApp so no early event is lost.
     // Set up message handler
     wa.on('message', async (baileysMsg) => {
       try {
@@ -473,11 +471,12 @@ async function initialize() {
             const body = baileysMsg.body || '';
             let command;
             let args;
+            let chat = null;
 
             if (!body.startsWith(BOT_PREFIX)) {
               const mentionsBot = baileysMsg.mentionedIds &&
                 baileysMsg.mentionedIds.includes(client.info?.wid?._serialized || '');
-              
+
               if (mentionsBot) {
                 return await sendQuickMenu(baileysMsg);
               }
@@ -497,7 +496,7 @@ async function initialize() {
                   : (replyKind === 'image' ? ['Take', 'a', 'look', 'and', 'respond', 'naturally.'] : []);
                 command = isVoiceNoteMessage(quoted) ? 'voice' : 'copilot';
               } else {
-                const chat = await baileysMsg.getChat();
+                chat = await baileysMsg.getChat();
                 if (chat && !chat.isGroup && !String(chat.id?._serialized || '').endsWith('@g.us')) {
                   if (isVoiceNoteMessage(baileysMsg)) {
                     command = 'voice';
@@ -689,64 +688,76 @@ async function initialize() {
       console.log('QR Code:', qr);
     });
 
+    wa.on('pairing_code', (code) => {
+      console.log(`WhatsApp pairing code: ${code}`);
+    });
+
     wa.on('authenticated', () => {
       console.log('\u2705 WhatsApp authenticated');
     });
 
     wa.on('ready', async () => {
       console.log('\u2705 WhatsApp ready');
-      
+
       // Initialize background tasks
       const scheduler = await import('./utils/scheduler.js');
-      const { _initCardLending } = await import('./commands/cards.js');
-      const { _initCardDrops } = await import('./commands/cards.js');
-      const { _seedParticipants } = await import('./commands/admin.js');
-      const { _resumePendingMutes } = await import('./commands/admin.js');
-      const { _initAfk } = await import('./commands/afk.js');
-      const { _initTTT } = await import('./commands/games/tictactoe.js');
-      const { _initC4 } = await import('./commands/games/connect4.js');
-      const { _initBattle } = await import('./commands/games/battle.js');
-      const { _initChess } = await import('./commands/games/chess.js');
-      const { _initQuiz } = await import('./commands/games/quiz.js');
+      const cardsModule = await import('./commands/cards.js');
+      const { _initCardLending, _initCardDrops } = cardsModule.default || {};
+
+      const adminModule = await import('./commands/admin.js');
+      const { _seedParticipants, _resumePendingMutes } = adminModule.default || {};
+
+      const afkModule = await import('./commands/afk.js');
+      const { _initAfk } = afkModule.default || {};
+      const tttModule = await import('./commands/games/tictactoe.js');
+      const { _initTTT } = tttModule.default || {};
+      const c4Module = await import('./commands/games/connect4.js');
+      const { _initC4 } = c4Module.default || {};
+      const battleModule = await import('./commands/games/battle.js');
+      const { _initBattle } = battleModule.default || {};
+      const chessModule = await import('./commands/games/chess.js');
+      const { _initChess } = chessModule.default || {};
+      const quizModule = await import('./commands/games/quiz.js');
+      const { _initQuiz } = quizModule.default || {};
 
       runLoggedBackgroundTask('scheduler_init', {}, () => scheduler.default.init(client)).catch(err => logger.error('background.scheduler_init.failed', err));
-      
+
       if (_initCardLending) {
         runLoggedBackgroundTask('card_lending_init', {}, () => _initCardLending()).catch(err => logger.error('background.card_lending_init.failed', err));
       }
-      
+
       if (_initCardDrops) {
         runLoggedBackgroundTask('card_drops_init', {}, () => _initCardDrops(client)).catch(err => logger.error('background.card_drops_init.failed', err));
       }
-      
+
       if (_seedParticipants) {
         runLoggedBackgroundTask('participants_seed', {}, () => _seedParticipants(client)).catch(err => logger.error('background.participant_seed.failed', err));
       }
-      
+
       if (_resumePendingMutes) {
         runLoggedBackgroundTask('mute_restore', {}, () => _resumePendingMutes(client)).catch(err => logger.error('background.mute_restore.failed', err));
       }
-      
+
       if (_initAfk) {
         runLoggedBackgroundTask('afk_restore', {}, () => _initAfk()).catch(err => logger.error('background.afk_restore.failed', err));
       }
-      
+
       if (_initTTT) {
         runLoggedBackgroundTask('ttt_restore', {}, () => _initTTT(client)).catch(err => logger.error('background.ttt_restore.failed', err));
       }
-      
+
       if (_initC4) {
         runLoggedBackgroundTask('connect4_restore', {}, () => _initC4(client)).catch(err => logger.error('background.connect4_restore.failed', err));
       }
-      
+
       if (_initBattle) {
         runLoggedBackgroundTask('battle_restore', {}, () => _initBattle()).catch(err => logger.error('background.battle_restore.failed', err));
       }
-      
+
       if (_initChess) {
         runLoggedBackgroundTask('chess_restore', {}, () => _initChess(client)).catch(err => logger.error('background.chess_restore.failed', err));
       }
-      
+
       if (_initQuiz) {
         runLoggedBackgroundTask('quiz_restore', {}, () => _initQuiz(client)).catch(err => logger.error('background.quiz_restore.failed', err));
       }
@@ -763,8 +774,9 @@ async function initialize() {
     // Group events
     wa.on('group_join', async (notification) => {
       try {
-        const { commands: cmds } = await import('./commands/admin.js');
-        if (cmds && cmds.onJoin) await cmds.onJoin(client, notification);
+        const adminModule = await import('./commands/admin.js');
+        const handlers = adminModule.default?.commands;
+        if (handlers?.onJoin) await handlers.onJoin(client, notification);
       } catch (err) {
         console.error('group_join error:', err.message);
       }
@@ -772,8 +784,9 @@ async function initialize() {
 
     wa.on('group_leave', async (notification) => {
       try {
-        const { commands: cmds } = await import('./commands/admin.js');
-        if (cmds && cmds.onLeave) await cmds.onLeave(client, notification);
+        const adminModule = await import('./commands/admin.js');
+        const handlers = adminModule.default?.commands;
+        if (handlers?.onLeave) await handlers.onLeave(client, notification);
       } catch (err) {
         console.error('group_leave error:', err.message);
       }
@@ -784,7 +797,8 @@ async function initialize() {
       try {
         if (msg.fromMe) return;
         const contact = await msg.getContact();
-        const { _checkAfkMentions } = await import('./commands/afk.js');
+        const afkModule = await import('./commands/afk.js');
+        const { _checkAfkMentions } = afkModule.default || {};
         if (_checkAfkMentions) await _checkAfkMentions(client, msg);
       } catch (err) {
         console.error('AFK mention check error:', err.message);
@@ -796,7 +810,8 @@ async function initialize() {
       try {
         if (msg.fromMe) return;
         const contact = await msg.getContact();
-        const { _checkAfkReturn } = await import('./commands/afk.js');
+        const afkModule = await import('./commands/afk.js');
+        const { _checkAfkReturn } = afkModule.default || {};
         if (_checkAfkReturn) await _checkAfkReturn(msg, contact.id._serialized);
       } catch (err) {
         console.error('AFK welcome-back check failed:', err.message);
@@ -877,12 +892,6 @@ async function initialize() {
         const senderId = contact.id._serialized;
 
         const Group = await import('./models/Group.js');
-        
-        await withRetry(() => Group.default.findOneAndUpdate(
-          { id: chat.id._serialized },
-          { $inc: { messageCount: 1 } },
-          { upsert: true }
-        ));
 
         await withRetry(() => Group.default.findOneAndUpdate(
           { id: chat.id._serialized },
@@ -901,6 +910,8 @@ async function initialize() {
       }
     });
 
+    await wa.init();
+
     // Heartbeat
     setInterval(async () => {
       runLoggedBackgroundTask('heartbeat', {}, async () => {
@@ -910,7 +921,8 @@ async function initialize() {
 
     // Daily stats digest
     setInterval(async () => {
-      const { _maybeSendDailyStats } = await import('./commands/general.js');
+      const moduleResult = await import('./commands/general.js');
+      const { _maybeSendDailyStats } = moduleResult.default || {};
       if (_maybeSendDailyStats) {
         runLoggedBackgroundTask('daily_stats_digest_check', {}, () => _maybeSendDailyStats(client)).catch(err => logger.error('background.daily_stats_digest_check.unhandled', err));
       }
@@ -918,7 +930,8 @@ async function initialize() {
 
     // Inactive user cleanup
     setInterval(async () => {
-      const { _sweepInactiveUsers } = await import('./commands/admin.js');
+      const moduleResult = await import('./commands/admin.js');
+      const { _sweepInactiveUsers } = moduleResult.default || {};
       if (_sweepInactiveUsers) {
         runLoggedBackgroundTask('inactive_user_sweep_check', {}, () => _sweepInactiveUsers(client)).catch(err => logger.error('background.inactive_user_sweep_check.unhandled', err));
       }
@@ -926,7 +939,8 @@ async function initialize() {
 
     // Guild events
     setInterval(async () => {
-      const { _maybeSendGuildEvents } = await import('./commands/guilds.js');
+      const moduleResult = await import('./commands/guilds.js');
+      const { _maybeSendGuildEvents } = moduleResult.default || {};
       if (_maybeSendGuildEvents) {
         runLoggedBackgroundTask('guild_events_check', {}, () => _maybeSendGuildEvents(client)).catch(err => logger.error('background.guild_events_check.unhandled', err));
       }
@@ -934,7 +948,8 @@ async function initialize() {
 
     // Daily news broadcast
     setInterval(async () => {
-      const { _maybeSendDailyNews } = await import('./commands/news.js');
+      const moduleResult = await import('./commands/news.js');
+      const { _maybeSendDailyNews } = moduleResult.default || {};
       if (_maybeSendDailyNews) {
         runLoggedBackgroundTask('daily_news_broadcast_check', {}, () => _maybeSendDailyNews(client)).catch(err => logger.error('background.daily_news_broadcast_check.unhandled', err));
       }

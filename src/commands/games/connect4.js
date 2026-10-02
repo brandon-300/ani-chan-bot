@@ -6,14 +6,14 @@
 // excluded — a restored game always gets a freshly-armed timer instead of
 // trying to resurrect the old handle (see _initC4). Same pattern as
 // tictactoe.js's saveTTTSession/deleteTTTSession.
-import GameSession from './../models/GameSession.js';
-import Guild from './../models/Guild.js';
-import logger from './../utils/logger.js';
-import { BOT_NAME } from './../utils/config.js';
-import { _formatQuestCompletionNote } from './guilds.js';
+import GameSession from '../../models/GameSession.js';
+import Guild from '../../models/Guild.js';
+import logger from '../../utils/logger.js';
+import { BOT_NAME } from '../../utils/config.js';
+import { _formatQuestCompletionNote } from '../guilds.js';
 import { getBestMove } from './connect4Engine.js';
 import { isChatBusy, claim, release } from './activeGame.js';
-import { safeGetChat, resolveNameById } from './../utils/helpers.js';
+import { safeGetChat, resolveNameById } from '../../utils/helpers.js';
 function saveC4Session(chatId, game) {
   const { turnTimer, ...state } = game;
   GameSession.findOneAndUpdate(
@@ -166,9 +166,9 @@ function scheduleTurnTimeout(chat, chatId, game) {
   if (game.turnTimer) clearTimeout(game.turnTimer);
 
   const skippedPlayer = game.players[game.turn];
-  logger.write('INFO', 'background.game_turn_timeout.armed', { game: __filename.split('/').pop(), chatId, timeoutMs: 30000 });
+  logger.write('INFO', 'background.game_turn_timeout.armed', { game: 'connect4.js', chatId, timeoutMs: 30000 });
   game.turnTimer = setTimeout(async () => {
-    logger.write('INFO', 'background.game_turn_timeout.fired', { game: __filename.split('/').pop(), chatId });
+    logger.write('INFO', 'background.game_turn_timeout.fired', { game: 'connect4.js', chatId });
     // Guards against a stale timer firing after the game already moved on
     // some other way (shouldn't happen — clearTimeout above already
     // prevents it in every normal path — but cheap insurance against a
@@ -295,7 +295,7 @@ export default {
       claim(chatId, 'c4');
       const lobby = { players: [], timer: null };
       c4Lobbies.set(chatId, lobby);
-      logger.write('INFO', 'background.game_lobby_timeout.armed', { game: __filename.split('/').pop(), chatId, timeoutMs: LOBBY_WINDOW_MS });
+      logger.write('INFO', 'background.game_lobby_timeout.armed', { game: 'connect4.js', chatId, timeoutMs: LOBBY_WINDOW_MS });
     lobby.timer = setTimeout(() => {
         // Still here means it never filled — someone joining in between
         // clears this same timer before deleting the lobby, so by the

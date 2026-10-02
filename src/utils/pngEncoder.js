@@ -89,3 +89,5 @@ function encodePNG(pixels, width, height, channels = 3) {
 }
 
 export default { encodePNG, crc32 };
+
+export { encodePNG, crc32 };

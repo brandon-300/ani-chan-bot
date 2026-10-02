@@ -553,3 +553,5 @@ export default {
   fetchRandomImage,
   RANDOM_HARD_EXCLUDE,
 };
+
+export { findCharacterArtwork, fetchArtworkForExactTag, searchPosts, selectBestImage, validatePost, findCharacterTagCandidates, swapNameOrder, fetchRandomImage, RANDOM_HARD_EXCLUDE };

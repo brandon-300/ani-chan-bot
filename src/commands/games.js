@@ -4,7 +4,7 @@ import chessGame from './games/chess.js';
 import connect4 from './games/connect4.js';
 import quiz from './games/quiz.js';
 import tictactoe from './games/tictactoe.js';
-import { pick, mentionName, safeGetChat, resolveNameById } from './utils/helpers.js';
+import { pick, mentionName, safeGetChat, resolveNameById } from '../utils/helpers.js';
 const GREEK_GODS = [
   { name: 'Zeus', domain: 'Sky & Thunder', symbol: '⚡' },
   { name: 'Poseidon', domain: 'Sea', symbol: '🌊' },
@@ -28,6 +28,7 @@ const WCG_QUESTIONS = [
 
 // ─── Akinator-style guessing (simplified) ─────────────────────────────────────
 const akinatorSessions = new Map();
+const battleGames = battle.battleGames;
 
 const AKI_QUESTIONS = [
   'Is your character male? (yes/no)',
@@ -163,3 +164,5 @@ export default {
   // .move [e2e4]
   move: chessGame.move,
 };
+
+export { battleGames };

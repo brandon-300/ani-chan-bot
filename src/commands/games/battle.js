@@ -6,14 +6,14 @@
 // and connect4.js's saveC4Session/deleteC4Session — battle has no
 // turnTimer to strip out here, since (unlike Tic Tac Toe/Connect 4) it has
 // no per-turn auto-skip timeout at all.
-import GameSession from './../models/GameSession.js';
-import Guild from './../models/Guild.js';
-import { BOT_NAME } from './../utils/config.js';
-import { MessageMedia } from '../services/media.js';
-import { _formatQuestCompletionNote } from './guilds.js';
+import GameSession from '../../models/GameSession.js';
+import Guild from '../../models/Guild.js';
+import { BOT_NAME } from '../../utils/config.js';
+import { MessageMedia } from '../../whatsapp/media.js';
+import { _formatQuestCompletionNote } from '../guilds.js';
 import { chooseAction } from './battleEngine.js';
 import { isChatBusy, claim, release } from './activeGame.js';
-import { rand, safeGetChat, resolveNameById } from './../utils/helpers.js';
+import { rand, safeGetChat, resolveNameById } from '../../utils/helpers.js';
 import { renderBoardImage } from './battleBoardImage.js';
 function saveBattleSession(chatId, game) {
   GameSession.findOneAndUpdate(

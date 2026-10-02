@@ -1,143 +1,67 @@
-/**
- * Auth Manager for WhatsApp Adapter
- * Handles authentication state for Baileys
- * Uses multi-file auth state for Termux compatibility
- */
-
 import { useMultiFileAuthState } from '@whiskeysockets/baileys';
+import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+export const AUTH_DIR = path.resolve(__dirname, '../../auth_info_baileys');
 
-const AUTH_DIR = path.join(__dirname, '../../../auth_info_baileys');
-
-/**
- * Auth Manager
- * Manages authentication state and credentials
- */
 class AuthManager {
   constructor() {
     this.state = null;
-    this.saveCreds = null;
-    this.isAuthenticatedFlag = false;
+    this.saveCredsFn = null;
     this.initialized = false;
   }
 
-  /**
-   * Initialize auth state
-   */
   async init() {
-    if (this.initialized) {
-      return this.state;
-    }
-    
-    try {
-      const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
-      this.state = state;
-      this.saveCreds = saveCreds;
-      
-      // Check if authenticated
-      this.isAuthenticatedFlag = this.checkAuthenticated();
-      this.initialized = true;
-      
-      console.log('✅ Auth state initialized');
-      return this.state;
-    } catch (error) {
-      console.error('❌ Failed to initialize auth state:', error);
-      throw error;
-    }
+    if (this.initialized && this.state) return this.state;
+    await fs.mkdir(AUTH_DIR, { recursive: true });
+    const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
+    this.state = state;
+    this.saveCredsFn = saveCreds;
+    this.initialized = true;
+    console.log(`✅ Baileys auth state initialized (${AUTH_DIR})`);
+    return state;
   }
 
-  /**
-   * Check if authenticated
-   */
-  checkAuthenticated() {
-    if (!this.state) return false;
-    return this.state.creds && this.state.creds.registered;
-  }
-
-  /**
-   * Check if currently authenticated
-   */
   isAuthenticated() {
-    return this.isAuthenticatedFlag;
+    return Boolean(this.state?.creds?.registered);
   }
 
-  /**
-   * Get auth state
-   */
   getState() {
-    if (!this.state) {
-      throw new Error('Auth state not initialized. Call init() first.');
-    }
+    if (!this.state) throw new Error('Baileys auth state is not initialized.');
     return this.state;
   }
 
-  /**
-   * Save credentials
-   */
   async saveCreds() {
-    if (!this.saveCreds) {
-      throw new Error('saveCreds not initialized. Call init() first.');
-    }
-    return this.saveCreds();
+    if (!this.saveCredsFn) throw new Error('Baileys credential writer is not initialized.');
+    await this.saveCredsFn();
   }
 
-  /**
-   * Get saveCreds function (for compatibility)
-   */
   getSaveCreds() {
-    if (!this.saveCreds) {
-      throw new Error('saveCreds not initialized. Call init() first.');
-    }
-    return this.saveCreds;
+    if (!this.saveCredsFn) throw new Error('Baileys credential writer is not initialized.');
+    return this.saveCredsFn;
   }
 
-  /**
-   * Clear auth state
-   */
   async clear() {
-    try {
-      this.isAuthenticatedFlag = false;
-      this.state = null;
-      this.saveCreds = null;
-      this.initialized = false;
-      console.log('✅ Auth state cleared');
-    } catch (error) {
-      console.error('❌ Failed to clear auth state:', error);
-      throw error;
-    }
+    this.state = null;
+    this.saveCredsFn = null;
+    this.initialized = false;
   }
 
-  /**
-   * Get pairing code for Termux
-   * Uses PHONE_NUMBER from .env
-   */
   async getPairingCode(sock) {
-    if (!sock) {
-      throw new Error('Socket not provided');
+    if (!sock || typeof sock.requestPairingCode !== 'function') {
+      throw new Error('Baileys socket is not ready to request a pairing code.');
     }
-    
-    const phoneNumber = process.env.PHONE_NUMBER || process.env.BOT_NUMBER;
-    if (!phoneNumber) {
-      throw new Error('PHONE_NUMBER or BOT_NUMBER not set in .env, cannot generate pairing code');
+    const rawNumber = process.env.PHONE_NUMBER || process.env.BOT_NUMBER || '';
+    const phoneNumber = rawNumber.replace(/\D/g, '');
+    if (phoneNumber.length < 8 || phoneNumber.length > 15) {
+      throw new Error('Set PHONE_NUMBER in .env to the WhatsApp account number with country code, digits only.');
     }
-    
-    try {
-      console.log(`🔑 Requesting pairing code for: ${phoneNumber}`);
-      const pairingCode = await sock.requestPairingCode(phoneNumber);
-      console.log(`✅ Pairing code generated: ${pairingCode}`);
-      return pairingCode;
-    } catch (error) {
-      console.error('❌ Failed to generate pairing code:', error);
-      throw error;
-    }
+    return sock.requestPairingCode(phoneNumber);
   }
 }
 
-// Singleton instance
 const authManager = new AuthManager();
-
 export default authManager;

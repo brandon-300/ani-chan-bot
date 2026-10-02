@@ -1,258 +1,122 @@
-/**
- * Identity Service for WhatsApp Adapter
- * Handles sender identification, JID normalization, and permission checks
- */
-
 import socketManager from './socket.js';
+
+function numberPart(jid) {
+  return String(jid || '').split('@')[0].split(':')[0];
+}
 
 class IdentityService {
   constructor() {
     this.sock = null;
-    this.ownerNumber = process.env.OWNER_NUMBER || process.env.BOT_OWNER;
-    this.modNumbers = (process.env.MOD_NUMBERS || '').split(',').filter(Boolean);
+    this.ownerIds = [process.env.OWNER_NUMBER, process.env.BOT_OWNER, ...(process.env.OWNER_IDS || '').split(',')]
+      .map(value => String(value || '').trim()).filter(Boolean);
+    this.modIds = (process.env.MOD_NUMBERS || '').split(',').map(value => value.trim()).filter(Boolean);
+    this.contacts = new Map();
   }
 
-  init(sock) {
-    this.sock = sock || socketManager.getSocket();
-  }
+  init(sock) { this.sock = sock || socketManager.getSocket(); }
 
   getSock() {
-    if (!this.sock) {
-      this.sock = socketManager.getSocket();
-    }
+    if (!this.sock) this.sock = socketManager.getSocket();
     return this.sock;
   }
 
-  /**
-   * Normalize JID to standard format
-   * @param {string} jid - JID to normalize
-   * @returns {string} Normalized JID
-   */
   normalizeJid(jid) {
     if (!jid) return jid;
-    
-    // Remove any whitespace
-    jid = jid.trim();
-    
-    // If it's already a full JID, return as-is
-    if (jid.includes('@')) {
-      return jid;
-    }
-    
-    // If it's a plain number, add @s.whatsapp.net
-    if (/^\d+$/.test(jid)) {
-      return `${jid}@s.whatsapp.net`;
-    }
-    
-    return jid;
+    const clean = String(jid).trim();
+    if (!clean) return clean;
+    if (!clean.includes('@')) return /^\d+$/.test(clean) ? `${clean}@s.whatsapp.net` : clean;
+    // Baileys may include a device suffix in a participant JID. Strip only
+    // that device marker; preserve LID and group JIDs exactly otherwise.
+    return clean.replace(/:\d+(?=@)/, '');
   }
 
-  /**
-   * Get sender info from message
-   * @param {object} msg - Message object
-   * @returns {object} Sender info { id, name, pushName, number }
-   */
   getSender(msg) {
     if (!msg) return null;
-
-    // From normalized message
-    if (msg.author) {
-      return {
-        id: msg.author,
-        name: msg.pushName || msg.author.split('@')[0],
-        pushName: msg.pushName || msg.author.split('@')[0],
-        number: msg.author.split('@')[0],
-      };
+    let jid = msg.author || msg.senderId || null;
+    if (!jid && msg._baileys?.key) {
+      const raw = msg._baileys;
+      jid = raw.key.remoteJid?.endsWith('@g.us')
+        ? (raw.participant || raw.key.participant || raw.key.remoteJid)
+        : raw.key.remoteJid;
     }
-
-    // From Baileys message
-    if (msg._baileys) {
-      const baileysMsg = msg._baileys;
-      const { key, pushName, participant } = baileysMsg;
-      
-      const isGroup = key.remoteJid?.endsWith('@g.us');
-      const senderId = isGroup && participant ? participant : key.remoteJid;
-      
-      return {
-        id: senderId,
-        name: pushName || senderId.split('@')[0],
-        pushName: pushName || senderId.split('@')[0],
-        number: senderId.split('@')[0],
-      };
+    if (!jid && msg.key) {
+      jid = msg.key.remoteJid?.endsWith('@g.us')
+        ? (msg.participant || msg.key.participant || msg.key.remoteJid)
+        : msg.key.remoteJid;
     }
-
-    // From key object
-    if (msg.key) {
-      const { key, pushName, participant } = msg;
-      const isGroup = key.remoteJid?.endsWith('@g.us');
-      const senderId = isGroup && participant ? participant : key.remoteJid;
-      
-      return {
-        id: senderId,
-        name: pushName || senderId.split('@')[0],
-        pushName: pushName || senderId.split('@')[0],
-        number: senderId.split('@')[0],
-      };
-    }
-
-    return null;
+    if (!jid) return null;
+    jid = this.normalizeJid(jid);
+    const pushName = msg.pushName || msg.notifyName || this.contacts.get(jid) || numberPart(jid);
+    return { id: jid, name: pushName, pushName, number: numberPart(jid) };
   }
 
-  /**
-   * Resolve sender name from message
-   * @param {object} msg - Message object
-   * @returns {string} Sender name
-   */
+  rememberContact(jid, name) {
+    const normalized = this.normalizeJid(jid);
+    if (normalized && name) this.contacts.set(normalized, String(name));
+  }
+
   async resolveSenderName(msg) {
     const sender = this.getSender(msg);
-    if (sender) return sender.pushName || sender.name || sender.id.split('@')[0];
-    
-    return msg.pushName || msg.from?.split('@')[0] || 'Unknown';
+    return sender?.pushName || sender?.name || numberPart(msg?.from) || 'Unknown';
   }
 
-  /**
-   * Check if user is owner
-   * @param {string} userId - User JID or number
-   * @returns {boolean}
-   */
   isOwner(userId) {
     if (!userId) return false;
-    
-    const normalizedUserId = this.normalizeJid(userId);
-    const normalizedOwner = this.normalizeJid(this.ownerNumber);
-    
-    // Direct comparison
-    if (normalizedUserId === normalizedOwner) return true;
-    
-    // Compare just the number part
-    const userNumber = normalizedUserId.split('@')[0];
-    const ownerNumber = normalizedOwner.split('@')[0];
-    
-    return userNumber === ownerNumber;
+    const target = numberPart(this.normalizeJid(userId));
+    return this.ownerIds.some(id => numberPart(this.normalizeJid(id)) === target);
   }
 
-  /**
-   * Check if user is mod
-   * @param {string} userId - User JID or number
-   * @returns {boolean}
-   */
   isMod(userId) {
-    if (!userId) return false;
-    
-    const normalizedUserId = this.normalizeJid(userId);
-    const userNumber = normalizedUserId.split('@')[0];
-    
-    // Check if owner
     if (this.isOwner(userId)) return true;
-    
-    // Check mod numbers
-    for (const modNumber of this.modNumbers) {
-      const normalizedMod = this.normalizeJid(modNumber);
-      const modNumberPart = normalizedMod.split('@')[0];
-      
-      if (userNumber === modNumberPart) return true;
-    }
-    
-    return false;
+    if (!userId) return false;
+    const target = numberPart(this.normalizeJid(userId));
+    return this.modIds.some(id => numberPart(this.normalizeJid(id)) === target);
   }
 
-  /**
-   * Check if user is admin (mod or owner)
-   * @param {string} userId - User JID or number
-   * @returns {boolean}
-   */
-  isAdmin(userId) {
-    return this.isOwner(userId) || this.isMod(userId);
-  }
+  isAdmin(userId) { return this.isMod(userId); }
 
-  /**
-   * Get bot's own JID
-   * @returns {string}
-   */
   getBotJid() {
     const sock = this.getSock();
-    if (!sock) return null;
-    
-    return sock.user?.id || socketManager.getWid();
+    return this.normalizeJid(sock?.user?.id || socketManager.getWid() || '');
   }
 
-  /**
-   * Get bot's own number
-   * @returns {string}
-   */
   getBotNumber() {
     const jid = this.getBotJid();
-    if (!jid) return null;
-    return jid.split('@')[0];
+    return jid ? numberPart(jid) : null;
   }
 
-  /**
-   * Generate mention string for user
-   * @param {string} jid - User JID
-   * @returns {string} Mention string
-   */
   mention(jid) {
-    if (!jid) return '';
-    const normalized = this.normalizeJid(jid);
-    return `@${normalized.split('@')[0]}`;
+    return jid ? `@${numberPart(this.normalizeJid(jid))}` : '';
   }
 
-  /**
-   * Get user info from JID
-   * @param {string} jid - User JID
-   * @returns {Promise<object>} User info
-   */
   async getUserInfo(jid) {
-    const sock = this.getSock();
-    if (!sock) throw new Error('Socket not initialized');
-    
-    try {
-      // For now, return basic info
-      // Baileys doesn't have a direct getContact method
-      return {
-        id: jid,
-        name: jid.split('@')[0],
-        pushName: jid.split('@')[0],
-        isBot: jid === this.getBotJid(),
-      };
-    } catch (error) {
-      console.error('Failed to get user info:', error);
-      return {
-        id: jid,
-        name: jid.split('@')[0],
-        pushName: jid.split('@')[0],
-      };
-    }
+    if (!jid) throw new TypeError('A user JID is required.');
+    const normalized = this.normalizeJid(jid);
+    const cachedName = this.contacts.get(normalized);
+    const name = cachedName || numberPart(normalized) || 'Unknown';
+    return { id: normalized, name, pushName: name, isBot: normalized === this.getBotJid() };
   }
 
-  /**
-   * Check if message is from bot
-   * @param {object} msg - Message object
-   * @returns {boolean}
-   */
   isFromBot(msg) {
     if (!msg) return false;
-    
     if (msg.fromMe) return true;
-    
     const sender = this.getSender(msg);
-    if (!sender) return false;
-    
-    return sender.id === this.getBotJid();
+    return Boolean(sender && sender.id === this.getBotJid());
   }
 
-  /**
-   * Get contact from JID
-   * @param {string} jid - User JID
-   * @returns {Promise<object>} Contact info
-   */
   async getContact(jid) {
-    const normalizedJid = this.normalizeJid(jid);
-    
+    if (!jid) throw new TypeError('A contact JID is required.');
+    const normalized = this.normalizeJid(jid);
+    const number = numberPart(normalized);
+    const name = this.contacts.get(normalized) || number || 'Unknown';
+    const isMe = normalized === this.getBotJid();
     return {
-      id: { _serialized: normalizedJid },
-      name: normalizedJid.split('@')[0],
-      pushName: normalizedJid.split('@')[0],
+      id: { _serialized: normalized, user: number },
+      number,
+      name,
+      pushname: name,
+      pushName: name,
+      isMe,
     };
   }
 }

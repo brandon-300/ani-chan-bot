@@ -1,17 +1,12 @@
+import { getRenderBrowser } from './renderBrowser.js';
+
 // Renders user-supplied caption text onto a replied image or sticker.
 //
 // Why Puppeteer instead of a new image library: this project deliberately
-// has no canvas/sharp/jimp dependency — sharp already failed to install as
-// a native binary on this exact Termux/Android setup (see the note at the
-// top of commands/games/chessBoardImage.js). Good-looking caption text
-// (real font metrics, word-wrap, a clean stroke outline) needs an actual
-// text layout engine, and there's already one running on the phone that
-// costs nothing extra to reuse: the same Chromium instance whatsapp-web.js
-// keeps open for the WhatsApp Web session itself, exposed as
-// client.pupBrowser. Opening a second, throwaway page in that
-// already-running browser to render some HTML/CSS and screenshot it needs
-// zero new npm installs and zero extra browser launches — just a new tab,
-// closed again as soon as this is done with it.
+// avoids native image dependencies that are difficult to install on Termux.
+// A separate system Chromium binary is controlled by Puppeteer-Core through
+// renderBrowser.js; it is independent of the Baileys WhatsApp connection.
+// One reusable browser is launched lazily, and each render closes its page.
 //
 // This module only does the rendering (image + text -> PNG buffer). Sticker
 // vs. plain-image output handling (webp conversion, sendMediaAsSticker,
@@ -30,17 +25,12 @@ function escapeHtml(str) {
 }
 
 /**
- * @param {import('whatsapp-web.js').Client} client
  * @param {Buffer} imageBuffer - raw source image bytes (any format Chromium's <img> can decode: png/jpg/webp/gif)
  * @param {string} mimetype - e.g. 'image/webp'
  * @param {{ topText?: string, bottomText?: string }} captions
  * @returns {Promise<Buffer>} PNG buffer of the composed image, same aspect ratio as the source
  */
 async function renderMemeImage(client, imageBuffer, mimetype, captions = {}) {
-  if (!client.pupBrowser) {
-    throw new Error('WhatsApp browser session is not ready yet — try again in a moment.');
-  }
-
   const topText = (captions.topText || '').trim();
   const bottomText = (captions.bottomText || '').trim();
   if (!topText && !bottomText) {
@@ -48,7 +38,8 @@ async function renderMemeImage(client, imageBuffer, mimetype, captions = {}) {
   }
 
   const dataUri = `data:${mimetype};base64,${imageBuffer.toString('base64')}`;
-  const page = await client.pupBrowser.newPage();
+  const renderBrowser = await getRenderBrowser();
+  const page = await renderBrowser.newPage();
 
   try {
     // Phase 1: load just the image (generous viewport) to measure its
@@ -171,24 +162,20 @@ const MAX_ANIMATED_FRAMES = 40; // bounds worst-case runtime on a phone-class CP
 const MIN_FRAME_DURATION_MS = 20; // guards against a missing/zero per-frame duration producing an absurdly fast flicker
 
 /**
- * @param {import('whatsapp-web.js').Client} client
  * @param {Buffer} imageBuffer - raw animated webp bytes
  * @param {string} mimetype - e.g. 'image/webp'
  * @param {{ topText?: string, bottomText?: string }} captions
  * @returns {Promise<{ frames: Array<{dataUrl: string, durationMs: number}>, totalFrames: number, sampledFrames: number }>}
  */
 async function renderAnimatedMemeFrames(client, imageBuffer, mimetype, captions = {}) {
-  if (!client.pupBrowser) {
-    throw new Error('WhatsApp browser session is not ready yet — try again in a moment.');
-  }
-
   const topText = (captions.topText || '').trim();
   const bottomText = (captions.bottomText || '').trim();
   if (!topText && !bottomText) {
     throw new Error('renderAnimatedMemeFrames: no caption text provided.');
   }
 
-  const page = await client.pupBrowser.newPage();
+  const renderBrowser = await getRenderBrowser();
+  const page = await renderBrowser.newPage();
 
   try {
     const base64Source = imageBuffer.toString('base64');
@@ -355,3 +342,4 @@ async function renderAnimatedMemeFrames(client, imageBuffer, mimetype, captions 
 }
 
 export default { renderMemeImage, renderAnimatedMemeFrames };
+export { renderMemeImage, renderAnimatedMemeFrames };

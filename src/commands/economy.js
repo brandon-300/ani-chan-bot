@@ -5,21 +5,21 @@
 // this stays well clear of the 512MB Mongo storage cap regardless of how
 // many users set a picture. Local files here are pure scratch space (input
 // download + ffmpeg output) and get deleted right after upload.
-import AgeVerification from './models/AgeVerification.js';
-import Guild from './models/Guild.js';
-import User from './models/User.js';
+import AgeVerification from '../models/AgeVerification.js';
+import Guild from '../models/Guild.js';
+import User from '../models/User.js';
 import ffmpeg from 'fluent-ffmpeg';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { BOT_NAME, MIN_REGISTRATION_AGE, AGE_VERIFICATION_LOCKOUT_DAYS } from './utils/config.js';
-import { CardCatalogue, OwnedCard } from './models/Card.js';
-import { MessageMedia } from '../services/media.js';
+import { BOT_NAME, MIN_REGISTRATION_AGE, AGE_VERIFICATION_LOCKOUT_DAYS } from '../utils/config.js';
+import { CardCatalogue, OwnedCard } from '../models/Card.js';
+import { MessageMedia } from '../whatsapp/media.js';
 import { battleGames } from './games.js';
-import { checkAchievements, formatUnlockNotice, ACHIEVEMENTS } from './utils/achievements.js';
-import { checkTitle, formatTitleUnlockNotice, titleLabel, TITLES } from './utils/titles.js';
-import { formatNum, formatCooldown, rand, pick, tierEmoji, mentionName, mentionTag, safeGetChat, safeGetQuotedMessage, isOwner, isMod, addXP, XP_REWARDS, xpNeededForLevel, boldSans, doubleStruck, encodeIdKey, parseAmount, parseDobInput, calculateAge, isRegistrationComplete, buildRegistrationProgressText, registrationSteps } from './utils/helpers.js';
-import { uploadToCloud, deleteFromCloud, isCloudConfigured } from './utils/cloudinary.js';
+import { checkAchievements, formatUnlockNotice, ACHIEVEMENTS } from '../utils/achievements.js';
+import { checkTitle, formatTitleUnlockNotice, titleLabel, TITLES } from '../utils/titles.js';
+import { formatNum, formatCooldown, rand, pick, tierEmoji, mentionName, mentionTag, safeGetChat, safeGetQuotedMessage, isOwner, isMod, addXP, XP_REWARDS, xpNeededForLevel, boldSans, doubleStruck, encodeIdKey, parseAmount, parseDobInput, calculateAge, isRegistrationComplete, buildRegistrationProgressText, registrationSteps } from '../utils/helpers.js';
+import { uploadToCloud, deleteFromCloud, isCloudConfigured } from '../utils/cloudinary.js';
 const TMP = os.tmpdir();
 
 function tmpFile(ext) {
@@ -231,7 +231,7 @@ const ROAST_LINES = [
   "You're why some people prefer talking to walls."
 ];
 
-export default {
+const commands = {
   // .reg — begin or resume the existing profile-registration flow. It does
   // not activate an account; the current four verified profile steps do that.
   async reg(client, msg, args) {
@@ -1036,7 +1036,7 @@ async lottery(client, msg, args) {
 
   // .ach alias
   async ach(client, msg, args) {
-    return module.exports.achievements(client, msg, args);
+    return commands.achievements(client, msg, args);
   },
 
   // .level / .xp — current level, XP progress toward the next level, current
@@ -1078,7 +1078,7 @@ async lottery(client, msg, args) {
 
   // .xp alias
   async xp(client, msg, args) {
-    return module.exports.level(client, msg, args);
+    return commands.level(client, msg, args);
   },
 
   // .addxp <amount> [@mention] — owner-only. Grants XP directly so you can
@@ -1193,3 +1193,5 @@ async lottery(client, msg, args) {
     msg.reply('🗑 Profile picture removed.');
   },
 };
+
+export default commands;

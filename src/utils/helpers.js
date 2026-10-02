@@ -8,7 +8,9 @@
 // Unicode block; doubleStruck has a handful of letters (C, H, N, P, Q, R, Z)
 // that live at their own legacy Letter-like Symbol codepoints instead of the
 // main block, which is just how Unicode assigned them.
-import User from './models/User.js';
+import User from '../models/User.js';
+import identity from '../whatsapp/identity.js';
+import groups from '../whatsapp/groups.js';
 import { MIN_REGISTRATION_AGE } from './config.js';
 function boldSans(text) {
   return [...text].map(ch => {
@@ -297,19 +299,16 @@ async function resolveSenderName(msg, client) {
 
 // ─── Check if user is group admin ─────────────────────────────────────────────
 async function isAdmin(msg) {
-  let chat;
   try {
-    chat = await msg.getChat();
+    const chatId = msg?.chatId || msg?.from;
+    if (!chatId?.endsWith('@g.us')) return false;
+    const sender = identity.getSender(msg);
+    if (!sender?.id) return false;
+    return await groups.isAdmin(chatId, sender.id);
   } catch (err) {
-    console.error('isAdmin: could not get chat, skipping:', err.message);
+    console.error('isAdmin: group admin status could not be verified:', err.message);
     return false;
   }
-  if (!chat || !chat.isGroup) return false;
-  const contact = await msg.getContact();
-  const participant = chat.participants.find(
-    p => p.id._serialized === contact.id._serialized
-  );
-  return participant && (participant.isAdmin || participant.isSuperAdmin);
 }
 
 // ─── Check if bot is admin ────────────────────────────────────────────────────
@@ -317,17 +316,14 @@ async function isAdmin(msg) {
 // (connection glitch) — distinct from false, so callers don't confuse
 // "couldn't verify" with "genuinely not an admin".
 async function botIsAdmin(msg) {
-  let chat;
+  const chatId = msg?.chatId || msg?.from;
+  if (!chatId?.endsWith('@g.us')) return false;
   try {
-    chat = await msg.getChat();
+    return await groups.isBotAdmin(chatId);
   } catch (err) {
-    console.error('botIsAdmin: could not get chat, skipping:', err.message);
+    console.error('botIsAdmin: group admin status could not be verified:', err.message);
     return null;
   }
-  if (!chat || !chat.isGroup) return false;
-  const botId = msg.to;
-  const participant = chat.participants.find(p => p.id._serialized === botId);
-  return participant && (participant.isAdmin || participant.isSuperAdmin);
 }
 
 // ─── XP & Level ──────────────────────────────────────────────────────────────
@@ -470,7 +466,7 @@ function ownerIds() {
 }
 
 function isOwner(id) {
-  return ownerIds().includes(id);
+  return identity.isOwner(id);
 }
 
 // ─── Moderators ──────────────────────────────────────────────────────────────
@@ -484,7 +480,7 @@ function getModIds() {
 }
 
 function isMod(id) {
-  return isOwner(id) || getModIds().includes(id);
+  return identity.isMod(id) || isOwner(id);
 }
 // ─── Map-Safe Key Encoding ─────────────────────────────────────────────────────
 // Mongoose's Map schema type hard-rejects any key containing "." — it throws
@@ -596,3 +592,5 @@ export default {
   encodeIdKey,
   decodeIdKey
 };
+
+export { boldSans, doubleStruck, cleanDescription, formatNum, parseAmount, formatCooldown, parseDobInput, calculateAge, registrationSteps, isRegistrationComplete, isVerifiedAdult, buildRegistrationProgressText, buildRegistrationIntroText, rand, pick, isAdmin, isMod, getModIds, botIsAdmin, addXP, XP_REWARDS, xpNeededForLevel, rollTier, tierEmoji, TIER_VALUES, TIER_DROP_RATES, TIER_ORDER, tierAbove, cardValue, mentionName, mentionTag, isOwner, resolveNameById, generateUniqueCode, safeGetChat, safeGetQuotedMessage, safeGetContact, withRetry, resolveSenderName, encodeIdKey, decodeIdKey };

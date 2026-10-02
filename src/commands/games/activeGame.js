@@ -51,3 +51,4 @@ function release(chatId, type) {
 }
 
 export default { isChatBusy, claim, release, LABELS };
+export { isChatBusy, claim, release };

@@ -8,7 +8,7 @@
 //
 // To add a new one later: just append an entry here. Nothing else needs to
 // change — checkGuildAchievements() picks it up automatically.
-import Guild from './models/Guild.js';
+import Guild from '../models/Guild.js';
 const GUILD_ACHIEVEMENTS = [
   {
     id: 'first_quest',
@@ -104,3 +104,5 @@ function formatGuildUnlockNotice(newlyUnlocked) {
 }
 
 export default { GUILD_ACHIEVEMENTS, checkGuildAchievements, formatGuildUnlockNotice };
+
+export { GUILD_ACHIEVEMENTS, checkGuildAchievements, formatGuildUnlockNotice };

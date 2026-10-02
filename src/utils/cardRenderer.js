@@ -5,7 +5,7 @@
 // ── Why Puppeteer/HTML/SVG instead of FFmpeg ────────────────────────────────
 // This project already has a proven, zero-new-dependency way to composite
 // text + images on this exact phone: reusing the WhatsApp session's own
-// Chromium instance (client.pupBrowser) to render HTML/CSS/inline-SVG and
+// independent system Chromium instance to render HTML/CSS/inline-SVG and
 // screenshot it — see utils/memeRender.js (captions on images) and the
 // mini-grid inside .deck (commands/cards.js), which composites several
 // already-rendered cards from this same module the same way. Chromium renders real fonts, word-wrap,
@@ -61,9 +61,10 @@
 
 import axios from 'axios';
 import { BOT_NAME } from './config.js';
-import { CardCatalogue } from './models/Card.js';
+import { CardCatalogue } from '../models/Card.js';
 import { TIER_ORDER, cleanDescription } from './helpers.js';
 import { uploadBufferToCloud, isCloudConfigured } from './cloudinary.js';
+import { getRenderBrowser } from './renderBrowser.js';
 const CARD_RENDER_VERSION = 4; // v4: narrower inset artwork + blurred backdrop fills the letterbox gutters instead of a flat gradient — bump this, and only this, for future visual changes
 
 // ─── Fixed canvas + layout (all bands sum exactly to INNER_H — see math below) ─
@@ -546,9 +547,6 @@ async function fetchImageAsDataUri(url) {
 
 // ─── Core render: catalogue doc -> PNG buffer (+ best-effort cache write) ──
 async function renderCardImage(client, catalogue) {
-  if (!client.pupBrowser) {
-    throw new Error("Card renderer needs the WhatsApp browser session, which isn't ready yet.");
-  }
   if (!catalogue.imageUrl) {
     throw new Error('renderCardImage: catalogue entry has no source artwork (imageUrl).');
   }
@@ -559,7 +557,8 @@ async function renderCardImage(client, catalogue) {
 
   const imageDataUri = await fetchImageAsDataUri(catalogue.imageUrl);
 
-  const page = await client.pupBrowser.newPage();
+  const renderBrowser = await getRenderBrowser();
+  const page = await renderBrowser.newPage();
   try {
     await page.setViewport({ width: CARD_WIDTH, height: CARD_HEIGHT, deviceScaleFactor: 1 });
 
@@ -681,3 +680,4 @@ async function renderCard(client, catalogue) {
 }
 
 export default { renderCard, fetchImageAsDataUri, CARD_RENDER_VERSION };
+export { renderCard, fetchImageAsDataUri, CARD_RENDER_VERSION };

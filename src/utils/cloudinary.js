@@ -1,5 +1,5 @@
 import logger from './logger.js';
-const cloudinary = require('cloudinary').v2;
+import { v2 as cloudinary } from 'cloudinary';
 
 // Cloudinary's SDK auto-reads a single CLOUDINARY_URL env var if it's set
 // (the format Cloudinary's own dashboard gives you: cloudinary://key:secret@
@@ -100,3 +100,5 @@ async function uploadBufferToCloud(buffer, { folder, publicId, resourceType = 'i
 }
 
 export default { uploadToCloud, uploadBufferToCloud, deleteFromCloud, isCloudConfigured };
+
+export { uploadToCloud, uploadBufferToCloud, deleteFromCloud, isCloudConfigured };

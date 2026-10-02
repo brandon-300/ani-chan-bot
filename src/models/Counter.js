@@ -26,3 +26,4 @@ async function getNextSequence(key) {
 }
 
 export default { Counter, getNextSequence };
+export { Counter, getNextSequence };

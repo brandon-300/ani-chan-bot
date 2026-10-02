@@ -316,3 +316,5 @@ async function transcribeAudio({ base64Audio, mimeType }) {
 }
 
 export default { generateText, generateVision, generateImage, transcribeAudio };
+
+export { generateText, generateVision, generateImage, transcribeAudio };

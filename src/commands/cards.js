@@ -4,19 +4,20 @@
 // TradeRequest) and when checking one's age in .acceptsale/.accepttrade.
 // One constant instead of the literal "10 * 60 * 1000" in three places, so
 // the creation side and the check side can't drift out of sync.
-import Group from './models/Group.js';
-import Guild from './models/Guild.js';
-import User from './models/User.js';
+import Group from '../models/Group.js';
+import Guild from '../models/Guild.js';
+import User from '../models/User.js';
 import crypto from 'crypto';
 import mongoose from 'mongoose';
-import scheduler from './utils/scheduler.js';
-import { CardCatalogue, OwnedCard, Auction, TradeRequest, SaleRequest } from './models/Card.js';
-import { MessageMedia } from '../services/media.js';
+import scheduler from '../utils/scheduler.js';
+import { CardCatalogue, OwnedCard, Auction, TradeRequest, SaleRequest } from '../models/Card.js';
+import { MessageMedia } from '../whatsapp/media.js';
 import { _formatQuestCompletionNote } from './guilds.js';
-import { checkAchievements, formatUnlockNotice } from './utils/achievements.js';
-import { checkTitle, formatTitleUnlockNotice } from './utils/titles.js';
-import { renderCard, fetchImageAsDataUri } from './utils/cardRenderer.js';
-import { tierEmoji, rollTier, formatNum, pick, mentionName, mentionTag, generateUniqueCode, safeGetChat, cardValue, tierAbove, TIER_DROP_RATES, addXP, XP_REWARDS, parseAmount, boldSans, doubleStruck, cleanDescription } from './utils/helpers.js';
+import { checkAchievements, formatUnlockNotice } from '../utils/achievements.js';
+import { checkTitle, formatTitleUnlockNotice } from '../utils/titles.js';
+import { renderCard, fetchImageAsDataUri } from '../utils/cardRenderer.js';
+import { getRenderBrowser } from '../utils/renderBrowser.js';
+import { tierEmoji, rollTier, formatNum, pick, mentionName, mentionTag, generateUniqueCode, safeGetChat, cardValue, tierAbove, TIER_DROP_RATES, addXP, XP_REWARDS, parseAmount, boldSans, doubleStruck, cleanDescription } from '../utils/helpers.js';
 const REQUEST_EXPIRY_MS = 10 * 60 * 1000;
 
 // Thrown inside a mongoose session.withTransaction(...) callback purely to
@@ -532,7 +533,7 @@ async function _initCardLending() {
 }
 
 // ─── Commands ─────────────────────────────────────────────────────────────────
-export default {
+const commands = {
   _initCardDrops,
   _initCardLending,
   // .cards on/off
@@ -708,7 +709,7 @@ Use *.claim* when this card drops!`;
 
   // .cardinfo alias
   async cardinfo(client, msg, args) {
-    return module.exports.ci(client, msg, args);
+    return commands.ci(client, msg, args);
   },
 
   // .si [name] — series info
@@ -883,14 +884,17 @@ const cards = await OwnedCard.find({
   // upload, inside renderCard()); every view after that is a fast
   // Cloudinary URL fetch, same caching every other card view already gets.
   async deck(client, msg, args) {
-    if (!client.pupBrowser) {
-      return msg.reply('❌ Card grid needs the WhatsApp browser session, which isn\'t ready yet — try again in a moment.');
-    }
-
     const contact = await msg.getContact();
     const userId = contact.id._serialized;
     const cards = await getUserCards(userId); // already sorted: tier asc (lowest first), then name
     if (!cards.length) return msg.reply('❌ You have no cards yet. Wait for one to drop and use *.claim*!');
+
+    let renderBrowser;
+    try {
+      renderBrowser = await getRenderBrowser();
+    } catch (err) {
+      return msg.reply(`❌ Card grid renderer is unavailable: ${err.message}`);
+    }
 
     const totalPages = Math.max(1, Math.ceil(cards.length / GRID_PER_PAGE));
     let page = parseInt(args[0]) || 1;
@@ -938,7 +942,7 @@ const cards = await OwnedCard.find({
       const width = cols * GRID_CELL_W + (cols - 1) * gap + pad * 2;
       const height = rows * GRID_CELL_H + (rows - 1) * gap + pad * 2;
 
-      const gridPage = await client.pupBrowser.newPage();
+      const gridPage = await renderBrowser.newPage();
       try {
         await gridPage.setViewport({ width, height, deviceScaleFactor: 1 });
         await gridPage.setContent(buildCollectionGridHtml(cells), { waitUntil: 'load', timeout: 15000 });
@@ -2004,7 +2008,7 @@ const cards = await OwnedCard.find({
 
   // .listauc — same as .auction
   async listauc(client, msg, args) {
-    return module.exports.auction(client, msg, args);
+    return commands.auction(client, msg, args);
   },
 
   // .stardust
@@ -2332,3 +2336,5 @@ const cards = await OwnedCard.find({
     return msg.reply(text);
   },
 };
+
+export default commands;

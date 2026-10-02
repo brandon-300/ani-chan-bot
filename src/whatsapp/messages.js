@@ -1,9 +1,45 @@
-/**
- * Messages Service for WhatsApp Adapter
- * Handles sending, replying, reacting, and deleting messages
- */
-
+import { toBaileysMediaPayload } from './media.js';
 import socketManager from './socket.js';
+
+function messageKey(message) {
+  const raw = message?._baileys?.key || message?.key || {};
+  const id = raw.id || message?.id?._serialized || message?.id;
+  const remoteJid = raw.remoteJid || message?.chatId || message?.from;
+  if (!id || !remoteJid) return null;
+  return {
+    ...raw,
+    id,
+    remoteJid,
+    fromMe: raw.fromMe ?? Boolean(message?.fromMe),
+    participant: raw.participant || (message?.isGroup ? message?.author : undefined),
+  };
+}
+
+function payloadFor(content, options = {}) {
+  const mediaPayload = toBaileysMediaPayload(content, options);
+  if (mediaPayload) return mediaPayload;
+  if (typeof content === 'string') {
+    const text = { text: content };
+    if (Array.isArray(options.mentions) && options.mentions.length) text.mentions = options.mentions;
+    return text;
+  }
+  if (content && typeof content === 'object') {
+    const payload = { ...content };
+    if (Array.isArray(options.mentions) && options.mentions.length) payload.mentions = options.mentions;
+    if (options.caption !== undefined && payload.caption === undefined) payload.caption = options.caption;
+    return payload;
+  }
+  return { text: String(content ?? '') };
+}
+
+function sendOptions(options = {}, quotedMessage = null) {
+  const output = {};
+  const quoted = options.quoted || quotedMessage?._baileys || null;
+  if (quoted) output.quoted = quoted;
+  if (options.linkPreview !== undefined) output.linkPreview = options.linkPreview;
+  if (options.messageId) output.messageId = options.messageId;
+  return output;
+}
 
 class MessagesService {
   constructor() {
@@ -11,212 +47,72 @@ class MessagesService {
   }
 
   init(sock) {
-    this.sock = sock || socketManager.getSocket();
+    this.sock = sock || null;
   }
 
   getSock() {
-    if (!this.sock) {
-      this.sock = socketManager.getSocket();
-    }
+    if (!this.sock) throw new Error('WhatsApp socket is not initialized.');
     return this.sock;
   }
 
-  /**
-   * Send text message
-   * @param {string} jid - Target JID
-   * @param {string} text - Text content
-   * @param {object} options - Message options
-   */
   async sendText(jid, text, options = {}) {
+    return this.sendMessage(jid, text, options);
+  }
+
+  async sendMessage(jid, content, options = {}, quotedMessage = null) {
+    if (!jid) throw new TypeError('A recipient JID is required.');
     const sock = this.getSock();
-    if (!sock) throw new Error('Socket not initialized');
-    
-    const msgOptions = {
-      text,
-      ...options,
-    };
-    
-    if (options.quotedMessageId) {
-      msgOptions.quoted = {
-        id: options.quotedMessageId,
-        remoteJid: jid,
-      };
-    }
-    
-    if (options.mentions) {
-      msgOptions.mentions = options.mentions;
-    }
-    
-    const result = await sock.sendMessage(jid, msgOptions);
-    if (result && result.key) {
-      socketManager.registerSentMessage(result.key, result);
-    }
+    const payload = payloadFor(content, options);
+    const result = await sock.sendMessage(jid, payload, sendOptions(options, quotedMessage));
+    if (result?.key) socketManager.registerSentMessage(result.key, result);
     return result;
   }
 
-  /**
-   * Reply to a message
-   * @param {object} msg - Message to reply to
-   * @param {*} content - Reply content
-   * @param {object} options - Message options
-   */
-  async reply(msg, content, options = {}) {
-    const sock = this.getSock();
-    if (!sock) throw new Error('Socket not initialized');
-    
-    const jid = msg.chatId || msg.from;
-    const quotedMsg = msg;
-    
-    if (typeof content === 'string') {
-      return this.sendText(jid, content, { ...options, quotedMessageId: quotedMsg.id?._serialized || quotedMsg.id });
-    }
-    
-    // For media content
-    const media = { ...content };
-    
-    if (quotedMsg.id) {
-      media.quoted = {
-        id: quotedMsg.id._serialized || quotedMsg.id,
-        remoteJid: jid,
-      };
-    }
-    
-    const result = await sock.sendMessage(jid, media, options);
-    if (result && result.key) {
-      socketManager.registerSentMessage(result.key, result);
-    }
-    return result;
+  async reply(message, content, options = {}) {
+    const jid = message?.chatId || message?.from;
+    if (!jid) throw new TypeError('Cannot reply to a message without a chat JID.');
+    const quote = message?._baileys || null;
+    return this.sendMessage(jid, content, { ...options, quoted: options.quoted || quote });
   }
 
-  /**
-   * React to a message
-   * @param {object} msg - Message to react to
-   * @param {string} emoji - Reaction emoji
-   */
-  async react(msg, emoji) {
+  async react(message, emoji) {
     const sock = this.getSock();
-    if (!sock) throw new Error('Socket not initialized');
-    
-    const key = msg.id ? { ...msg.id, remoteJid: msg.chatId || msg.from } : msg._baileys?.key;
-    
-    try {
-      await sock.react(key, emoji);
-      return true;
-    } catch (error) {
-      console.error('❌ Failed to react:', error.message);
-      return false;
-    }
+    const key = messageKey(message);
+    if (!key) throw new TypeError('Cannot react without a valid WhatsApp message key.');
+    return sock.sendMessage(key.remoteJid, { react: { text: String(emoji || ''), key } });
   }
 
-  /**
-   * Delete a message
-   * @param {object} msg - Message to delete
-   * @param {boolean} forEveryone - Delete for everyone in group
-   */
-  async delete(msg, forEveryone = false) {
+  async delete(message, forEveryone = true) {
     const sock = this.getSock();
-    if (!sock) throw new Error('Socket not initialized');
-    
-    const key = msg.id ? { ...msg.id, remoteJid: msg.chatId || msg.from } : msg._baileys?.key;
-    
-    try {
-      await sock.deleteMessage(key, forEveryone);
-      return true;
-    } catch (error) {
-      console.error('❌ Failed to delete message:', error.message);
-      return false;
-    }
+    const key = messageKey(message);
+    if (!key) throw new TypeError('Cannot delete without a valid WhatsApp message key.');
+    if (!forEveryone) return false;
+    return sock.sendMessage(key.remoteJid, { delete: key });
   }
 
-  /**
-   * Edit a message (if supported)
-   * @param {object} msg - Message to edit
-   * @param {string} newText - New text content
-   */
-  async edit(msg, newText) {
-    const sock = this.getSock();
-    if (!sock) throw new Error('Socket not initialized');
-    
-    const key = msg.id ? { ...msg.id, remoteJid: msg.chatId || msg.from } : msg._baileys?.key;
-    
-    try {
-      // Baileys doesn't support edit directly, but we can delete and resend
-      await this.delete(msg);
-      return this.sendText(msg.chatId || msg.from, newText);
-    } catch (error) {
-      console.error('❌ Failed to edit message:', error.message);
-      throw error;
-    }
+  async edit(message, newText) {
+    const jid = message?.chatId || message?.from;
+    if (!jid) throw new TypeError('Cannot edit a message without a chat JID.');
+    await this.delete(message, true);
+    return this.sendText(jid, newText);
   }
 
-  /**
-   * Send typing indicator
-   * @param {string} jid - Target JID
-   */
   async sendTyping(jid) {
-    const sock = this.getSock();
-    if (!sock) throw new Error('Socket not initialized');
-    
-    try {
-      await sock.sendPresenceUpdate('composing', jid);
-      return true;
-    } catch (error) {
-      console.error('❌ Failed to send typing indicator:', error.message);
-      return false;
-    }
+    return this.getSock().sendPresenceUpdate('composing', jid);
   }
 
-  /**
-   * Send recording indicator
-   * @param {string} jid - Target JID
-   */
   async sendRecording(jid) {
-    const sock = this.getSock();
-    if (!sock) throw new Error('Socket not initialized');
-    
-    try {
-      await sock.sendPresenceUpdate('recording', jid);
-      return true;
-    } catch (error) {
-      console.error('❌ Failed to send recording indicator:', error.message);
-      return false;
-    }
+    return this.getSock().sendPresenceUpdate('recording', jid);
   }
 
-  /**
-   * Clear presence (stop typing/recording)
-   * @param {string} jid - Target JID
-   */
   async clearPresence(jid) {
-    const sock = this.getSock();
-    if (!sock) throw new Error('Socket not initialized');
-    
-    try {
-      await sock.sendPresenceUpdate('paused', jid);
-      return true;
-    } catch (error) {
-      console.error('❌ Failed to clear presence:', error.message);
-      return false;
-    }
+    return this.getSock().sendPresenceUpdate('paused', jid);
   }
 
-  /**
-   * Mark message as read
-   * @param {object} msg - Message to mark as read
-   */
-  async markAsRead(msg) {
-    const sock = this.getSock();
-    if (!sock) throw new Error('Socket not initialized');
-    
-    const key = msg.id ? { ...msg.id, remoteJid: msg.chatId || msg.from } : msg._baileys?.key;
-    
-    try {
-      await sock.readMessages([key]);
-      return true;
-    } catch (error) {
-      console.error('❌ Failed to mark as read:', error.message);
-      return false;
-    }
+  async markAsRead(message) {
+    const key = messageKey(message);
+    if (!key) throw new TypeError('Cannot mark read without a valid WhatsApp message key.');
+    return this.getSock().readMessages([key]);
   }
 }
 

@@ -87,3 +87,5 @@ function getBestMove(cells, botSymbol, humanSymbol, difficulty = 'medium') {
 }
 
 export default { getBestMove };
+
+export { getBestMove };

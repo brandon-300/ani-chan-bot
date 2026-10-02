@@ -13,11 +13,7 @@
 // Everything here fails OPEN: if the provider throws or nothing is registered,
 // Gemini is treated as available, so a bug here can never take commands down.
 
-const {
-  GEMINI_PAUSE_DURING_STICKER_ANALYSIS,
-  GEMINI_COMMANDS,
-  GEMINI_BUSY_MESSAGE,
-} = require('./config');
+import { GEMINI_PAUSE_DURING_STICKER_ANALYSIS, GEMINI_COMMANDS, GEMINI_BUSY_MESSAGE } from './config.js';
 
 const geminiCommandNames = new Set(GEMINI_COMMANDS.map(name => String(name).toLowerCase()));
 let reservationProvider = () => false;

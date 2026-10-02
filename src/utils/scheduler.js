@@ -33,7 +33,7 @@
 //   await scheduler.scheduleTask({ type: 'card_lend_return', key: `lend:${cardId}`, runAt, payload });
 //   await scheduler.cancelTask(`lend:${cardId}`); // e.g. an early .unlendcard
 
-import ScheduledTask from './models/ScheduledTask.js';
+import ScheduledTask from '../models/ScheduledTask.js';
 import logger from './logger.js';
 const handlers = new Map();
 let client = null;

@@ -38,3 +38,4 @@ function chooseAction(botHp, opponentHp, difficulty = 'medium') {
 }
 
 export default { chooseAction };
+export { chooseAction };

@@ -8,38 +8,27 @@
  * - Automatic reconnection
  */
 
-import { makeWASocket, DisconnectReason, fetchLatestBaileysVersion, makeCacheableSignalKeyStore, Browsers } from '@whiskeysockets/baileys';
-import { Boom } from '@hapi/boom';
+import { makeWASocket, DisconnectReason, fetchLatestBaileysVersion, makeCacheableSignalKeyStore, Browsers, normalizeMessageContent } from '@whiskeysockets/baileys';
 import pino from 'pino';
-import path from 'path';
-import { fileURLToPath } from 'url';
+import { downloadBaileysMedia, toBaileysMediaPayload } from './media.js';
 import authManager from './auth.js';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-const AUTH_DIR = path.join(__dirname, '../../../auth_info_baileys');
 
 // Logger configuration
 const logger = pino({
   level: process.env.LOG_LEVEL || 'silent',
 });
 
-// Signal key store for E2E
-const signalKeyStore = makeCacheableSignalKeyStore(logger);
-
 // Simple in-memory cache for message retry (Termux compatible)
 const msgRetryCounterCache = new Map();
 
 // Clean up old cache entries periodically
-setInterval(() => {
+const retryCacheCleanup = setInterval(() => {
   const now = Date.now();
   for (const [key, value] of msgRetryCounterCache) {
-    if (now - value.timestamp > 600000) {
-      msgRetryCounterCache.delete(key);
-    }
+    if (now - value.timestamp > 600000) msgRetryCounterCache.delete(key);
   }
 }, 60000);
+retryCacheCleanup.unref?.();
 
 /**
  * Simple cache implementation for Termux
@@ -58,15 +47,18 @@ class SimpleCache {
         }
       }
     }, checkperiod * 1000);
+    this.interval.unref?.();
   }
   
   get(key) {
     const value = this.store.get(key);
-    return value?.value;
+    if (!value) return undefined;
+    if (value.expiresAt <= Date.now()) { this.store.delete(key); return undefined; }
+    return value.value;
   }
   
   set(key, value, ttl = this.stdTTL) {
-    this.store.set(key, { value, timestamp: Date.now(), ttl });
+    this.store.set(key, { value, expiresAt: Date.now() + ttl * 1000 });
   }
   
   del(key) {
@@ -90,7 +82,7 @@ class SocketManager {
     this.isConnected = false;
     this.isConnecting = false;
     this.reconnectAttempts = 0;
-    this.maxReconnectAttempts = 10;
+    this.maxReconnectAttempts = Infinity;
     this.reconnectDelay = 5000;
     this.reconnectTimeout = null;
     this.messageQueue = [];
@@ -117,6 +109,8 @@ class SocketManager {
     
     // Track if event handlers are set up
     this.eventHandlersSetup = false;
+    this.isShuttingDown = false;
+    this.pairingCodeRequested = false;
   }
 
   /**
@@ -176,11 +170,11 @@ class SocketManager {
    */
   async getBaileysVersion() {
     try {
-      const versionInfo = await fetchLatestBaileysVersion();
-      return versionInfo;
+      const versionInfo = await fetchLatestBaileysVersion({ timeout: 10000 });
+      return Array.isArray(versionInfo?.version) ? versionInfo.version : [2, 3000, 1015901307];
     } catch (error) {
-      logger.warn('Could not fetch latest Baileys version, using fallback');
-      return [2, 2414, 12];
+      logger.warn({ error: error.message }, 'Could not fetch latest Baileys version; using fallback');
+      return [2, 3000, 1015901307];
     }
   }
 
@@ -197,7 +191,8 @@ class SocketManager {
   registerSentMessage(key, msg) {
     const msgKey = key.id || key._serialized;
     this.sentMessages.set(msgKey, { key, msg, timestamp: Date.now() });
-    setTimeout(() => this.sentMessages.delete(msgKey), 3600000);
+    const cleanupTimer = setTimeout(() => this.sentMessages.delete(msgKey), 3600000);
+    cleanupTimer.unref?.();
   }
 
   /**
@@ -220,257 +215,176 @@ class SocketManager {
    * Initialize the socket
    */
   async init() {
-    if (this.isConnecting) {
-      logger.info('Socket initialization already in progress');
-      return;
-    }
-
-    if (this.isConnected) {
-      logger.info('Socket already connected');
-      return;
-    }
-
+    if (this.isConnecting || this.isConnected) return;
+    this.isShuttingDown = false;
     this.isConnecting = true;
-    logger.info('🔌 Initializing Baileys socket...');
+    this.pairingCodeRequested = false;
+    logger.info('Initializing Baileys socket');
 
     try {
-      // Ensure auth is initialized first
-      await authManager.init();
-      
-      const authState = authManager.getState();
-      const needsPairing = !authManager.isAuthenticated();
+      const authState = await authManager.init();
       const version = await this.getBaileysVersion();
-
+      const cachedKeys = makeCacheableSignalKeyStore(authState.keys, logger);
       const sockConfig = {
         version,
-        auth: authState,
+        auth: { creds: authState.creds, keys: cachedKeys },
         printQRInTerminal: false,
-        logger: pino({ level: 'silent' }),
+        logger,
         browser: Browsers.ubuntu('Chrome'),
-        signalKeyStore,
         msgRetryCounterCache: simpleMsgRetryCache,
-        transactionOpts: {
-          maxCommitRetries: 10,
-          delayBetweenCommitMs: 3000,
-        },
+        transactionOpts: { maxCommitRetries: 10, delayBetweenTriesMs: 3000 },
         syncFullHistory: false,
-        shouldSyncHistoryMessage: (msg) => false,
-        generateHighQualityLinkPreview: true,
-        getMessage: async (key) => {
-          return {};
-        },
+        shouldSyncHistoryMessage: () => false,
+        generateHighQualityLinkPreview: false,
+        getMessage: async () => ({ conversation: '' }),
       };
 
       this.sock = makeWASocket(sockConfig);
-
-      this.info = {
-        wid: this.sock.user,
-        pushname: this.sock.user?.name,
-      };
-
-      if (!this.eventHandlersSetup) {
-        this.setupEventHandlers();
-        this.eventHandlersSetup = true;
-      }
-
+      this.eventHandlersSetup = false;
+      this.setupEventHandlers();
+      this.eventHandlersSetup = true;
       this.isConnecting = false;
-      logger.info('✅ Baileys socket initialized');
 
+      const number = (process.env.PHONE_NUMBER || process.env.BOT_NUMBER || '').replace(/\D/g, '');
+      if (!authManager.isAuthenticated() && number) {
+        const pairingTimer = setTimeout(() => {
+          this.handlePairingCode().catch(error => logger.error({ error: error.message }, 'Pairing code request failed'));
+        }, 3000);
+        pairingTimer.unref?.();
+      }
+      logger.info('Baileys socket initialized');
     } catch (error) {
       this.isConnecting = false;
-      logger.error('❌ Failed to initialize socket:', error);
+      logger.error({ error }, 'Failed to initialize Baileys socket');
       throw error;
     }
   }
-
   /**
    * Setup event handlers
    */
   setupEventHandlers() {
     if (!this.sock) return;
-
-    // Credentials update - save auth state
     this.sock.ev.on('creds.update', async () => {
-      try {
-        await authManager.saveCreds();
-        logger.info('🔑 Credentials updated and saved');
-      } catch (error) {
-        logger.error('❌ Failed to save credentials:', error);
-      }
+      try { await authManager.saveCreds(); }
+      catch (error) { logger.error({ error }, 'Failed to persist Baileys credentials'); }
     });
-
-    // Connection update
-    this.sock.ev.on('connection.update', this.handleConnectionUpdate.bind(this));
-
-    // Messages upsert
-    this.sock.ev.on('messages.upsert', this.handleMessagesUpsert.bind(this));
-
-    // Message reactions
-    this.sock.ev.on('message-receipt.update', this.handleMessageReceipt.bind(this));
-
-    // Groups update
-    this.sock.ev.on('groups.update', this.handleGroupsUpdate.bind(this));
-
-    // Group participants update
-    this.sock.ev.on('group-participants.update', this.handleGroupParticipantsUpdate.bind(this));
+    this.sock.ev.on('connection.update', update => this.handleConnectionUpdate(update));
+    this.sock.ev.on('messages.upsert', update => this.handleMessagesUpsert(update));
+    this.sock.ev.on('messages.update', updates => {
+      for (const update of updates || []) this.handleMessageReceipt(update).catch(error => logger.error({ error }, 'Message update failed'));
+    });
+    this.sock.ev.on('groups.update', update => this.handleGroupsUpdate(update));
+    this.sock.ev.on('group-participants.update', update => this.handleGroupParticipantsUpdate(update));
   }
-
   /**
    * Handle connection update
    */
   async handleConnectionUpdate(update) {
-    const { connection, lastDisconnect, qr, isNewLogin } = update;
-
+    const { connection, lastDisconnect, qr } = update || {};
     if (qr) {
-      logger.info('📱 QR code generated');
+      logger.info('WhatsApp pairing QR generated');
       this.emit('qr', qr);
     }
-
-    if (isNewLogin) {
-      logger.info('✅ New login detected');
+    if (connection === 'connecting') this.emit('connection', 'connecting');
+    if (connection === 'open') {
       this.isConnected = true;
+      this.isConnecting = false;
       this.reconnectAttempts = 0;
-      this.emit('authenticated');
-      await this.handlePairingCode();
+      this.info = { wid: this.sock?.user || null, pushname: this.sock?.user?.name || null };
+      logger.info('Connected to WhatsApp');
+      this.emit('connection', 'open');
+      this.emit('ready');
+      return;
     }
+    if (connection !== 'close') return;
 
-    switch (connection) {
-      case 'connecting':
-        logger.info('🔄 Connecting to WhatsApp...');
-        break;
+    this.isConnected = false;
+    this.isConnecting = false;
+    this.info = null;
+    this.eventHandlersSetup = false;
+    const error = lastDisconnect?.error;
+    const statusCode = error?.output?.statusCode ?? error?.statusCode ?? error?.data?.statusCode;
+    this.emit('disconnected', lastDisconnect || error || null);
 
-      case 'open':
-        logger.info('✅ Connected to WhatsApp');
-        this.isConnected = true;
-        this.reconnectAttempts = 0;
-        this.emit('ready');
-        break;
-
-      case 'close':
-        this.isConnected = false;
-        const shouldReconnect = lastDisconnect?.error instanceof Boom;
-        
-        if (shouldReconnect) {
-          logger.warn('⚠️ Connection closed, attempting to reconnect...');
-          this.scheduleReconnect(lastDisconnect.error);
-        } else {
-          logger.info('ℹ️ Connection closed gracefully');
-        }
-        
-        this.emit('disconnected', lastDisconnect);
-        break;
-
-      default:
-        logger.debug('Connection state:', connection);
+    if (this.isShuttingDown) return;
+    if (statusCode === DisconnectReason.loggedOut) {
+      this.emit('error', new Error('WhatsApp logged this device out. Remove auth_info_baileys only if you intend to pair again.'));
+      return;
     }
+    logger.warn({ statusCode, error: error?.message }, 'WhatsApp connection closed; reconnecting');
+    this.scheduleReconnect(error);
   }
-
   /**
    * Handle pairing code generation
    */
   async handlePairingCode() {
-    if (!authManager.isAuthenticated()) {
-      try {
-        const pairingCode = await authManager.getPairingCode(this.sock);
-        this.emit('pairing_code', pairingCode);
-      } catch (error) {
-        logger.error('❌ Failed to generate pairing code:', error);
-        // Fall back to QR
-        logger.info('📱 Falling back to QR code...');
-      }
+    if (authManager.isAuthenticated() || this.pairingCodeRequested || !this.sock) return;
+    this.pairingCodeRequested = true;
+    try {
+      const pairingCode = await authManager.getPairingCode(this.sock);
+      console.log(`\nWhatsApp pairing code: ${pairingCode}\nEnter this code on the linked-device screen in WhatsApp.`);
+      this.emit('pairing_code', pairingCode);
+    } catch (error) {
+      this.pairingCodeRequested = false;
+      logger.error({ error: error.message }, 'Unable to request WhatsApp pairing code');
+      this.emit('error', error);
     }
   }
-
   /**
    * Schedule reconnection
    */
   scheduleReconnect(error) {
-    if (this.reconnectTimeout) {
-      clearTimeout(this.reconnectTimeout);
-    }
-
-    this.reconnectAttempts++;
-
-    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-      logger.error('❌ Max reconnection attempts reached');
-      this.emit('error', new Error('Max reconnection attempts reached'));
-      return;
-    }
-
-    const delay = this.reconnectDelay * this.reconnectAttempts;
-    logger.info(`⏳ Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})...`);
-
+    if (this.isShuttingDown || this.reconnectTimeout) return;
+    this.reconnectAttempts += 1;
+    const base = Math.min(60000, this.reconnectDelay * (2 ** Math.min(this.reconnectAttempts - 1, 5)));
+    const delay = Math.round(base * (0.85 + Math.random() * 0.3));
+    logger.warn({ attempt: this.reconnectAttempts, delayMs: delay, error: error?.message }, 'Scheduling WhatsApp reconnect');
     this.reconnectTimeout = setTimeout(async () => {
-      try {
-        await this.connect();
-      } catch (err) {
-        logger.error('❌ Reconnection failed:', err);
-        this.scheduleReconnect(err);
-      }
+      this.reconnectTimeout = null;
+      try { await this.connect(); }
+      catch (err) { logger.error({ error: err }, 'WhatsApp reconnect attempt failed'); this.scheduleReconnect(err); }
     }, delay);
+    this.reconnectTimeout.unref?.();
   }
-
   /**
    * Connect or reconnect
    */
   async connect() {
-    if (this.isConnected) {
-      return;
-    }
-
-    try {
-      await this.init();
-    } catch (error) {
-      logger.error('❌ Connection failed:', error);
-      throw error;
-    }
+    if (this.isConnected || this.isConnecting) return;
+    await this.init();
   }
-
   /**
    * Disconnect
    */
   async disconnect() {
-    if (!this.sock) return;
-
-    try {
-      await this.sock.ws.close();
-      this.isConnected = false;
-      logger.info('✅ Disconnected from WhatsApp');
-    } catch (error) {
-      logger.error('❌ Error disconnecting:', error);
-    }
+    this.isShuttingDown = true;
+    if (this.reconnectTimeout) clearTimeout(this.reconnectTimeout);
+    this.reconnectTimeout = null;
+    const sock = this.sock;
+    this.sock = null;
+    this.isConnected = false;
+    this.isConnecting = false;
+    this.eventHandlersSetup = false;
+    if (sock?.ws && typeof sock.ws.close === 'function') sock.ws.close();
   }
-
   /**
    * Handle messages upsert
    */
   async handleMessagesUpsert(upsert) {
-    try {
-      const messages = upsert.messages;
-      if (!messages || messages.length === 0) return;
-
-      for (const baileysMsg of messages) {
-        try {
-          if (baileysMsg.key.fromMe || baileysMsg.pushName === 'status@broadcast') {
-            continue;
-          }
-
-          if (baileysMsg.key.fromMe) {
-            this.registerSentMessage(baileysMsg.key, baileysMsg);
-          }
-
-          const normalizedMsg = this.normalizeMessage(baileysMsg);
-          this.emit('message', normalizedMsg);
-
-        } catch (error) {
-          logger.error('❌ Error processing message:', error);
-        }
+    if (upsert?.type && upsert.type !== 'notify') return;
+    const incoming = upsert?.messages;
+    if (!Array.isArray(incoming)) return;
+    for (const baileysMsg of incoming) {
+      try {
+        const remoteJid = baileysMsg?.key?.remoteJid;
+        if (!remoteJid || remoteJid === 'status@broadcast' || baileysMsg.key.fromMe) continue;
+        const normalizedMsg = this.normalizeMessage(baileysMsg);
+        this.emit('message', normalizedMsg);
+      } catch (error) {
+        logger.error({ error, id: baileysMsg?.key?.id }, 'Failed to normalize incoming WhatsApp message');
       }
-    } catch (error) {
-      logger.error('❌ Error in messages.upsert handler:', error);
     }
   }
-
   /**
    * Handle message receipt (reactions, reads, etc.)
    */
@@ -509,15 +423,19 @@ class SocketManager {
    */
   async handleGroupParticipantsUpdate(update) {
     try {
-      const { id, participants, action } = update;
-      
-      if (action === 'add') {
-        this.emit('group_join', { id, participants });
-      } else if (action === 'remove') {
-        this.emit('group_leave', { id, participants });
-      }
+      const { id, participants = [], action } = update || {};
+      if (!id || !['add', 'remove'].includes(action)) return;
+      const notification = {
+        ...update,
+        id: { _serialized: id },
+        participants,
+        getChat: () => this.getChat(id),
+        getRecipients: async () => Promise.all(participants.map(participantId => this.getContact(participantId))),
+      };
+      if (action === 'add') this.emit('group_join', notification);
+      else this.emit('group_leave', notification);
     } catch (error) {
-      logger.error('❌ Error in group-participants.update handler:', error);
+      logger.error({ error }, 'Group participant update handler failed');
     }
   }
 
@@ -525,288 +443,142 @@ class SocketManager {
    * Normalize Baileys message to match expected format
    */
   normalizeMessage(baileysMsg) {
-    const { key, pushName, message, participant, timestamp, fromMe } = baileysMsg;
-    
-    const isGroup = key.remoteJid?.endsWith('@g.us') || false;
-    const fromMeFlag = key.fromMe || fromMe || false;
-    
-    let author = null;
-    let from = key.remoteJid;
-    
-    if (isGroup && participant) {
-      author = participant;
-    } else if (!fromMeFlag) {
-      author = key.remoteJid?.split('@')[0] || key.remoteJid;
-    }
-
+    const key = baileysMsg?.key || {};
+    const message = normalizeMessageContent(baileysMsg?.message) || baileysMsg?.message || {};
+    const remoteJid = key.remoteJid || '';
+    const isGroup = remoteJid.endsWith('@g.us');
+    const fromMe = Boolean(key.fromMe);
+    const author = isGroup ? (baileysMsg.participant || key.participant || remoteJid) : (fromMe ? this.getWid() || remoteJid : remoteJid);
+    const contextInfo = Object.values(message).find(value => value && typeof value === 'object' && value.contextInfo)?.contextInfo || {};
+    const mentionedIds = contextInfo.mentionedJid || contextInfo.mentionedIds || [];
     let body = '';
     let type = 'chat';
     let hasMedia = false;
-    let isMedia = false;
-    let mentionedIds = [];
-    let hasQuotedMsg = false;
-    let quotedMessage = null;
-
-    if (message) {
-      if (message.conversation) {
-        body = message.conversation;
-        type = 'chat';
-      } else if (message.extendedTextMessage) {
-        body = message.extendedTextMessage.text || '';
-        type = 'chat';
-        
-        if (message.extendedTextMessage.contextInfo?.mentionedJid) {
-          mentionedIds = message.extendedTextMessage.contextInfo.mentionedJid;
-        }
-        
-        if (message.extendedTextMessage.contextInfo?.quotedMessage) {
-          hasQuotedMsg = true;
-          quotedMessage = message.extendedTextMessage.contextInfo.quotedMessage;
-        }
-      } else if (message.imageMessage) {
-        type = 'image';
-        hasMedia = true;
-        isMedia = true;
-        body = message.imageMessage.caption || '';
-        
-        if (message.imageMessage.contextInfo?.mentionedJid) {
-          mentionedIds = message.imageMessage.contextInfo.mentionedJid;
-        }
-        
-        if (message.imageMessage.contextInfo?.quotedMessage) {
-          hasQuotedMsg = true;
-          quotedMessage = message.imageMessage.contextInfo.quotedMessage;
-        }
-      } else if (message.videoMessage) {
-        type = 'video';
-        hasMedia = true;
-        isMedia = true;
-        body = message.videoMessage.caption || '';
-        
-        if (message.videoMessage.contextInfo?.mentionedJid) {
-          mentionedIds = message.videoMessage.contextInfo.mentionedJid;
-        }
-        
-        if (message.videoMessage.contextInfo?.quotedMessage) {
-          hasQuotedMsg = true;
-          quotedMessage = message.videoMessage.contextInfo.quotedMessage;
-        }
-      } else if (message.stickerMessage) {
-        type = 'sticker';
-        hasMedia = true;
-        isMedia = true;
-        
-        if (message.stickerMessage.contextInfo?.quotedMessage) {
-          hasQuotedMsg = true;
-          quotedMessage = message.stickerMessage.contextInfo.quotedMessage;
-        }
-      } else if (message.audioMessage) {
-        type = 'audio';
-        hasMedia = true;
-        isMedia = true;
-      } else if (message.pttMessage) {
-        type = 'ptt';
-        hasMedia = true;
-        isMedia = true;
-      } else if (message.documentMessage) {
-        type = 'document';
-        hasMedia = true;
-        isMedia = true;
-        body = message.documentMessage.caption || '';
-      } else if (message.reactionMessage) {
-        type = 'reaction';
-        body = message.reactionMessage.text || '';
-      } else if (message.buttonsResponseMessage) {
-        type = 'buttons_response';
-        body = message.buttonsResponseMessage.selectedButtonId || '';
-      } else if (message.listResponseMessage) {
-        type = 'list_response';
-        body = message.listResponseMessage.selectedRowId || '';
-      } else if (message.templateButtonReplyMessage) {
-        type = 'template_button_reply';
-        body = message.templateButtonReplyMessage.selectedId || '';
+    const candidates = [
+      ['imageMessage', 'image'], ['videoMessage', 'video'], ['stickerMessage', 'sticker'],
+      ['audioMessage', 'audio'], ['documentMessage', 'document'], ['reactionMessage', 'reaction'],
+      ['buttonsResponseMessage', 'buttons_response'], ['listResponseMessage', 'list_response'],
+      ['templateButtonReplyMessage', 'template_button_reply'],
+    ];
+    if (message.conversation) body = message.conversation;
+    else if (message.extendedTextMessage) body = message.extendedTextMessage.text || '';
+    else {
+      for (const [keyName, messageType] of candidates) {
+        const node = message[keyName];
+        if (!node) continue;
+        type = messageType;
+        if (['image', 'video', 'sticker', 'audio', 'document'].includes(messageType)) hasMedia = true;
+        if (messageType === 'audio' && node.ptt) type = 'ptt';
+        body = node.caption || node.text || node.selectedButtonId || node.selectedRowId || node.selectedId || '';
+        break;
       }
     }
 
-    const normalizedMsg = {
-      id: { _serialized: key.id },
-      from: from,
-      fromMe: fromMeFlag,
-      author: author,
-      body: body,
-      type: type,
-      timestamp: timestamp ? new Date(timestamp * 1000) : new Date(),
-      hasMedia: hasMedia,
-      isMedia: isMedia,
-      pushName: pushName,
-      isGroup: isGroup,
-      chatId: key.remoteJid,
-      mentionedIds: mentionedIds,
-      hasQuotedMsg: hasQuotedMsg,
-      _quoted: quotedMessage,
+    const rawTimestamp = baileysMsg.messageTimestamp ?? baileysMsg.timestamp;
+    const timestamp = Number(rawTimestamp?.toString?.() ?? rawTimestamp) || Math.floor(Date.now() / 1000);
+    const normalized = {
+      id: { _serialized: key.id || '' },
+      from: remoteJid,
+      fromMe,
+      author,
+      body,
+      type,
+      timestamp,
+      hasMedia,
+      isMedia: hasMedia,
+      pushName: baileysMsg.pushName || '',
+      isGroup,
+      chatId: remoteJid,
+      mentionedIds: Array.isArray(mentionedIds) ? mentionedIds : [],
+      hasQuotedMsg: Boolean(contextInfo.quotedMessage && contextInfo.stanzaId),
+      _quoted: contextInfo,
       _baileys: baileysMsg,
       _sock: this.sock,
       _client: this,
       _data: {
         id: key.id,
-        from: from,
-        to: key.remoteJid,
-        body: body,
-        type: type,
-        timestamp: timestamp ? timestamp * 1000 : Date.now(),
-        fromMe: fromMeFlag,
-        isGroup: isGroup,
+        from: remoteJid,
+        to: remoteJid,
+        body,
+        type,
+        timestamp: timestamp * 1000,
+        fromMe,
+        isGroup,
+        notifyName: baileysMsg.pushName || '',
       },
     };
 
-    normalizedMsg.reply = async (content, chatId, options = {}) => {
-      return this.sendMessage(chatId || from, content, options, normalizedMsg);
+    normalized.reply = async (content, chatId, options = {}) =>
+      this.sendMessage(chatId || remoteJid, content, options, normalized);
+    normalized.downloadMedia = async () => this.downloadMedia(baileysMsg);
+    normalized.getChat = async () => this.getChat(remoteJid);
+    normalized.getContact = async () => this.getContact(author || remoteJid);
+    normalized.getMentions = async () => Promise.all(normalized.mentionedIds.map(id => this.getContact(id)));
+    normalized.react = async emoji => this.react(key, emoji);
+    normalized.getQuotedMessage = async () => {
+      const quoted = contextInfo.quotedMessage;
+      const quotedId = contextInfo.stanzaId;
+      if (!quoted || !quotedId) return null;
+      const participant = contextInfo.participant || (isGroup ? undefined : this.getWid());
+      const quotedRaw = {
+        key: { remoteJid, id: quotedId, participant, fromMe: Boolean(participant && participant === this.getWid()) },
+        message: quoted,
+        pushName: contextInfo.pushName || '',
+        messageTimestamp: timestamp,
+      };
+      return this.normalizeMessage(quotedRaw);
     };
-
-    normalizedMsg.downloadMedia = async () => {
-      return this.downloadMedia(baileysMsg);
+    normalized.delete = async everyone => this.deleteMessage(key, everyone !== false);
+    normalized.pin = async (time = 2592000) => {
+      if (!isGroup) return false;
+      const allowedDurations = new Set([86400, 604800, 2592000]);
+      const pinTime = allowedDurations.has(Number(time)) ? Number(time) : 2592000;
+      return this.sock.sendMessage(remoteJid, { pin: key, type: 1, time: pinTime });
     };
-
-    normalizedMsg.getChat = async () => {
-      return this.getChat(key.remoteJid);
+    normalized.unpin = async () => {
+      if (!isGroup) return false;
+      return this.sock.sendMessage(remoteJid, { pin: key, type: 2 });
     };
-
-    normalizedMsg.getContact = async () => {
-      return this.getContact(author || from);
-    };
-
-    normalizedMsg.react = async (emoji) => {
-      return this.react(key, emoji);
-    };
-
-    normalizedMsg.getQuotedMessage = async () => {
-      if (hasQuotedMsg && quotedMessage) {
-        return this.normalizeMessage(quotedMessage);
-      }
-      return null;
-    };
-
-    normalizedMsg.delete = async (everyone = false) => {
-      return this.deleteMessage(key, everyone);
-    };
-
-    normalizedMsg.forward = async (jid) => {
-      return this.forwardMessage(jid, baileysMsg);
-    };
-
-    return normalizedMsg;
+    normalized.forward = async jid => this.forwardMessage(jid, baileysMsg);
+    return normalized;
   }
-
   /**
    * Send a message
    */
   async sendMessage(jid, content, options = {}, quotedMsg = null) {
-    if (!this.sock) {
-      throw new Error('Socket not initialized');
-    }
-
+    if (!this.sock) throw new Error('Socket not initialized');
+    if (!jid) throw new TypeError('A recipient JID is required.');
     try {
-      if (typeof content === 'string') {
-        const msgOptions = {
-          text: content,
-          ...options,
-        };
-        
-        if (quotedMsg && quotedMsg.id) {
-          msgOptions.quoted = {
-            id: quotedMsg.id._serialized || quotedMsg.id,
-            remoteJid: jid,
-          };
-        }
-        
-        if (options.mentions) {
-          msgOptions.mentions = options.mentions;
-        }
-        
-        const result = await this.sock.sendMessage(jid, msgOptions);
-        if (result && result.key) {
-          this.registerSentMessage(result.key, result);
-        }
-        return result;
-      } else if (content?.mimetype || content?._data || content?.data) {
-        const media = { ...content };
-        
-        if (quotedMsg && quotedMsg.id) {
-          media.quoted = {
-            id: quotedMsg.id._serialized || quotedMsg.id,
-            remoteJid: jid,
-          };
-        }
-        
-        if (content.mimetype && content.data) {
-          const buffer = Buffer.from(content.data, 'base64');
-          
-          if (content.mimetype.startsWith('image/')) {
-            media.image = buffer;
-            delete media.data;
-            delete media.mimetype;
-          } else if (content.mimetype.startsWith('video/')) {
-            media.video = buffer;
-            delete media.data;
-            delete media.mimetype;
-          } else if (content.mimetype.startsWith('audio/') || content.mimetype === 'audio/ogg') {
-            media.audio = buffer;
-            media.ptt = content.mimetype.includes('ogg');
-            delete media.data;
-            delete media.mimetype;
-          } else if (content.mimetype === 'application/pdf' || content.mimetype.startsWith('application/')) {
-            media.document = buffer;
-            delete media.data;
-            delete media.mimetype;
-          } else if (content.mimetype.startsWith('image/') && content.filename?.endsWith('.webp')) {
-            media.sticker = buffer;
-            delete media.data;
-            delete media.mimetype;
-          }
-        }
-        
-        const result = await this.sock.sendMessage(jid, media, options);
-        if (result && result.key) {
-          this.registerSentMessage(result.key, result);
-        }
-        return result;
-      } else {
-        const result = await this.sock.sendMessage(jid, { text: String(content) }, options);
-        if (result && result.key) {
-          this.registerSentMessage(result.key, result);
-        }
-        return result;
+      let payload = toBaileysMediaPayload(content, options);
+      if (!payload) {
+        if (typeof content === 'string') payload = { text: content };
+        else if (content && typeof content === 'object') payload = { ...content };
+        else payload = { text: String(content ?? '') };
+        if (Array.isArray(options.mentions) && options.mentions.length) payload.mentions = options.mentions;
+        if (options.caption !== undefined && payload.caption === undefined) payload.caption = options.caption;
       }
+      const sendOptions = {};
+      if (options.quoted) sendOptions.quoted = options.quoted;
+      else if (quotedMsg?._baileys) sendOptions.quoted = quotedMsg._baileys;
+      if (options.linkPreview !== undefined) sendOptions.linkPreview = options.linkPreview;
+      const result = await this.sock.sendMessage(jid, payload, sendOptions);
+      if (result?.key) this.registerSentMessage(result.key, result);
+      return result;
     } catch (error) {
-      logger.error('❌ Failed to send message:', error);
+      logger.error({ error, jid }, 'Failed to send WhatsApp message');
       throw error;
     }
   }
-
   /**
    * Delete a message
    */
-  async deleteMessage(key, everyone = false) {
-    if (!this.sock) {
-      throw new Error('Socket not initialized');
-    }
-
-    try {
-      const msgKey = key.id || key._serialized;
-      await this.sock.sendMessage(key.remoteJid, {
-        delete: {
-          id: msgKey,
-          remoteJid: key.remoteJid,
-          fromMe: true,
-          participant: key.participant,
-        },
-      });
-    } catch (error) {
-      logger.error('❌ Failed to delete message:', error);
-      throw error;
-    }
+  async deleteMessage(key, everyone = true) {
+    if (!this.sock) throw new Error('Socket not initialized');
+    const messageKey = key?.id ? { ...key } : null;
+    if (!messageKey?.remoteJid) throw new TypeError('A valid Baileys message key is required for deletion.');
+    if (!everyone) return false;
+    return this.sock.sendMessage(messageKey.remoteJid, { delete: messageKey });
   }
-
   /**
    * Forward a message
    */
@@ -838,145 +610,55 @@ class SocketManager {
    * Download media from a message
    */
   async downloadMedia(baileysMsg) {
-    if (!this.sock) {
-      throw new Error('Socket not initialized');
-    }
-
-    const { message, key } = baileysMsg;
-    if (!message) {
-      throw new Error('No message to download media from');
-    }
-
-    let mediaMessage = null;
-    let mediaType = null;
-
-    if (message.imageMessage) {
-      mediaMessage = message.imageMessage;
-      mediaType = 'image';
-    } else if (message.videoMessage) {
-      mediaMessage = message.videoMessage;
-      mediaType = 'video';
-    } else if (message.stickerMessage) {
-      mediaMessage = message.stickerMessage;
-      mediaType = 'sticker';
-    } else if (message.audioMessage) {
-      mediaMessage = message.audioMessage;
-      mediaType = 'audio';
-    } else if (message.pttMessage) {
-      mediaMessage = message.pttMessage;
-      mediaType = 'ptt';
-    } else if (message.documentMessage) {
-      mediaMessage = message.documentMessage;
-      mediaType = 'document';
-    }
-
-    if (!mediaMessage) {
-      throw new Error('No media found in message');
-    }
-
-    try {
-      const stream = await this.sock.downloadMediaMessage(mediaMessage);
-      const chunks = [];
-      
-      for await (const chunk of stream) {
-        chunks.push(chunk);
-      }
-
-      const buffer = Buffer.concat(chunks);
-
-      return {
-        data: buffer.toString('base64'),
-        mimetype: mediaMessage.mimetype || this.getMimeTypeFromMediaType(mediaType),
-        filename: mediaMessage.fileName,
-      };
-    } catch (error) {
-      logger.error('❌ Failed to download media:', error);
-      throw error;
-    }
+    return downloadBaileysMedia(this.sock, baileysMsg);
   }
-
   /**
    * Get chat info
    */
   async getChat(jid) {
-    if (!this.sock) {
-      throw new Error('Socket not initialized');
-    }
-
-    const isGroup = jid?.endsWith('@g.us') || false;
-    
-    if (isGroup) {
-      try {
-        const metadata = await this.sock.groupMetadata(jid);
-        return {
-          id: { _serialized: jid },
-          name: metadata.subject,
-          isGroup: true,
-          participants: metadata.participants.map(p => ({
-            id: { _serialized: p.id },
-            isAdmin: p.isAdmin || false,
-            isSuperAdmin: p.isSuperAdmin || false,
-          })),
-        };
-      } catch (error) {
-        logger.error('❌ Failed to get group metadata:', error);
-        return {
-          id: { _serialized: jid },
-          name: jid.split('@')[0],
-          isGroup: true,
-          participants: [],
-        };
-      }
-    } else {
+    if (!this.sock) throw new Error('Socket not initialized');
+    const isGroup = Boolean(jid?.endsWith('@g.us'));
+    if (!isGroup) {
+      const id = { _serialized: jid };
       return {
-        id: { _serialized: jid },
-        isGroup: false,
-        name: jid.split('@')[0],
+        id, name: jid?.split('@')[0] || jid, isGroup: false, participants: [],
+        sendMessage: (content, options = {}) => this.sendMessage(jid, content, options),
       };
     }
+    const group = await (await import('./groups.js')).default.getGroup(jid);
+    return {
+      ...group,
+      sendMessage: (content, options = {}) => this.sendMessage(jid, content, options),
+      setMessagesAdminsOnly: onlyAdmins => this.sock.groupSettingUpdate(jid, onlyAdmins ? 'announcement' : 'not_announcement'),
+      leave: () => this.sock.groupLeave(jid),
+    };
   }
-
   /**
    * Get contact info
    */
   async getContact(jid) {
-    if (!this.sock) {
-      throw new Error('Socket not initialized');
-    }
-
-    try {
-      return {
-        id: { _serialized: jid },
-        name: jid.split('@')[0],
-        pushName: jid.split('@')[0],
-      };
-    } catch (error) {
-      logger.error('❌ Failed to get contact:', error);
-      throw error;
-    }
+    if (!jid) throw new TypeError('A contact JID is required.');
+    const serialized = String(jid);
+    const number = serialized.split('@')[0].split(':')[0];
+    const isMe = serialized === this.getWid();
+    return {
+      id: { _serialized: serialized, user: number },
+      number,
+      name: number,
+      pushname: number,
+      pushName: number,
+      isMe,
+    };
   }
-
   /**
    * React to a message
    */
   async react(key, emoji) {
-    if (!this.sock) {
-      throw new Error('Socket not initialized');
-    }
-
-    try {
-      await this.sock.sendMessage(key.remoteJid, {
-        react: {
-          text: emoji,
-          key: key,
-        },
-      });
-    } catch (error) {
-      logger.error('❌ Failed to react:', error);
-      throw error;
-    }
+    if (!this.sock) throw new Error('Socket not initialized');
+    const messageKey = key?.id ? { ...key } : null;
+    if (!messageKey?.remoteJid) throw new TypeError('A valid Baileys message key is required for reaction.');
+    return this.sock.sendMessage(messageKey.remoteJid, { react: { text: String(emoji || ''), key: messageKey } });
   }
-
   /**
    * Get MIME type from media type
    */

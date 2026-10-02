@@ -10,8 +10,8 @@
 import User from './User.js';
 import mongoose from 'mongoose';
 import { getNextSequence } from './Counter.js';
-import { withGuildLock } from './utils/guildLock.js';
-import { xpNeededForLevel, encodeIdKey } from './utils/helpers.js';
+import { withGuildLock } from '../utils/guildLock.js';
+import { xpNeededForLevel, encodeIdKey } from '../utils/helpers.js';
 const ROLES = ['leader', 'officer', 'veteran', 'member'];
 // Higher number = more senior. Used by .guild promote/.guild demote to
 // step a member one rank up/down, and by leadership-handoff logic, without

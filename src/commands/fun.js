@@ -7,10 +7,10 @@ import ffmpeg from 'fluent-ffmpeg';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { BOT_NAME } from './utils/config.js';
-import { MessageMedia } from '../services/media.js';
-import { pick, rand, mentionName, safeGetChat, safeGetQuotedMessage } from './utils/helpers.js';
-import { renderMemeImage, renderAnimatedMemeFrames } from './utils/memeRender.js';
+import { BOT_NAME } from '../utils/config.js';
+import { MessageMedia } from '../whatsapp/media.js';
+import { pick, rand, mentionName, safeGetChat, safeGetQuotedMessage } from '../utils/helpers.js';
+import { renderMemeImage, renderAnimatedMemeFrames } from '../utils/memeRender.js';
 const TMP = os.tmpdir();
 
 function tmpFile(ext) {

@@ -268,11 +268,12 @@ const CatalogueGrowthStateSchema = new mongoose.Schema({
   lastError: { type: String, default: null },
 });
 
-export default {
-  CardCatalogue: mongoose.model('CardCatalogue', CardCatalogueSchema),
-  OwnedCard: mongoose.model('OwnedCard', OwnedCardSchema),
-  Auction: mongoose.model('Auction', AuctionSchema),
-  TradeRequest: mongoose.model('TradeRequest', TradeRequestSchema),
-  SaleRequest: mongoose.model('SaleRequest', SaleRequestSchema),
-  CatalogueGrowthState: mongoose.model('CatalogueGrowthState', CatalogueGrowthStateSchema),
-};
+const CardCatalogue = mongoose.model('CardCatalogue', CardCatalogueSchema);
+const OwnedCard = mongoose.model('OwnedCard', OwnedCardSchema);
+const Auction = mongoose.model('Auction', AuctionSchema);
+const TradeRequest = mongoose.model('TradeRequest', TradeRequestSchema);
+const SaleRequest = mongoose.model('SaleRequest', SaleRequestSchema);
+const CatalogueGrowthState = mongoose.model('CatalogueGrowthState', CatalogueGrowthStateSchema);
+
+export { CardCatalogue, OwnedCard, Auction, TradeRequest, SaleRequest, CatalogueGrowthState };
+export default { CardCatalogue, OwnedCard, Auction, TradeRequest, SaleRequest, CatalogueGrowthState };

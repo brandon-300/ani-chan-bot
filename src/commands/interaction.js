@@ -4,8 +4,8 @@ import ffmpeg from 'fluent-ffmpeg';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { MessageMedia } from '../services/media.js';
-import { mentionTag, safeGetQuotedMessage, safeGetContact } from './utils/helpers.js';
+import { MessageMedia } from '../whatsapp/media.js';
+import { mentionTag, safeGetQuotedMessage, safeGetContact } from '../utils/helpers.js';
 const TMP = os.tmpdir();
 
 function tmpFile(ext) {

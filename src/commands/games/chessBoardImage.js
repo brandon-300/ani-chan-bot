@@ -20,7 +20,7 @@
 // same way the old circle tokens and the coordinate-label bitmap font were.
 
 // ─── 5x7 bitmap font — coordinate labels only (a-h, 1-8) ─────────────────────
-import { encodePNG } from './../utils/pngEncoder.js';
+import { encodePNG } from '../../utils/pngEncoder.js';
 const FONT = {
   '1': ['..#..', '.##..', '..#..', '..#..', '..#..', '..#..', '.###.'],
   '2': ['.###.', '#...#', '....#', '...#.', '..#..', '.#...', '#####'],
@@ -256,3 +256,5 @@ function renderBoardImage(chess, opts = {}) {
 }
 
 export default { renderBoardImage };
+
+export { renderBoardImage };

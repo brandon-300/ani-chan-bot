@@ -48,12 +48,20 @@ class GroupsService {
         id: { _serialized: normalizedJid },
         name: metadata.subject,
         isGroup: true,
-        participants: metadata.participants.map(p => ({
-          id: { _serialized: p.id },
-          isAdmin: p.isAdmin || false,
-          isSuperAdmin: p.isSuperAdmin || false,
-          pushName: p.pushName || p.id.split('@')[0],
-        })),
+        participants: metadata.participants.map(p => {
+          const participantId = identity.normalizeJid(p.id);
+          const name = p.pushName || participantId.split('@')[0].split(':')[0];
+          identity.rememberContact(participantId, name);
+          return {
+            id: { _serialized: participantId, user: participantId.split('@')[0].split(':')[0] },
+            number: participantId.split('@')[0].split(':')[0],
+            isAdmin: Boolean(p.isAdmin),
+            isSuperAdmin: Boolean(p.isSuperAdmin),
+            pushName: name,
+            pushname: name,
+            name,
+          };
+        }),
         owner: metadata.owner,
         creationTimestamp: metadata.creation,
         desc: metadata.desc || '',
@@ -87,12 +95,11 @@ class GroupsService {
     
     try {
       const metadata = await sock.groupMetadata(normalizedJid);
-      const participant = metadata.participants.find(p => p.id === normalizedUserId);
-      
-      return participant?.isAdmin || participant?.isSuperAdmin || false;
+      const participant = metadata.participants.find(p => identity.normalizeJid(p.id) === normalizedUserId);
+      return Boolean(participant?.isAdmin || participant?.isSuperAdmin);
     } catch (error) {
       console.error('Failed to check admin status:', error);
-      return false;
+      throw error;
     }
   }
 
@@ -264,6 +271,19 @@ class GroupsService {
       console.error('Failed to revoke invite code:', error);
       return false;
     }
+  }
+
+  /**
+   * Restrict or open group messaging for all participants.
+   * @param {string} jid - Group JID
+   * @param {boolean} adminsOnly - True restricts messages to admins
+   */
+  async setMessagesAdminsOnly(jid, adminsOnly) {
+    const sock = this.getSock();
+    const normalizedJid = jid.endsWith('@g.us') ? jid : `${jid}@g.us`;
+    await sock.groupSettingUpdate(normalizedJid, adminsOnly ? 'announcement' : 'not_announcement');
+    this.cache.delete(normalizedJid);
+    return true;
   }
 
   /**

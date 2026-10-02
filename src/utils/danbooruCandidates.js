@@ -40,9 +40,8 @@
 // which this deliberately avoids — it's working, in-production code this
 // project depends on for other commands, and doesn't need touching for
 // this to work.
-const {
-  searchPosts, selectBestImage, findCharacterTagCandidates, swapNameOrder, findCharacterArtwork,
-} = require('./danbooru');
+import danbooru from './danbooru.js';
+const { searchPosts, selectBestImage, findCharacterTagCandidates, swapNameOrder, findCharacterArtwork } = danbooru;
 
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 

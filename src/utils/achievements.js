@@ -6,8 +6,8 @@
 //
 // To add a new achievement later: just append an entry here. Nothing else
 // needs to change — checkAchievements() picks it up automatically.
-import User from './models/User.js';
-import { CardCatalogue, OwnedCard } from './models/Card.js';
+import User from '../models/User.js';
+import { CardCatalogue, OwnedCard } from '../models/Card.js';
 const ACHIEVEMENTS = [
   {
     id: 'first_card',
@@ -155,3 +155,4 @@ function formatUnlockNotice(newlyUnlocked) {
 }
 
 export default { ACHIEVEMENTS, checkAchievements, formatUnlockNotice };
+export { ACHIEVEMENTS, checkAchievements, formatUnlockNotice };

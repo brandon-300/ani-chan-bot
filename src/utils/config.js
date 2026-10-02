@@ -18,6 +18,10 @@
 // cases: a missing/empty variable falls back, but an explicitly configured
 // value — including 0 — is used as-is.
 import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 function envInt(name, fallback) {
   const raw = process.env[name];
   if (raw === undefined || raw.trim() === '') return fallback;
@@ -29,6 +33,8 @@ function envInt(name, fallback) {
 // Used by: startup banner, .help/.stats/.ping text, sticker pack names, the
 // AI persona's system prompt, shop titles, etc.
 const BOT_NAME = process.env.BOT_NAME || 'Ani-Chan Bot';
+const BOT_OWNER = process.env.OWNER_NUMBER || process.env.BOT_OWNER || '';
+const MONGODB_URI = process.env.MONGO_URI || process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/ani-chan-bot';
 
 // Command prefix. Historical note: the very first .env.example shipped with
 // this bot called this variable PREFIX= — the code has always read
@@ -40,8 +46,8 @@ const BOT_PREFIX = process.env.BOT_PREFIX || process.env.PREFIX || '.';
 // menu image" — consumers must treat '' as absent, not as a URL.
 const MENU_IMAGE_URL = process.env.MENU_IMAGE_URL || '';
 
-// ─── Chromium (whatsapp-web.js / puppeteer) ────────────────────────────────
-// Termux default path for the Chromium binary whatsapp-web.js launches.
+// ─── Chromium renderer (Puppeteer-Core) ────────────────────────────────────
+// Termux default path for the separate card/meme renderer Chromium process.
 // Overridable via .env for non-Termux deployments (VPS, desktop).
 const PUPPETEER_EXECUTABLE_PATH =
   process.env.PUPPETEER_EXECUTABLE_PATH ||
@@ -225,6 +231,61 @@ const GEMINI_BUSY_MESSAGE = (process.env.GEMINI_BUSY_MESSAGE || '').trim()
 
 export default {
   BOT_NAME,
+  BOT_OWNER,
+  MONGODB_URI,
+  BOT_PREFIX,
+  MENU_IMAGE_URL,
+  PUPPETEER_EXECUTABLE_PATH,
+  MIN_REGISTRATION_AGE,
+  AGE_VERIFICATION_LOCKOUT_DAYS,
+  NEWS_RSS_QUERY,
+  NEWS_USER_AGENT,
+  NEWS_FETCH_TIMEOUT_MS,
+  NEWS_SEND_DELAY_MS,
+  NEWS_MAX_ARTICLE_AGE_DAYS,
+  AI_CALL_NAMES_OVERRIDE,
+  AI_PERSONA,
+  AI_STICKERS_ENABLED,
+  AI_STICKER_AUTO_ANALYZE,
+  AI_STICKER_IMPORT_TIMEOUT_MINUTES,
+  AI_STICKER_MAX_BYTES,
+  AI_STICKER_DOWNLOAD_TIMEOUT_MS,
+  PERSONAS_DIR,
+  FISH_VOICE_ID,
+  FISH_MODEL,
+  FISH_REQUEST_TIMEOUT_MS,
+  AI_STICKER_ANALYSIS_VERSION,
+  AI_STICKER_MATCH_THRESHOLD,
+  AI_STICKER_MIN_PERSONA_FIT,
+  AI_STICKER_ANALYSIS_DELAY_MS,
+  AI_STICKER_QUOTA_COOLDOWN_MS,
+  AI_STICKER_QUOTA_MAX_COOLDOWN_MS,
+  GEMINI_PAUSE_DURING_STICKER_ANALYSIS,
+  GEMINI_COMMANDS,
+  GEMINI_BUSY_MESSAGE,
+  FISH_TEMPERATURE,
+  FISH_TOP_P,
+  FISH_SPEED,
+  FISH_VOLUME_DB,
+  FISH_LATENCY,
+  FISH_CHUNK_LENGTH,
+  FISH_EXPRESSION_TAGS,
+  AI_VOICE_MAX_OUTPUT_TOKENS,
+  AI_STICKER_CATALOGUE_MAX,
+  AI_STICKER_RECENT_EXCLUDE,
+  AI_REACT_TO_REACTIONS,
+  AI_REACT_CHANCE,
+  AI_REACT_COOLDOWN_MS,
+  AI_REACT_DELAY_MIN_MS,
+  AI_REACT_DELAY_MAX_MS,
+  AI_MESSAGE_MEMORY_MS,
+  AI_MESSAGE_MEMORY_MAX,
+};
+
+export {
+  BOT_NAME,
+  BOT_OWNER,
+  MONGODB_URI,
   BOT_PREFIX,
   MENU_IMAGE_URL,
   PUPPETEER_EXECUTABLE_PATH,

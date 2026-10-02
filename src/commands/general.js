@@ -1,11 +1,9 @@
 
-import BotState from './models/BotState.js';
-import CommandUsage from './models/CommandUsage.js';
-import Group from './models/Group.js';
-import User from './models/User.js';
-import fs from 'fs';
-import path from 'path';
-import { safeGetChat, isAdmin, isOwner, resolveNameById, formatCooldown, getModIds, boldSans, doubleStruck } from './utils/helpers.js';
+import BotState from '../models/BotState.js';
+import CommandUsage from '../models/CommandUsage.js';
+import Group from '../models/Group.js';
+import User from '../models/User.js';
+import { safeGetChat, isAdmin, isOwner, resolveNameById, formatCooldown, getModIds, boldSans, doubleStruck } from '../utils/helpers.js';
 const BOT_NAME = process.env.BOT_NAME || 'Ani-Chan Bot';
 const PREFIX = process.env.BOT_PREFIX || '.';
 
@@ -22,27 +20,6 @@ async function requireAdminHere(msg) {
   const ok = await isAdmin(msg);
   if (!ok) { await msg.reply('❌ Admins only!'); return false; }
   return true;
-}
-
-// Counts every currently-registered command the same way index.js's own
-// loader does — re-scanning commands/ rather than hardcoding a number that
-// would silently go stale as commands get added or removed.
-function countRegisteredCommands() {
-  const commandDir = __dirname;
-  let count = 0;
-  for (const file of fs.readdirSync(commandDir)) {
-    if (!file.endsWith('.js')) continue;
-    try {
-      const mod = require(path.join(commandDir, file));
-      for (const [name, fn] of Object.entries(mod)) {
-        if (typeof fn === 'function' && !name.startsWith('_')) count++;
-      }
-    } catch {
-      // A command file that fails to load (e.g. a missing API key at
-      // require-time) shouldn't crash .stats — just skip it.
-    }
-  }
-  return count;
 }
 
 // Same visual language as .profile (commands/economy.js) and .feedback
@@ -193,7 +170,7 @@ async function buildStatsReport(client, { isDigest = false } = {}) {
   return isDigest ? `📅 *Daily Stats Digest*\n\n${report}` : report;
 }
 
-export default {
+const commands = {
   // .rules — view this group's rules
   async rules(client, msg, args) {
     const chat = await safeGetChat(msg).catch(() => null);
@@ -231,7 +208,7 @@ export default {
 
   // .test — old name for .ping, kept working as an alias to the same function.
   get test() {
-    return module.exports.ping;
+    return commands.ping;
   },
 
   // .stats — bot usage stats (owner only, DM only — see .groupstats for
@@ -349,3 +326,5 @@ export default {
     return msg.reply(`🔐 Your OTP: *${code}*\n(Valid for this message only — generate a new one anytime with ${PREFIX}otp.)`);
   },
 };
+
+export default commands;

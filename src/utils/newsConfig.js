@@ -70,6 +70,8 @@ const LOW_PRIORITY_TERMS = [
   'cheats', 'tips and tricks', 'best characters',
 ];
 
+export { NEWS_SOURCES, HIGH_PRIORITY_TERMS, LOW_PRIORITY_TERMS };
+
 export default {
   NEWS_SOURCES,
   HIGH_PRIORITY_TERMS,

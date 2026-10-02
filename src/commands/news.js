@@ -1,19 +1,10 @@
-import BotState from './models/BotState.js';
-import SentNews from './models/SentNews.js';
+import BotState from '../models/BotState.js';
+import SentNews from '../models/SentNews.js';
 import axios from 'axios';
-import logger from './utils/logger.js';
-import { isOwner, isAdmin, safeGetChat } from './utils/helpers.js';
-const {
-  NEWS_USER_AGENT,
-  NEWS_FETCH_TIMEOUT_MS,
-  NEWS_SEND_DELAY_MS,
-  NEWS_MAX_ARTICLE_AGE_DAYS,
-} = require('../utils/config');
-const {
-  NEWS_SOURCES,
-  HIGH_PRIORITY_TERMS,
-  LOW_PRIORITY_TERMS,
-} = require('../utils/newsConfig');
+import logger from '../utils/logger.js';
+import { isOwner, isAdmin, safeGetChat } from '../utils/helpers.js';
+import { NEWS_USER_AGENT, NEWS_FETCH_TIMEOUT_MS, NEWS_SEND_DELAY_MS, NEWS_MAX_ARTICLE_AGE_DAYS } from '../utils/config.js';
+import { NEWS_SOURCES, HIGH_PRIORITY_TERMS, LOW_PRIORITY_TERMS } from '../utils/newsConfig.js';
 
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 

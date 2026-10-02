@@ -19,7 +19,7 @@
 // Same style/weight as the other three board renderers' fonts (1-9 copied
 // verbatim); 0 and the two sign glyphs are new here since HP values and
 // damage/heal deltas need them and none of the other boards did.
-import { encodePNG } from './../utils/pngEncoder.js';
+import { encodePNG } from '../../utils/pngEncoder.js';
 const FONT = {
   '0': ['.###.', '#...#', '#...#', '#...#', '#...#', '#...#', '.###.'],
   '1': ['..#..', '.##..', '..#..', '..#..', '..#..', '..#..', '.###.'],
@@ -155,3 +155,5 @@ function renderBoardImage(state = {}) {
 }
 
 export default { renderBoardImage };
+
+export { renderBoardImage };

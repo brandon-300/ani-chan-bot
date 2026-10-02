@@ -8,7 +8,7 @@
 // Same style/weight as the coordinate-label fonts in chessBoardImage.js and
 // tictactoeBoardImage.js, copied verbatim for 1-7 so all three boards' text
 // reads consistently.
-import { encodePNG } from './../utils/pngEncoder.js';
+import { encodePNG } from '../../utils/pngEncoder.js';
 const FONT = {
   '1': ['..#..', '.##..', '..#..', '..#..', '..#..', '..#..', '.###.'],
   '2': ['.###.', '#...#', '....#', '...#.', '..#..', '.#...', '#####'],
@@ -142,3 +142,5 @@ function renderBoardImage(board, opts = {}) {
 }
 
 export default { renderBoardImage };
+
+export { renderBoardImage };

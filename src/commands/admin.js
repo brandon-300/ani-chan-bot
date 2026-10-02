@@ -1,27 +1,40 @@
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-import BotState from './models/BotState.js';
-import Group from './models/Group.js';
-import GroupActivity from './models/GroupActivity.js';
-import User from './models/User.js';
-import scheduler from './utils/scheduler.js';
-import { OwnedCard } from './models/Card.js';
-import { _removeMemberFromGuild } from './guilds.js';
-import { isAdmin, botIsAdmin, mentionName, mentionTag, isOwner, safeGetChat, safeGetQuotedMessage, resolveNameById, withRetry, formatNum } from './utils/helpers.js';
-async function requireAdmin(msg) {
+import BotState from '../models/BotState.js';
+import Group from '../models/Group.js';
+import GroupActivity from '../models/GroupActivity.js';
+import User from '../models/User.js';
+import scheduler from '../utils/scheduler.js';
+import { OwnedCard } from '../models/Card.js';
+import guildCommands from './guilds.js';
+const { _removeMemberFromGuild } = guildCommands;
+import { isAdmin, botIsAdmin, mentionName, mentionTag, isOwner, safeGetChat, safeGetQuotedMessage, resolveNameById, withRetry, formatNum } from '../utils/helpers.js';
+async function requireAdmin(client, msg) {
   const contact = await msg.getContact().catch(() => null);
   if (contact && isOwner(contact.id._serialized)) return true;
-
-  const ok = await isAdmin(msg);
-  if (!ok) { await msg.reply('❌ Admins only!'); return false; }
-  return true;
+  const chat = await safeGetChat(msg).catch(() => null);
+  if (!chat?.isGroup) { await msg.reply('❌ This command only works in a group.'); return false; }
+  try {
+    const ok = await client.isGroupAdmin(chat.id._serialized, contact?.id?._serialized || msg.author || msg.from);
+    if (!ok) { await msg.reply('❌ Admins only!'); return false; }
+    return true;
+  } catch (err) {
+    await msg.reply('⚠️ WhatsApp connection hiccup — please try again in a moment.');
+    return false;
+  }
 }
 
-async function requireBotAdmin(msg) {
-  const ok = await botIsAdmin(msg);
-  if (ok === null) { await msg.reply('⚠️ WhatsApp connection hiccup — please try again in a moment.'); return false; }
-  if (!ok) { await msg.reply('❌ Make me an admin first!'); return false; }
-  return true;
+async function requireBotAdmin(client, msg) {
+  const chat = await safeGetChat(msg).catch(() => null);
+  if (!chat?.isGroup) { await msg.reply('❌ This command only works in a group.'); return false; }
+  try {
+    const ok = await client.isBotAdmin(chat.id._serialized);
+    if (!ok) { await msg.reply('❌ Make me an admin first!'); return false; }
+    return true;
+  } catch (err) {
+    await msg.reply('⚠️ WhatsApp connection hiccup — please try again in a moment.');
+    return false;
+  }
 }
 
 async function getOrCreateGroup(chatId) {
@@ -76,8 +89,8 @@ function parseMuteDuration(raw) {
 // best-effort: a group that's gone or unreachable by the time we try to
 // announce it is an expected, already-fine outcome (the unmute itself
 // already succeeded), not something worth retrying the whole task over.
-async function performAutoUnmute(chat, chatId, label, { wasOverdue = false } = {}) {
-  await chat.setMessagesAdminsOnly(false);
+async function performAutoUnmute(client, chatId, label, { wasOverdue = false } = {}) {
+  await client.setMessagesAdminsOnly(chatId, false);
   const group = await getOrCreateGroup(chatId);
   group.isMuted = false;
   group.muteUntil = null;
@@ -88,7 +101,7 @@ async function performAutoUnmute(chat, chatId, label, { wasOverdue = false } = {
     ? `🔊 Group automatically unmuted — the *${label}* timer had already run out while the bot was offline.`
     : `🔊 Group automatically unmuted after ${label}.`;
   try {
-    await chat.sendMessage(notice);
+    await client.sendMessage(chatId, notice);
   } catch (err) {
     // Group may no longer exist / bot may have been removed / send hiccup
     // — the unmute itself already succeeded above, so this isn't a
@@ -108,9 +121,8 @@ async function performAutoUnmute(chat, chatId, label, { wasOverdue = false } = {
 // function like it did before.
 scheduler.registerHandler('group_unmute', async (payload, client) => {
   const { chatId, label, expiresAt } = payload;
-  let chat;
   try {
-    chat = await client.getChatById(chatId);
+    await client.getChatById(chatId);
   } catch {
     // Group no longer reachable (bot removed, etc.) — nothing to unmute.
     return;
@@ -119,7 +131,7 @@ scheduler.registerHandler('group_unmute', async (payload, client) => {
   // offline"; anything beyond that means this mute sat un-run through a
   // restart, which is worth telling the group about explicitly.
   const wasOverdue = Date.now() - expiresAt > 5000;
-  await performAutoUnmute(chat, chatId, label, { wasOverdue });
+  await performAutoUnmute(client, chatId, label, { wasOverdue });
 });
 
 // Called once from index.js on bot startup — same pattern as
@@ -319,7 +331,7 @@ async function _sweepInactiveUsers(client) {
   }
 }
 
-export default {
+const commands = {
   commands: { onJoin, onLeave },
   _seedParticipants,
   _resumePendingMutes,
@@ -327,8 +339,8 @@ export default {
 
   // .kick @user
   async kick(client, msg, args) {
-    if (!await requireAdmin(msg)) return;
-    if (!await requireBotAdmin(msg)) return;
+    if (!await requireAdmin(client, msg)) return;
+    if (!await requireBotAdmin(client, msg)) return;
 
     const mentioned = await msg.getMentions();
     if (!mentioned.length) return msg.reply('❌ Mention someone to kick.');
@@ -337,7 +349,8 @@ export default {
     if (!chat) return;
     for (const user of mentioned) {
       try {
-        await chat.removeParticipants([user.id._serialized]);
+        const removed = await client.removeParticipants(chat.id._serialized, [user.id._serialized]);
+        if (!removed) throw new Error('Baileys did not confirm participant removal.');
         // Note: WhatsApp resolves a mention against who's currently in the
         // group. This fires right after removal, so — same honest caveat
         // as everywhere else in this file — it's not fully certain this
@@ -364,12 +377,12 @@ export default {
   // looked like it worked, but nothing actually happened for the group.
   // Same requireBotAdmin pattern already used by .kick above.
   async delete(client, msg, args) {
-    if (!await requireAdmin(msg)) return;
+    if (!await requireAdmin(client, msg)) return;
     const quoted = await safeGetQuotedMessage(msg).catch(err => { console.error("getQuotedMessage failed:", err.message); return 'ERROR'; });
     if (quoted === 'ERROR') return msg.reply('⚠️ WhatsApp connection hiccup — please try again in a moment.');
     if (!quoted) return msg.reply('❌ Reply to a message to delete it.');
 
-    if (!quoted.fromMe && !await requireBotAdmin(msg)) return;
+    if (!quoted.fromMe && !await requireBotAdmin(client, msg)) return;
 
     // Deleted separately (not one shared try/catch) so a failure on either
     // side is diagnosable instead of both looking identical in the logs.
@@ -418,8 +431,8 @@ export default {
     if (!chat) return;
     if (!chat.isGroup) return msg.reply('❌ .pin only works in groups — not in DMs.');
 
-    if (!await requireAdmin(msg)) return;
-    if (!await requireBotAdmin(msg)) return;
+    if (!await requireAdmin(client, msg)) return;
+    if (!await requireBotAdmin(client, msg)) return;
 
     const quoted = await safeGetQuotedMessage(msg).catch(err => { console.error("getQuotedMessage failed:", err.message); return 'ERROR'; });
     if (quoted === 'ERROR') return msg.reply('⚠️ WhatsApp connection hiccup — please try again in a moment.');
@@ -453,8 +466,8 @@ export default {
     if (!chat) return;
     if (!chat.isGroup) return msg.reply('❌ .unpin only works in groups — not in DMs.');
 
-    if (!await requireAdmin(msg)) return;
-    if (!await requireBotAdmin(msg)) return;
+    if (!await requireAdmin(client, msg)) return;
+    if (!await requireBotAdmin(client, msg)) return;
 
     const quoted = await safeGetQuotedMessage(msg).catch(err => { console.error("getQuotedMessage failed:", err.message); return 'ERROR'; });
     if (quoted === 'ERROR') return msg.reply('⚠️ WhatsApp connection hiccup — please try again in a moment.');
@@ -473,7 +486,7 @@ export default {
 
   // .antilink
   async antilink(client, msg, args) {
-    if (!await requireAdmin(msg)) return;
+    if (!await requireAdmin(client, msg)) return;
     const chat = await safeGetChat(msg).catch(async err => { console.error("getChat failed:", err.message); await msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
     if (!chat) return;
     const group = await getOrCreateGroup(chat.id._serialized);
@@ -485,7 +498,7 @@ export default {
 
   // .antilink action [warn/kick]
   async antilinkaction(client, msg, args) {
-    if (!await requireAdmin(msg)) return;
+    if (!await requireAdmin(client, msg)) return;
     const action = args[0]?.toLowerCase();
     if (!['warn', 'kick'].includes(action)) return msg.reply('❌ Usage: .antilink action [warn/kick]');
 
@@ -499,7 +512,7 @@ export default {
 
   // .antism on/off
   async antism(client, msg, args) {
-    if (!await requireAdmin(msg)) return;
+    if (!await requireAdmin(client, msg)) return;
     const sub = args[0]?.toLowerCase();
     if (!['on', 'off'].includes(sub)) return msg.reply('❌ Usage: .antism [on/off]');
 
@@ -513,7 +526,7 @@ export default {
 
   // .warn @user [reason]
   async warn(client, msg, args) {
-    if (!await requireAdmin(msg)) return;
+    if (!await requireAdmin(client, msg)) return;
     const mentioned = await msg.getMentions();
     if (!mentioned.length) return msg.reply('❌ Usage: .warn @user [reason]');
 
@@ -533,15 +546,16 @@ export default {
       { mentions: [target.id._serialized] }
     );
 
-    if (user.warns >= 3 && await botIsAdmin(msg)) {
-      await chat.removeParticipants([target.id._serialized]);
+    if (user.warns >= 3 && await client.isBotAdmin(chat.id._serialized).catch(() => false)) {
+      const removed = await client.removeParticipants(chat.id._serialized, [target.id._serialized]).catch(() => false);
+      if (!removed) return msg.reply('⚠️ The warning was recorded, but I could not auto-kick the member.');
       return msg.reply(`👢 @${mentionTag(target)} was auto-kicked after 3 warnings.`, undefined, { mentions: [target.id._serialized] });
     }
   },
 
   // .resetwarn @user
   async resetwarn(client, msg, args) {
-    if (!await requireAdmin(msg)) return;
+    if (!await requireAdmin(client, msg)) return;
     const mentioned = await msg.getMentions();
     if (!mentioned.length) return msg.reply('❌ Mention someone to reset warns.');
 
@@ -569,7 +583,7 @@ export default {
 
   // .welcome on/off
   async welcome(client, msg, args) {
-    if (!await requireAdmin(msg)) return;
+    if (!await requireAdmin(client, msg)) return;
     const sub = args[0]?.toLowerCase();
     if (!['on', 'off'].includes(sub)) return msg.reply('❌ Usage: .welcome [on/off]');
 
@@ -583,7 +597,7 @@ export default {
 
   // .setwelcome [message] — use @user as placeholder
   async setwelcome(client, msg, args) {
-    if (!await requireAdmin(msg)) return;
+    if (!await requireAdmin(client, msg)) return;
     const welcomeMsg = args.join(' ');
     if (!welcomeMsg) return msg.reply('❌ Usage: .setwelcome [message]\n\nUse @user as a placeholder for the new member\'s name.');
 
@@ -597,7 +611,7 @@ export default {
 
   // .leave on/off
   async leave(client, msg, args) {
-    if (!await requireAdmin(msg)) return;
+    if (!await requireAdmin(client, msg)) return;
     const sub = args[0]?.toLowerCase();
     if (!['on', 'off'].includes(sub)) return msg.reply('❌ Usage: .leave [on/off]');
 
@@ -611,7 +625,7 @@ export default {
 
   // .setleave [message]
   async setleave(client, msg, args) {
-    if (!await requireAdmin(msg)) return;
+    if (!await requireAdmin(client, msg)) return;
     const leaveMsg = args.join(' ');
     if (!leaveMsg) return msg.reply('❌ Usage: .setleave [message]\n\nUse @user as a placeholder.');
 
@@ -625,7 +639,7 @@ export default {
 
   // .purge [count] — delete last N messages
   async purge(client, msg, args) {
-    if (!await requireAdmin(msg)) return;
+    if (!await requireAdmin(client, msg)) return;
     const count = parseInt(args[0]) || 10;
     // Intentionally await, not return — the follow-up guidance below still
     // needs to send after this one.
@@ -636,7 +650,7 @@ export default {
 
   // .blacklist add/remove/list
   async blacklist(client, msg, args) {
-    if (!await requireAdmin(msg)) return;
+    if (!await requireAdmin(client, msg)) return;
     const action = args[0]?.toLowerCase();
     const word = args[1]?.toLowerCase();
     const chat = await safeGetChat(msg).catch(async err => { console.error("getChat failed:", err.message); await msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
@@ -662,8 +676,8 @@ export default {
 
   // .promote @user
   async promote(client, msg, args) {
-    if (!await requireAdmin(msg)) return;
-    if (!await requireBotAdmin(msg)) return;
+    if (!await requireAdmin(client, msg)) return;
+    if (!await requireBotAdmin(client, msg)) return;
 
     const mentioned = await msg.getMentions();
     if (!mentioned.length) return msg.reply('❌ Mention someone to promote.');
@@ -671,8 +685,9 @@ export default {
     const chat = await safeGetChat(msg).catch(async err => { console.error("getChat failed:", err.message); await msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
     if (!chat) return;
     try {
-      await chat.promoteParticipants([mentioned[0].id._serialized]);
-       return msg.reply(`⬆️ @${mentionTag(mentioned[0])} is now an admin!`, undefined, { mentions: [mentioned[0].id._serialized] });
+      const promoted = await client.promote(chat.id._serialized, [mentioned[0].id._serialized]);
+      if (!promoted) return msg.reply('❌ Could not promote.');
+      return msg.reply(`⬆️ @${mentionTag(mentioned[0])} is now an admin!`, undefined, { mentions: [mentioned[0].id._serialized] });
     } catch {
       return msg.reply('❌ Could not promote.');
     }
@@ -680,8 +695,8 @@ export default {
 
   // .demote @user
   async demote(client, msg, args) {
-    if (!await requireAdmin(msg)) return;
-    if (!await requireBotAdmin(msg)) return;
+    if (!await requireAdmin(client, msg)) return;
+    if (!await requireBotAdmin(client, msg)) return;
 
     const mentioned = await msg.getMentions();
     if (!mentioned.length) return msg.reply('❌ Mention someone to demote.');
@@ -689,7 +704,8 @@ export default {
     const chat = await safeGetChat(msg).catch(async err => { console.error("getChat failed:", err.message); await msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
     if (!chat) return;
     try {
-      await chat.demoteParticipants([mentioned[0].id._serialized]);
+      const demoted = await client.demote(chat.id._serialized, [mentioned[0].id._serialized]);
+      if (!demoted) return msg.reply('❌ Could not demote.');
       return msg.reply(`⬇️ @${mentionTag(mentioned[0])} is no longer an admin.`, undefined, { mentions: [mentioned[0].id._serialized] });
     } catch {
       return msg.reply('❌ Could not demote.');
@@ -700,8 +716,8 @@ export default {
   // duration, the group auto-unmutes once it elapses; without one, it stays
   // muted until a manual .unmute (unchanged from before).
   async mute(client, msg, args) {
-    if (!await requireAdmin(msg)) return;
-    if (!await requireBotAdmin(msg)) return;
+    if (!await requireAdmin(client, msg)) return;
+    if (!await requireBotAdmin(client, msg)) return;
 
     const raw = args[0];
     const durationMs = raw ? parseMuteDuration(raw) : null;
@@ -717,7 +733,7 @@ export default {
     // separate Date.now() calls.
     const expiresAt = durationMs ? Date.now() + durationMs : null;
 
-    await chat.setMessagesAdminsOnly(true);
+    await client.setMessagesAdminsOnly(chat.id._serialized, true);
     const group = await getOrCreateGroup(chat.id._serialized);
     group.isMuted = true;
     group.muteUntil = expiresAt ? new Date(expiresAt) : null;
@@ -748,8 +764,8 @@ export default {
 
   // .unmute
   async unmute(client, msg, args) {
-    if (!await requireAdmin(msg)) return;
-    if (!await requireBotAdmin(msg)) return;
+    if (!await requireAdmin(client, msg)) return;
+    if (!await requireBotAdmin(client, msg)) return;
 
     const chat = await safeGetChat(msg).catch(async err => { console.error("getChat failed:", err.message); await msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
     if (!chat) return;
@@ -758,7 +774,7 @@ export default {
     // (and re-notify) after this manual unmute has already taken effect.
     await scheduler.cancelTask(`mute:${chat.id._serialized}`);
 
-    await chat.setMessagesAdminsOnly(false);
+    await client.setMessagesAdminsOnly(chat.id._serialized, false);
     const group = await getOrCreateGroup(chat.id._serialized);
     group.isMuted = false;
     group.muteUntil = null;
@@ -769,7 +785,7 @@ export default {
 
   // .hidetag [message] — mention all without notification
   async hidetag(client, msg, args) {
-    if (!await requireAdmin(msg)) return;
+    if (!await requireAdmin(client, msg)) return;
     const text = args.join(' ') || '📢';
     const chat = await safeGetChat(msg).catch(async err => { console.error("getChat failed:", err.message); await msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
     if (!chat) return;
@@ -781,7 +797,7 @@ export default {
 
   // .tagall [message]
 async tagall(client, msg, args) {
-    if (!await requireAdmin(msg)) return;
+    if (!await requireAdmin(client, msg)) return;
     const text = args.join(' ') || '📢 Attention everyone!';
     const chat = await safeGetChat(msg).catch(async err => { console.error("getChat failed:", err.message); await msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
     if (!chat) return;
@@ -825,7 +841,7 @@ async tagall(client, msg, args) {
 
   // .active — most active members
   async active(client, msg, args) {
-    return module.exports.activity(client, msg, args);
+    return commands.activity(client, msg, args);
   },
 
   // .inactive — least active
@@ -854,23 +870,23 @@ async tagall(client, msg, args) {
 
   // .open
   async open(client, msg, args) {
-    if (!await requireAdmin(msg)) return;
-    if (!await requireBotAdmin(msg)) return;
+    if (!await requireAdmin(client, msg)) return;
+    if (!await requireBotAdmin(client, msg)) return;
 
     const chat = await safeGetChat(msg).catch(async err => { console.error("getChat failed:", err.message); await msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
     if (!chat) return;
-    await chat.setMessagesAdminsOnly(false);
+    await client.setMessagesAdminsOnly(chat.id._serialized, false);
     return msg.reply('🟢 Group is now *open*. Everyone can send messages.');
   },
 
   // .close
   async close(client, msg, args) {
-    if (!await requireAdmin(msg)) return;
-    if (!await requireBotAdmin(msg)) return;
+    if (!await requireAdmin(client, msg)) return;
+    if (!await requireBotAdmin(client, msg)) return;
 
     const chat = await safeGetChat(msg).catch(async err => { console.error("getChat failed:", err.message); await msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
     if (!chat) return;
-    await chat.setMessagesAdminsOnly(true);
+    await client.setMessagesAdminsOnly(chat.id._serialized, true);
     return msg.reply('🔴 Group is now *closed*. Only admins can send messages.');
   },
 
@@ -983,8 +999,10 @@ async tagall(client, msg, args) {
   },
 };
 
+export default commands;
+
 // ─── Blacklist listener (passive, called from index.js or separate listener) ──
-module.exports.handleBlacklist = async (msg) => {
+export async function handleBlacklist(msg) {
   try {
     const chat = await safeGetChat(msg).catch(async err => { console.error("getChat failed:", err.message); await msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
     if (!chat) return;
@@ -1001,4 +1019,4 @@ module.exports.handleBlacklist = async (msg) => {
     const contact = await msg.getContact();
     chat.sendMessage(`🚫 @${mentionTag(contact)} used a blacklisted word.`, { mentions: [contact.id._serialized] });
   } catch {}
-};
+}

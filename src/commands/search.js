@@ -1,11 +1,11 @@
 
 import FormData from 'form-data';
-import SentPin from './models/SentPin.js';
-import SentWallpaper from './models/SentWallpaper.js';
+import SentPin from '../models/SentPin.js';
+import SentWallpaper from '../models/SentWallpaper.js';
 import axios from 'axios';
-import gemini from './utils/gemini.js';
-import { MessageMedia } from '../services/media.js';
-import { safeGetChat, safeGetQuotedMessage } from './utils/helpers.js';
+import gemini from '../utils/gemini.js';
+import { MessageMedia } from '../whatsapp/media.js';
+import { safeGetChat, safeGetQuotedMessage } from '../utils/helpers.js';
 const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY;
 
 async function sendImage(msg, url, caption) {

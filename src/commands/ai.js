@@ -12,7 +12,7 @@ import os from 'os';
 import path from 'path';
 import speechText from '../utils/speechText.js';
 import { BOT_NAME, FISH_EXPRESSION_TAGS, AI_VOICE_MAX_OUTPUT_TOKENS, BOT_OWNER } from '../utils/config.js';
-import { MessageMedia } from '../services/media.js';
+import { MessageMedia } from '../whatsapp/media.js';
 import { getActivePersonaSafe } from '../utils/persona.js';
 import { safeGetChat, safeGetQuotedMessage, resolveSenderName } from '../utils/helpers.js';
 const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY;

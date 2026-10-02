@@ -15,14 +15,14 @@
 //     reason as every other migrated game's turnTimer.
 // fullPool/questions/options are already plain lean() objects (see
 // startQuizMatch's CardCatalogue query), so those need no conversion.
-import GameSession from './../models/GameSession.js';
-import Guild from './../models/Guild.js';
-import logger from './../utils/logger.js';
-import { CardCatalogue } from './../models/Card.js';
-import { MessageMedia } from '../services/media.js';
-import { _formatQuestCompletionNote } from './guilds.js';
+import GameSession from '../../models/GameSession.js';
+import Guild from '../../models/Guild.js';
+import logger from '../../utils/logger.js';
+import { CardCatalogue } from '../../models/Card.js';
+import { MessageMedia } from '../../whatsapp/media.js';
+import { _formatQuestCompletionNote } from '../guilds.js';
 import { isChatBusy, claim, release } from './activeGame.js';
-import { safeGetChat, safeGetQuotedMessage, safeGetContact, resolveNameById } from './../utils/helpers.js';
+import { safeGetChat, safeGetQuotedMessage, safeGetContact, resolveNameById } from '../../utils/helpers.js';
 function saveQuizSession(session) {
   const { client, current, scores, eliminated, ...rest } = session;
   let savedCurrent = null;
@@ -1031,3 +1031,4 @@ export default {
   MIN_HUMAN_REACTION_MS,
   _initQuiz,
 };
+export { tryHandleQuizAnswer };

@@ -6,14 +6,14 @@
 //        (models/SentNsfwLink.js) and never sent again. If the site can't be
 //        reached (Cloudflare/unstable data), falls back to a plain search URL.
 
-import Group from './models/Group.js';
-import SentNsfwLink from './models/SentNsfwLink.js';
-import User from './models/User.js';
+import Group from '../models/Group.js';
+import SentNsfwLink from '../models/SentNsfwLink.js';
+import User from '../models/User.js';
 import axios from 'axios';
-import { MIN_REGISTRATION_AGE } from './utils/config.js';
-import { MessageMedia } from '../services/media.js';
-import { fetchRandomImage } from './utils/danbooru.js';
-import { safeGetChat, isAdmin, isOwner, isMod, isVerifiedAdult } from './utils/helpers.js';
+import { MIN_REGISTRATION_AGE } from '../utils/config.js';
+import { MessageMedia } from '../whatsapp/media.js';
+import { fetchRandomImage } from '../utils/danbooru.js';
+import { safeGetChat, isAdmin, isOwner, isMod, isVerifiedAdult } from '../utils/helpers.js';
 const PREFIX = process.env.BOT_PREFIX || '.';
 
 const CATEGORIES = {

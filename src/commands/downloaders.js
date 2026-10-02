@@ -9,7 +9,7 @@
 
 import axios from 'axios';
 import yts from 'yt-search';
-import { MessageMedia } from '../services/media.js';
+import { MessageMedia } from '../whatsapp/media.js';
 const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY;
 const RAPIDAPI_HOST_IG = 'social-media-video-downloader.p.rapidapi.com';
 const RAPIDAPI_HOST_TT = 'social-media-video-downloader.p.rapidapi.com';

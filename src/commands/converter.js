@@ -3,9 +3,9 @@ import ffmpeg from 'fluent-ffmpeg';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { BOT_NAME } from './utils/config.js';
-import { MessageMedia } from '../services/media.js';
-import { safeGetQuotedMessage } from './utils/helpers.js';
+import { BOT_NAME } from '../utils/config.js';
+import { MessageMedia } from '../whatsapp/media.js';
+import { safeGetQuotedMessage } from '../utils/helpers.js';
 const TMP = os.tmpdir();
 
 function tmpFile(ext) {

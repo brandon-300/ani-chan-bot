@@ -38,7 +38,8 @@ class WhatsAppAdapter {
     // Bot info
     this.info = {
       get wid() {
-        return socketManager.getWid();
+        const jid = socketManager.getWid();
+        return jid ? { _serialized: jid } : null;
       },
       get user() {
         return socketManager.getUser();
@@ -61,7 +62,7 @@ class WhatsAppAdapter {
     
     // Initialize all services with the socket
     const sock = socketManager.getSocket();
-    this.media.init(sock);
+    this.media.init(sock, (key, msg) => socketManager.registerSentMessage(key, msg));
     this.messages.init(sock);
     this.identity.init(sock);
     this.groups.init(sock);
@@ -204,7 +205,7 @@ class WhatsAppAdapter {
    * @param {object} options - Message options
    */
   async sendMessage(jid, content, options = {}) {
-    return this.media.sendMessage(jid, content, options);
+    return this.messages.sendMessage(jid, content, options);
   }
 
   /**
@@ -232,6 +233,45 @@ class WhatsAppAdapter {
    */
   async getParticipants(jid) {
     return this.groups.getParticipants(jid);
+  }
+
+  async getChatById(jid) {
+    return socketManager.getChat(jid);
+  }
+
+  async getChats() {
+    const sock = socketManager.getSocket();
+    if (!sock?.groupFetchAllParticipating) throw new Error('WhatsApp socket is not connected.');
+    const groupsById = await sock.groupFetchAllParticipating();
+    return Object.entries(groupsById || {}).map(([jid, group]) => ({
+      id: { _serialized: jid },
+      name: group.subject || jid,
+      isGroup: true,
+      participants: (group.participants || []).map(participant => {
+        const participantId = identity.normalizeJid(participant.id);
+        const name = participant.pushName || participantId.split('@')[0].split(':')[0];
+        identity.rememberContact(participantId, name);
+        return {
+          id: { _serialized: participantId, user: participantId.split('@')[0].split(':')[0] },
+          number: participantId.split('@')[0].split(':')[0],
+          name,
+          pushname: name,
+          pushName: name,
+          isAdmin: Boolean(participant.isAdmin),
+          isSuperAdmin: Boolean(participant.isSuperAdmin),
+        };
+      }),
+      sendMessage: (content, options = {}) => this.sendMessage(jid, content, options),
+      setMessagesAdminsOnly: onlyAdmins => this.setMessagesAdminsOnly(jid, onlyAdmins),
+    }));
+  }
+
+  async getContactById(jid) {
+    return identity.getContact(jid);
+  }
+
+  async setMessagesAdminsOnly(jid, onlyAdmins) {
+    return groups.setMessagesAdminsOnly(jid, onlyAdmins);
   }
 
   /**
@@ -452,6 +492,8 @@ const wa = new WhatsAppAdapter();
 
 // Export all public methods
 export default wa;
+
+export { MessageMedia } from './media.js';
 
 export {
   wa,

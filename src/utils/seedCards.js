@@ -1,7 +1,7 @@
 // Run this anytime: node utils/seedCards.js
 import mongoose from 'mongoose';
-import { CardCatalogue } from './models/Card.js';
-require('dotenv').config();
+import { CardCatalogue } from '../models/Card.js';
+import 'dotenv/config';
 
 const cards = [
   // ── Anime Series ──

@@ -1,7 +1,7 @@
 
 // Same visual language as .profile (commands/economy.js) — box-drawing
 // header + bold-sans labels — instead of a plain quoted-text dump.
-import { isOwner, safeGetChat, resolveSenderName, boldSans, doubleStruck } from './utils/helpers.js';
+import { isOwner, safeGetChat, resolveSenderName, boldSans, doubleStruck } from '../utils/helpers.js';
 function line(label, value) {
   return `ꕥ ${boldSans(label)}: ${value}`;
 }

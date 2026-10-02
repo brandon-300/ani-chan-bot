@@ -6,8 +6,8 @@
 // (plus the rating: meta-tag). Animated/comic filtering happens client-side
 // in utils/danbooru.js after the response comes back.
 import axios from 'axios';
-import { MessageMedia } from '../services/media.js';
-import { fetchRandomImage } from './utils/danbooru.js';
+import { MessageMedia } from '../whatsapp/media.js';
+import { fetchRandomImage } from '../utils/danbooru.js';
 function sfwSets(...tagCombos) {
   const sets = [];
   for (const tags of tagCombos.filter(Boolean)) {

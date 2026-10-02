@@ -13,8 +13,8 @@
 // before. Mongo is only written to on the low-frequency .afk/welcome-back
 // events, and only read back once at boot (_initAfk) to rehydrate this Map
 // after a restart.
-import User from './models/User.js';
-import { formatCooldown, resolveNameById } from './utils/helpers.js';
+import User from '../models/User.js';
+import { formatCooldown, resolveNameById } from '../utils/helpers.js';
 const afkUsers = new Map(); // id -> { reason, since }
 
 // Called once from index.js on bot startup — same pattern as

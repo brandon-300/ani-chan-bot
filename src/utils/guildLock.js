@@ -53,3 +53,4 @@ function withGuildLock(guildId, fn) {
 }
 
 export default { withGuildLock };
+export { withGuildLock };

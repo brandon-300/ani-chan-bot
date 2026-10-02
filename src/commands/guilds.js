@@ -1,13 +1,13 @@
 
-import BotState from './models/BotState.js';
-import Guild from './models/Guild.js';
-import GuildChallenge from './models/GuildChallenge.js';
-import GuildEvent from './models/GuildEvent.js';
-import Season from './models/Season.js';
-import User from './models/User.js';
-import { GUILD_ACHIEVEMENTS, checkGuildAchievements, formatGuildUnlockNotice } from './utils/guildAchievements.js';
-import { formatNum, formatCooldown, mentionName, mentionTag, resolveNameById, boldSans, doubleStruck, parseAmount, decodeIdKey, isOwner, safeGetChat } from './utils/helpers.js';
-import { withGuildLock } from './utils/guildLock.js';
+import BotState from '../models/BotState.js';
+import Guild from '../models/Guild.js';
+import GuildChallenge from '../models/GuildChallenge.js';
+import GuildEvent from '../models/GuildEvent.js';
+import Season from '../models/Season.js';
+import User from '../models/User.js';
+import { GUILD_ACHIEVEMENTS, checkGuildAchievements, formatGuildUnlockNotice } from '../utils/guildAchievements.js';
+import { formatNum, formatCooldown, mentionName, mentionTag, resolveNameById, boldSans, doubleStruck, parseAmount, decodeIdKey, isOwner, safeGetChat } from '../utils/helpers.js';
+import { withGuildLock } from '../utils/guildLock.js';
 const ROLE_RANK = Guild.ROLE_RANK;
 const QUEST_DEFS = Guild.QUEST_DEFS;
 const MIN_QUEST_DURATION_MS = Guild.MIN_QUEST_DURATION_MS;
@@ -491,7 +491,7 @@ async function _removeMemberFromGuild(userId) {
   return { disbanded: false, guildName: guild.name };
 }
 
-export default {
+const commands = {
   _removeMemberFromGuild,
   _formatQuestCompletionNote,
 
@@ -657,7 +657,7 @@ export default {
       }
 
       // ── Global calendar holidays ───────────────────────────────────
-      const holiday = module.exports._GUILD_HOLIDAYS.find(h => h.month === now.getUTCMonth() + 1 && h.day === now.getUTCDate());
+      const holiday = commands._GUILD_HOLIDAYS.find(h => h.month === now.getUTCMonth() + 1 && h.day === now.getUTCDate());
       if (holiday) {
         const holidayStateKey = `guildHoliday_${holiday.key}_year`;
         const thisYear = String(now.getUTCFullYear());
@@ -1054,7 +1054,7 @@ export default {
 
   // .guildannounce — shorthand for .guild announce.
   async guildannounce(client, msg, args) {
-    return module.exports.guild_announce(client, msg, args);
+    return commands.guild_announce(client, msg, args);
   },
 
   // .guild donate [amount] — any guild member can donate personal coins to
@@ -1238,7 +1238,7 @@ export default {
 
   // .guildupgrades — shorthand for .guild upgrades.
   async guildupgrades(client, msg, args) {
-    return module.exports.guild_upgrades(client, msg, args);
+    return commands.guild_upgrades(client, msg, args);
   },
 
   // .guild upgrade [hall|vault|board] — leader only. Spends treasury coins
@@ -1534,13 +1534,13 @@ export default {
 
   // .guildmission — shorthand for .guild mission.
   async guildmission(client, msg, args) {
-    return module.exports.guild_mission(client, msg, args);
+    return commands.guild_mission(client, msg, args);
   },
 
   // .guildquest — shorthand for .guild quest. Same delegate pattern as
   // .guildlb below.
   async guildquest(client, msg, args) {
-    return module.exports.guild_quest(client, msg, args);
+    return commands.guild_quest(client, msg, args);
   },
 
   // .guild achievements — list unlocked and locked guild achievements.
@@ -1577,7 +1577,7 @@ export default {
 
   // .guildach — shorthand for .guild achievements.
   async guildach(client, msg, args) {
-    return module.exports.guild_achievements(client, msg, args);
+    return commands.guild_achievements(client, msg, args);
   },
 
   // .guild activity — recent guild activity feed (donations, quest
@@ -1607,7 +1607,7 @@ export default {
 
   // .guildactivity — shorthand for .guild activity.
   async guildactivity(client, msg, args) {
-    return module.exports.guild_activity(client, msg, args);
+    return commands.guild_activity(client, msg, args);
   },
 
   // .guild create [name]
@@ -1846,7 +1846,7 @@ export default {
 
   // .guildinactive — shorthand for .guild inactive.
   async guildinactive(client, msg, args) {
-    return module.exports.guild_inactive(client, msg, args);
+    return commands.guild_inactive(client, msg, args);
   },
 
   // .guild applications — leader/officer only. Lists everyone currently
@@ -2290,7 +2290,7 @@ export default {
 
   // .guildseason — shorthand for .guild season.
   async guildseason(client, msg, args) {
-    return module.exports.guild_season(client, msg, args);
+    return commands.guild_season(client, msg, args);
   },
 
   // .guild leaderboard [level|xp|wealth] — defaults to level. Top 10
@@ -2332,6 +2332,10 @@ export default {
   // leaderboard") — same pattern already used elsewhere in the bot for
   // .test -> .ping, .ach -> .achievements, .cardinfo -> .ci, etc.
   async guildlb(client, msg, args) {
-    return module.exports.guild_leaderboard(client, msg, args);
+    return commands.guild_leaderboard(client, msg, args);
   },
 };
+
+export default commands;
+
+export { _removeMemberFromGuild, _formatQuestCompletionNote };
