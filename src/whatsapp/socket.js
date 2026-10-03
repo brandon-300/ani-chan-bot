@@ -247,12 +247,16 @@ class SocketManager {
       
       // Try to fetch live WhatsApp Web revision
       // Use fetchLatestWaWebVersion() which reads from WhatsApp Web service worker
-      const waWebVersion = await fetchLatestWaWebVersion({
+      // Baileys returns { version: [...], isLatest: boolean }
+      const waWebVersionResult = await fetchLatestWaWebVersion({
         timeout: 10000,
         signal: controller.signal
       });
       
       clearTimeout(timeoutId);
+      
+      // Extract version array from the result object
+      const waWebVersion = waWebVersionResult?.version;
       
       if (waWebVersion && Array.isArray(waWebVersion)) {
         this.whatsappRevision = waWebVersion;
@@ -570,24 +574,32 @@ class SocketManager {
 
   /**
    * Handle message reaction (from Baileys messages.reaction event)
+   * Baileys structure: { key: TARGET_MESSAGE_KEY, reaction: { key: REACTION_MESSAGE_KEY, text, timestamp } }
+   * The reacting user comes from the nested reaction.key (the reaction message sender)
+   * The target message is the outer key (what was reacted to)
    */
   async handleMessageReaction(reaction) {
     try {
       const { key, reaction: reactionData } = reaction || {};
       if (!key || !reactionData) return;
       
+      // Extract the reacting user from the nested reaction message key
+      // Baileys provides reaction.key which contains the sender of the reaction
+      const reactionKey = reactionData.key || {};
+      const reactingUser = reactionKey.participant || reactionKey.remoteJid;
+      
       // Normalize reaction data
       const normalizedReaction = {
         type: 'reaction',
-        key,
+        key,  // This is the TARGET message being reacted to
         reaction: {
           emoji: reactionData.text || '',
           timestamp: reactionData.timestamp,
         },
         isReactionToBot: this.isBotMessage(key),
         botMessage: this.isBotMessage(key) ? this.getBotSentMessage(key) : null,
-        from: key.participant || key.remoteJid,
-        remoteJid: key.remoteJid,
+        from: reactingUser,  // The user who reacted (from nested reaction.key)
+        remoteJid: key.remoteJid,  // Chat where the target message is
       };
       
       // Emit both for backward compatibility
@@ -669,10 +681,11 @@ class SocketManager {
   /**
    * Handle LID mapping update from Baileys
    * Updates the identity service with new LID ↔ PN mappings
+   * Baileys emits { pn, lid } not { jid, lid }
    */
   async handleLidMappingUpdate(update) {
     try {
-      const { lid, jid: pnJid } = update || {};
+      const { lid, pn: pnJid } = update || {};
       if (!lid || !pnJid) return;
       
       // Normalize the JIDs

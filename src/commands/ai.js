@@ -13,7 +13,7 @@ import path from 'path';
 import speechText from '../utils/speechText.js';
 import { BOT_NAME, FISH_EXPRESSION_TAGS, AI_VOICE_MAX_OUTPUT_TOKENS, BOT_OWNER } from '../utils/config.js';
 import { MessageMedia } from '../whatsapp/media.js';
-import { getActivePersonaSafe } from '../utils/persona.js';
+import { getActivePersonaSafe, loadPersona } from '../utils/persona.js';
 import { safeGetChat, safeGetQuotedMessage, resolveSenderName } from '../utils/helpers.js';
 const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY;
 
@@ -147,6 +147,27 @@ async function switchPersona(chatId, senderId, newPersonaId) {
   
   return conversation;
 }
+/**
+ * Get the active persona ID for a specific chat/sender combination
+ * Checks conversation history first, then falls back to configured AI_PERSONA
+ */
+async function getPersonaIdForChat(chatId, senderId) {
+  // Try to find an active conversation with a specific persona
+  const conversation = await AiConversation.findOne(
+    { chatId, senderId },
+    { personaId: 1 },
+    { sort: { lastActivityAt: -1 } }
+  );
+  
+  if (conversation?.personaId) {
+    return conversation.personaId;
+  }
+  
+  // Fall back to the globally configured persona
+  const persona = getActivePersonaSafe();
+  return persona?.id || 'default';
+}
+
 
 // Persona prompts and internal text controls
 // Voice prompts deliberately omit the text-only reaction/menu controls.
@@ -182,8 +203,21 @@ function stripLegacyReactionBlock(text) {
   return String(text || '').replace(/\nInternal reaction control:\n[\s\S]*?(?=\nPrivate-DM menu action:\n|$)/, '\n');
 }
 
-function buildPersonaSystemPrompt(senderName, medium, allowBotActions = false, { catalogue = null, personaId = 'default' } = {}) {
-  const persona = getActivePersonaSafe();
+function buildPersonaSystemPrompt(senderName, medium, allowBotActions = false, { catalogue = null, personaId = null } = {}) {
+  // If personaId is provided, try to load that specific persona
+  // Otherwise fall back to the globally configured active persona
+  let persona;
+  if (personaId) {
+    try {
+      persona = loadPersona(personaId);
+    } catch (err) {
+      // If specific persona fails, fall back to default
+      persona = getActivePersonaSafe();
+    }
+  } else {
+    persona = getActivePersonaSafe();
+  }
+  
   if (!persona) {
     const err = new Error('The active AI persona could not be loaded. Check AI_PERSONA and its config/personas/<id> files.');
     err.code = 'AI_PERSONA_UNAVAILABLE';
@@ -570,9 +604,10 @@ export default {
       // DM, where msg.from IS the sender (and already unique per person)
       //  see models/AiConversation.js's comment for why this matters.
       const senderId = msg.author || msg.from;
-      const persona = getActivePersonaSafe();
-      const personaId = persona?.id || 'default';
-      const history = await getHistory(chat.id._serialized, senderId, personaId);
+      const chatId = chat.id._serialized;
+      const personaId = await getPersonaIdForChat(chatId, senderId);
+      const persona = personaId !== 'default' ? loadPersona(personaId) : getActivePersonaSafe();
+      const history = await getHistory(chatId, senderId, personaId);
       const senderName = await resolveSenderName(msg, client);
       const allowBotActions = !chat.isGroup;
       const catalogue = await aiStickers.buildStickerCatalogue(chat.id._serialized, persona);
@@ -698,9 +733,10 @@ export default {
     try {
       // See .copilot's identical comment above.
       const senderId = msg.author || msg.from;
-      const persona = getActivePersonaSafe();
-      const personaId = persona?.id || 'default';
-      const history = await getHistory(chat.id._serialized, senderId, personaId);
+      const chatId = chat.id._serialized;
+      const personaId = await getPersonaIdForChat(chatId, senderId);
+      const persona = personaId !== 'default' ? loadPersona(personaId) : getActivePersonaSafe();
+      const history = await getHistory(chatId, senderId, personaId);
       const senderName = await resolveSenderName(msg, client);
       const systemPrompt = buildPersonaSystemPrompt(senderName, 'voice', false, { personaId });
 
