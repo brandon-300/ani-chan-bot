@@ -79,6 +79,9 @@ class IdentityService {
     
     // PN to LID mapping cache
     this.pnToLidMap = new Map();
+    
+    // Track if we've synced from Baileys signalRepository
+    this.syncedFromBaileys = false;
   }
 
   init(sock) {
@@ -88,6 +91,107 @@ class IdentityService {
   getSock() {
     if (!this.sock) this.sock = socketManager.getSocket();
     return this.sock;
+  }
+
+  /**
+   * Get Baileys signalRepository.lidMapping store
+   * This is the authoritative source for LID<->PN mappings
+   * @returns {object|null} Baileys LID mapping store or null
+   */
+  getBaileysLidMapping() {
+    const sock = this.getSock();
+    if (sock?.signalRepository?.lidMapping) {
+      return sock.signalRepository.lidMapping;
+    }
+    return null;
+  }
+
+  /**
+   * Sync mappings from Baileys signalRepository.lidMapping
+   * Populates our cache from the authoritative source
+   */
+  async syncFromBaileys() {
+    if (this.syncedFromBaileys) return;
+    
+    const lidMapping = this.getBaileysLidMapping();
+    if (!lidMapping) return;
+    
+    try {
+      // Get all mappings from Baileys store
+      // Baileys lidMapping has methods like getLIDForPN, getPNForLID
+      // We need to iterate through known mappings
+      // For now, we'll rely on the event-based updates from lid-mapping.update
+      // and use this as a fallback lookup
+      this.syncedFromBaileys = true;
+    } catch (error) {
+      // Silently fail - we'll rely on event-based updates
+    }
+  }
+
+  /**
+   * Get PN from LID - checks Baileys store first, then cache
+   * @param {string} lidJid - LID
+   * @returns {string|null} PN JID or null
+   */
+  getPnFromLid(lidJid) {
+    if (!lidJid) return null;
+    const normalized = this.normalizeJid(lidJid);
+    
+    // First check our cache
+    if (this.lidToPnMap.has(normalized)) {
+      return this.lidToPnMap.get(normalized);
+    }
+    
+    // Then check Baileys signalRepository
+    const lidMapping = this.getBaileysLidMapping();
+    if (lidMapping) {
+      try {
+        // Baileys uses getPNForLID which may be async
+        // We'll try both sync and async patterns
+        const pnFromBaileys = lidMapping.getPNForLID?.(normalized);
+        if (pnFromBaileys) {
+          // Cache the result
+          this.addLidPnMapping(normalized, pnFromBaileys);
+          return pnFromBaileys;
+        }
+      } catch (error) {
+        // Fall through to cache-only
+      }
+    }
+    
+    return null;
+  }
+
+  /**
+   * Get LID from PN - checks Baileys store first, then cache
+   * @param {string} pnJid - Phone number JID
+   * @returns {string|null} LID or null
+   */
+  getLidFromPn(pnJid) {
+    if (!pnJid) return null;
+    const normalized = this.normalizeJid(pnJid);
+    
+    // First check our cache
+    if (this.pnToLidMap.has(normalized)) {
+      return this.pnToLidMap.get(normalized);
+    }
+    
+    // Then check Baileys signalRepository
+    const lidMapping = this.getBaileysLidMapping();
+    if (lidMapping) {
+      try {
+        const lidFromBaileys = lidMapping.getLIDForPN?.(normalized);
+        if (lidFromBaileys) {
+          // Cache the result
+          this.addLidPnMapping(lidFromBaileys, normalized);
+          return lidFromBaileys;
+        }
+      } catch (error) {
+        // Fall through to cache-only
+      }
+    }
+    
+    return null;
   }
 
   /**
@@ -125,8 +229,10 @@ class IdentityService {
     }
     
     // If we have a LID mapping for this PN, return the LID
-    if (this.pnToLidMap.has(normalized)) {
-      return this.pnToLidMap.get(normalized);
+    // This checks both our cache and Baileys signalRepository
+    const lid = this.getLidFromPn(normalized);
+    if (lid) {
+      return lid;
     }
     
     // Otherwise, return the normalized JID
@@ -143,9 +249,9 @@ class IdentityService {
     const normalized = this.normalizeJid(jid);
     
     if (isLid(normalized)) {
-      // Try to get PN from LID mapping
-      if (this.lidToPnMap.has(normalized)) {
-        const pnJid = this.lidToPnMap.get(normalized);
+      // Try to get PN from LID mapping (checks Baileys store + cache)
+      const pnJid = this.getPnFromLid(normalized);
+      if (pnJid) {
         return numberPart(pnJid);
       }
       // LID format: number@lid

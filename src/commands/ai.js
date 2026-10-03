@@ -673,9 +673,11 @@ export default {
       const senderName = await resolveSenderName(msg, client);
       const chat = await safeGetChat(msg);
       const allowBotActions = !!chat && !chat.isGroup;
-      const persona = getActivePersonaSafe();
-      const personaId = persona?.id || 'default';
-      const catalogue = await aiStickers.buildStickerCatalogue(msg.from || msg.to, persona);
+      const senderId = msg.author || msg.from;
+      const chatId = chat.id._serialized;
+      const personaId = await getPersonaIdForChat(chatId, senderId);
+      const persona = personaId !== 'default' ? loadPersona(personaId) : getActivePersonaSafe();
+      const catalogue = await aiStickers.buildStickerCatalogue(chatId, persona);
       const systemPrompt = buildPersonaSystemPrompt(senderName, 'text', allowBotActions, { catalogue, personaId });
       logger.write('INFO', 'ai.input', {
         command: 'gpt',
@@ -985,7 +987,11 @@ export default {
   async persona(client, msg, args) {
     const personaName = args.join(' ').trim();
     if (!personaName) {
-      const persona = getActivePersonaSafe();
+      const senderId = msg.author || msg.from;
+      const chat = await safeGetChat(msg);
+      const chatId = chat.id._serialized;
+      const personaId = await getPersonaIdForChat(chatId, senderId);
+      const persona = personaId !== 'default' ? loadPersona(personaId) : getActivePersonaSafe();
       const personas = await aiStickers.getAvailablePersonas();
       const personaList = personas.map(p => `\u2022 *${p.displayName}* - ${p.description || 'No description'}`).join('\n');
       return msg.reply(`*Current Persona: ${persona?.displayName || 'None'}*\n\n*Available Personas:*\n${personaList}`);

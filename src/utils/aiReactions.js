@@ -82,15 +82,21 @@ function normalizeReaction(reaction) {
   const key = reaction.key || {};
   const reactionData = reaction.reaction || {};
   
+  // Extract reactor from nested reaction.key (Baileys structure)
+  // { key: TARGET_MESSAGE_KEY, reaction: { key: REACTION_MESSAGE_KEY, text, timestamp } }
+  const reactorKey = reactionData.key || {};
+  const reactor = reactorKey.participant || reactorKey.remoteJid;
+  
   return {
     type: 'reaction',
-    key,
+    targetKey: key,              // The message being reacted TO
+    reactorKey: reactorKey,      // The reaction message sender
     emoji: reactionData.text || '',
     timestamp: reactionData.timestamp,
-    from: key.participant || key.remoteJid,
-    remoteJid: key.remoteJid,
+    from: reactor,               // Who reacted (from reactorKey)
+    remoteJid: key.remoteJid,   // Chat where target message is
     messageId: key.id || '',
-    fromMe: Boolean(key.fromMe),
+    fromMe: Boolean(reactorKey.fromMe),  // Whether the REACTOR is the bot
   };
 }
 
@@ -151,7 +157,7 @@ function createReactionHandler({
     const targetId = normalized.messageId;
     if (!targetId) return { action: 'skip', reason: 'no_message_id' };
 
-    // Try to get message key for ledger lookup
+    // Try to get message key for ledger lookup - use targetKey (the message being reacted to)
     const messageKey = { id: targetId, remoteJid: normalized.remoteJid };
     const entry = ledger.get(messageKey);
     if (!entry) return { action: 'skip', reason: 'not_ai_message' };

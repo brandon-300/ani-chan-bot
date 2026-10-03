@@ -229,7 +229,7 @@ class SocketManager {
   /**
    * Get WhatsApp Web client revision
    * Uses a real abort timeout for network requests
-   * Correctly uses fetchLatestWaWebVersion() for WhatsApp Web revision
+   * Priority: 1) Live WA Web version (if isLatest), 2) Live Baileys version, 3) Baileys bundled version
    */
   async getWhatsAppRevision() {
     // If we already have a cached revision, return it
@@ -237,44 +237,70 @@ class SocketManager {
       return this.whatsappRevision;
     }
 
-    // Known-good cached revision for Baileys 7.0.0-rc14
-    const cachedRevision = [2, 3000, 1015901307];
-
     try {
       // Create an abort controller for real timeout
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 10000);
       
-      // Try to fetch live WhatsApp Web revision
-      // Use fetchLatestWaWebVersion() which reads from WhatsApp Web service worker
+      // Try 1: Fetch live WhatsApp Web revision
       // Baileys returns { version: [...], isLatest: boolean }
-      const waWebVersionResult = await fetchLatestWaWebVersion({
-        timeout: 10000,
-        signal: controller.signal
-      });
-      
-      clearTimeout(timeoutId);
-      
-      // Extract version array from the result object
-      const waWebVersion = waWebVersionResult?.version;
-      
-      if (waWebVersion && Array.isArray(waWebVersion)) {
-        this.whatsappRevision = waWebVersion;
-        logger.info(`Fetched WhatsApp Web revision: ${waWebVersion.join('.')}`);
-        return waWebVersion;
+      try {
+        const waWebVersionResult = await fetchLatestWaWebVersion({
+          timeout: 10000,
+          signal: controller.signal
+        });
+        
+        clearTimeout(timeoutId);
+        
+        // Use if isLatest is true and version is valid
+        if (waWebVersionResult?.isLatest && waWebVersionResult?.version && 
+            Array.isArray(waWebVersionResult.version)) {
+          this.whatsappRevision = waWebVersionResult.version;
+          logger.info(`Fetched live WhatsApp Web revision: ${waWebVersionResult.version.join('.')}`);
+          return waWebVersionResult.version;
+        }
+      } catch (waError) {
+        if (waError.name !== 'AbortError') {
+          logger.warn({ error: waError.message }, 'Could not fetch WhatsApp Web revision');
+        }
       }
-    } catch (error) {
-      if (error.name === 'AbortError') {
-        logger.warn('WhatsApp Web revision fetch timed out, using cached revision');
+
+      // Try 2: Fetch live Baileys version if WA Web version wasn't latest
+      if (controller.signal.aborted) {
+        // Timeout already triggered, skip to fallback
       } else {
-        logger.warn({ error: error.message }, 'Could not fetch WhatsApp Web revision');
+        try {
+          const baileysVersionResult = await fetchLatestBaileysVersion({
+            timeout: 10000,
+            signal: controller.signal
+          });
+          
+          clearTimeout(timeoutId);
+          
+          if (baileysVersionResult?.isLatest && baileysVersionResult?.version && 
+              Array.isArray(baileysVersionResult.version)) {
+            this.whatsappRevision = baileysVersionResult.version;
+            logger.info(`Fetched live Baileys version: ${baileysVersionResult.version.join('.')}`);
+            return baileysVersionResult.version;
+          }
+        } catch (baileysError) {
+          if (baileysError.name !== 'AbortError') {
+            logger.warn({ error: baileysError.message }, 'Could not fetch Baileys version');
+          }
+        }
       }
+
+      clearTimeout(timeoutId);
+    } catch (error) {
+      logger.warn({ error: error.message }, 'Error in version fetch');
     }
 
-    // Fallback to known-good revision
-    this.whatsappRevision = cachedRevision;
-    logger.warn(`Using cached WhatsApp Web revision: ${cachedRevision.join('.')}`);
-    return cachedRevision;
+    // Try 3: Use Baileys' bundled version (from makeWASocket default)
+    // This is the safest fallback as it comes from the library itself
+    const bundledVersion = [2, 3000, 1015901307];
+    this.whatsappRevision = bundledVersion;
+    logger.warn(`Using Baileys bundled WhatsApp Web revision: ${bundledVersion.join('.')}`);
+    return bundledVersion;
   }
 
   /**
@@ -428,7 +454,6 @@ class SocketManager {
     
     // LID (Lightweight ID) mapping events for Baileys v7
     this.sock.ev.on('lid-mapping.update', update => this.handleLidMappingUpdate(update));
-    this.sock.ev.on('device-list.update', update => this.handleDeviceListUpdate(update));
   }
 
   /**
@@ -699,36 +724,7 @@ class SocketManager {
     } catch (error) {
       logger.error({ error }, 'LID mapping update handler failed');
     }
-  }
-
-  /**
-   * Handle device list update from Baileys
-   * Extracts and updates LID ↔ PN mappings from device info
-   */
-  async handleDeviceListUpdate(update) {
-    try {
-      const { devices = [] } = update || {};
-      
-      for (const device of devices) {
-        const lid = device?.id;
-        const pnJid = device?.user;
-        
-        if (lid && pnJid) {
-          const normalizedLid = identity.normalizeJid(lid);
-          const normalizedPn = identity.normalizeJid(pnJid);
-          
-          // Add to identity service mapping
-          identity.addLidPnMapping(normalizedLid, normalizedPn);
-          
-          logger.debug(`Device list LID mapping: ${normalizedLid} <-> ${normalizedPn}`);
-        }
-      }
-    } catch (error) {
-      logger.error({ error }, 'Device list update handler failed');
-    }
-  }
-
-  /**
+  }  /**
    * Normalize Baileys message to match expected format
    * Handles ALL Baileys v7 message types including wrapped messages
    */
