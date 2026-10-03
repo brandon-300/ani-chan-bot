@@ -73,6 +73,58 @@ class SimpleCache {
 const simpleMsgRetryCache = new SimpleCache(600, 60);
 
 /**
+ * Message Store for Baileys getMessage callback
+ * Stores recently sent/received messages for retrieval
+ */
+class MessageStore {
+  constructor() {
+    this.store = new Map();
+    this.maxSize = 1000;
+    this.ttlMs = 24 * 60 * 60 * 1000; // 24 hours
+  }
+
+  set(key, message) {
+    const msgKey = this._makeKey(key);
+    this.store.set(msgKey, { message, timestamp: Date.now() });
+    
+    // Cleanup old entries
+    if (this.store.size > this.maxSize) {
+      const oldestKey = this.store.keys().next().value;
+      this.store.delete(oldestKey);
+    }
+  }
+
+  get(key) {
+    const msgKey = this._makeKey(key);
+    const entry = this.store.get(msgKey);
+    if (!entry) return null;
+    if (Date.now() - entry.timestamp > this.ttlMs) {
+      this.store.delete(msgKey);
+      return null;
+    }
+    return entry.message;
+  }
+
+  delete(key) {
+    const msgKey = this._makeKey(key);
+    this.store.delete(msgKey);
+  }
+
+  _makeKey(key) {
+    if (!key) return '';
+    const remoteJid = key.remoteJid || '';
+    const id = key.id || key._serialized || '';
+    return `${remoteJid}:${id}`;
+  }
+
+  clear() {
+    this.store.clear();
+  }
+}
+
+const messageStore = new MessageStore();
+
+/**
  * Socket Manager
  * Singleton that manages the Baileys WebSocket connection
  */
@@ -98,6 +150,7 @@ class SocketManager {
       group_leave: [],
       group_update: [],
       message_reaction: [],
+      messages_reaction: [],
       pairing_code: [],
     };
     
@@ -111,6 +164,12 @@ class SocketManager {
     this.eventHandlersSetup = false;
     this.isShuttingDown = false;
     this.pairingCodeRequested = false;
+    
+    // Track if background systems have been initialized
+    this.backgroundInitialized = false;
+    
+    // Known WhatsApp Web revision
+    this.whatsappRevision = null;
   }
 
   /**
@@ -166,16 +225,59 @@ class SocketManager {
   }
 
   /**
-   * Get Baileys version (async)
+   * Get WhatsApp Web client revision
+   * Uses a real abort timeout for network requests
+   */
+  async getWhatsAppRevision() {
+    // If we already have a cached revision, return it
+    if (this.whatsappRevision) {
+      return this.whatsappRevision;
+    }
+
+    // Known-good cached revision for Baileys 7.0.0-rc14
+    const cachedRevision = [2, 3000, 1015901307];
+
+    try {
+      // Create an abort controller for real timeout
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000);
+      
+      // Try to fetch live WhatsApp Web revision
+      // Baileys 7 provides fetchLatestBaileysVersion which gets version from WhatsApp Web
+      const versionInfo = await fetchLatestBaileysVersion({
+        timeout: 10000,
+        signal: controller.signal
+      });
+      
+      clearTimeout(timeoutId);
+      
+      if (versionInfo?.version && Array.isArray(versionInfo.version)) {
+        this.whatsappRevision = versionInfo.version;
+        logger.info(`Fetched WhatsApp Web revision: ${versionInfo.version.join('.')}`);
+        return versionInfo.version;
+      }
+    } catch (error) {
+      if (error.name === 'AbortError') {
+        logger.warn('WhatsApp revision fetch timed out, using cached revision');
+      } else {
+        logger.warn({ error: error.message }, 'Could not fetch WhatsApp Web revision');
+      }
+    }
+
+    // Fallback to known-good revision
+    this.whatsappRevision = cachedRevision;
+    logger.warn(`Using cached WhatsApp Web revision: ${cachedRevision.join('.')}`);
+    return cachedRevision;
+  }
+
+  /**
+   * Get Baileys version info
    */
   async getBaileysVersion() {
-    try {
-      const versionInfo = await fetchLatestBaileysVersion({ timeout: 10000 });
-      return Array.isArray(versionInfo?.version) ? versionInfo.version : [2, 3000, 1015901307];
-    } catch (error) {
-      logger.warn({ error: error.message }, 'Could not fetch latest Baileys version; using fallback');
-      return [2, 3000, 1015901307];
-    }
+    return {
+      version: [2, 3000, 1015901307],
+      isLatest: false
+    };
   }
 
   /**
@@ -191,7 +293,18 @@ class SocketManager {
   registerSentMessage(key, msg) {
     const msgKey = key.id || key._serialized;
     this.sentMessages.set(msgKey, { key, msg, timestamp: Date.now() });
-    const cleanupTimer = setTimeout(() => this.sentMessages.delete(msgKey), 3600000);
+    
+    // Store in message store for getMessage callback
+    if (key?.remoteJid && key?.id) {
+      messageStore.set(key, msg);
+    }
+    
+    const cleanupTimer = setTimeout(() => {
+      this.sentMessages.delete(msgKey);
+      if (key?.remoteJid && key?.id) {
+        messageStore.delete(key);
+      }
+    }, 3600000);
     cleanupTimer.unref?.();
   }
 
@@ -212,6 +325,22 @@ class SocketManager {
   }
 
   /**
+   * Get message from store (for Baileys getMessage callback)
+   */
+  async getMessage(key) {
+    if (!key) return { conversation: '' };
+    
+    // Try to get from our message store
+    const stored = messageStore.get(key);
+    if (stored) {
+      return stored;
+    }
+    
+    // Fallback
+    return { conversation: '' };
+  }
+
+  /**
    * Initialize the socket
    */
   async init() {
@@ -223,8 +352,9 @@ class SocketManager {
 
     try {
       const authState = await authManager.init();
-      const version = await this.getBaileysVersion();
+      const version = await this.getWhatsAppRevision();
       const cachedKeys = makeCacheableSignalKeyStore(authState.keys, logger);
+      
       const sockConfig = {
         version,
         auth: { creds: authState.creds, keys: cachedKeys },
@@ -236,7 +366,7 @@ class SocketManager {
         syncFullHistory: false,
         shouldSyncHistoryMessage: () => false,
         generateHighQualityLinkPreview: false,
-        getMessage: async () => ({ conversation: '' }),
+        getMessage: this.getMessage.bind(this),
       };
 
       this.sock = makeWASocket(sockConfig);
@@ -259,33 +389,50 @@ class SocketManager {
       throw error;
     }
   }
+
   /**
    * Setup event handlers
    */
   setupEventHandlers() {
     if (!this.sock) return;
+    
     this.sock.ev.on('creds.update', async () => {
       try { await authManager.saveCreds(); }
       catch (error) { logger.error({ error }, 'Failed to persist Baileys credentials'); }
     });
+    
     this.sock.ev.on('connection.update', update => this.handleConnectionUpdate(update));
     this.sock.ev.on('messages.upsert', update => this.handleMessagesUpsert(update));
     this.sock.ev.on('messages.update', updates => {
       for (const update of updates || []) this.handleMessageReceipt(update).catch(error => logger.error({ error }, 'Message update failed'));
     });
+    this.sock.ev.on('messages.reaction', reactions => {
+      for (const reaction of reactions || []) this.handleMessageReaction(reaction).catch(error => logger.error({ error }, 'Reaction handling failed'));
+    });
     this.sock.ev.on('groups.update', update => this.handleGroupsUpdate(update));
     this.sock.ev.on('group-participants.update', update => this.handleGroupParticipantsUpdate(update));
   }
+
   /**
    * Handle connection update
    */
   async handleConnectionUpdate(update) {
-    const { connection, lastDisconnect, qr } = update || {};
+    const { connection, lastDisconnect, qr, isNewLogin } = update || {};
+    
     if (qr) {
       logger.info('WhatsApp pairing QR generated');
       this.emit('qr', qr);
     }
-    if (connection === 'connecting') this.emit('connection', 'connecting');
+    
+    if (isNewLogin) {
+      // Emit authenticated event when credentials are first established
+      this.emit('authenticated');
+    }
+    
+    if (connection === 'connecting') {
+      this.emit('connection', 'connecting');
+    }
+    
     if (connection === 'open') {
       this.isConnected = true;
       this.isConnecting = false;
@@ -293,9 +440,18 @@ class SocketManager {
       this.info = { wid: this.sock?.user || null, pushname: this.sock?.user?.name || null };
       logger.info('Connected to WhatsApp');
       this.emit('connection', 'open');
-      this.emit('ready');
+      
+      // Only emit ready if this is the first connection, not a reconnect
+      // Check if we have auth state to determine if this is a fresh connection
+      if (authManager.isAuthenticated() && !this.backgroundInitialized) {
+        this.emit('ready');
+      } else if (authManager.isAuthenticated()) {
+        // On reconnect, emit a reconnect event instead
+        this.emit('reconnect');
+      }
       return;
     }
+    
     if (connection !== 'close') return;
 
     this.isConnected = false;
@@ -314,6 +470,7 @@ class SocketManager {
     logger.warn({ statusCode, error: error?.message }, 'WhatsApp connection closed; reconnecting');
     this.scheduleReconnect(error);
   }
+
   /**
    * Handle pairing code generation
    */
@@ -330,6 +487,14 @@ class SocketManager {
       this.emit('error', error);
     }
   }
+
+  /**
+   * Mark background systems as initialized
+   */
+  markBackgroundInitialized() {
+    this.backgroundInitialized = true;
+  }
+
   /**
    * Schedule reconnection
    */
@@ -346,6 +511,7 @@ class SocketManager {
     }, delay);
     this.reconnectTimeout.unref?.();
   }
+
   /**
    * Connect or reconnect
    */
@@ -353,6 +519,7 @@ class SocketManager {
     if (this.isConnected || this.isConnecting) return;
     await this.init();
   }
+
   /**
    * Disconnect
    */
@@ -367,6 +534,7 @@ class SocketManager {
     this.eventHandlersSetup = false;
     if (sock?.ws && typeof sock.ws.close === 'function') sock.ws.close();
   }
+
   /**
    * Handle messages upsert
    */
@@ -374,10 +542,17 @@ class SocketManager {
     if (upsert?.type && upsert.type !== 'notify') return;
     const incoming = upsert?.messages;
     if (!Array.isArray(incoming)) return;
+    
     for (const baileysMsg of incoming) {
       try {
         const remoteJid = baileysMsg?.key?.remoteJid;
         if (!remoteJid || remoteJid === 'status@broadcast' || baileysMsg.key.fromMe) continue;
+        
+        // Store received messages
+        if (baileysMsg?.key?.id && baileysMsg?.key?.remoteJid) {
+          messageStore.set(baileysMsg.key, baileysMsg);
+        }
+        
         const normalizedMsg = this.normalizeMessage(baileysMsg);
         this.emit('message', normalizedMsg);
       } catch (error) {
@@ -385,14 +560,47 @@ class SocketManager {
       }
     }
   }
+
   /**
-   * Handle message receipt (reactions, reads, etc.)
+   * Handle message reaction (from Baileys messages.reaction event)
+   */
+  async handleMessageReaction(reaction) {
+    try {
+      const { key, reaction: reactionData } = reaction || {};
+      if (!key || !reactionData) return;
+      
+      // Normalize reaction data
+      const normalizedReaction = {
+        type: 'reaction',
+        key,
+        reaction: {
+          emoji: reactionData.text || '',
+          timestamp: reactionData.timestamp,
+        },
+        isReactionToBot: this.isBotMessage(key),
+        botMessage: this.isBotMessage(key) ? this.getBotSentMessage(key) : null,
+        from: key.participant || key.remoteJid,
+        remoteJid: key.remoteJid,
+      };
+      
+      // Emit both for backward compatibility
+      this.emit('message_reaction', normalizedReaction);
+      this.emit('messages.reaction', [normalizedReaction]);
+    } catch (error) {
+      logger.error('Error in message reaction handler:', error);
+    }
+  }
+
+  /**
+   * Handle message receipt (for backward compatibility with old event system)
    */
   async handleMessageReceipt(update) {
     try {
       const { key, receipt } = update;
       
       if (receipt?.type === 'reaction') {
+        // This is for backward compatibility with old wweb.js-style events
+        // New code should use messages.reaction event instead
         const reaction = {
           type: 'reaction',
           key,
@@ -403,7 +611,7 @@ class SocketManager {
         this.emit('message_reaction', reaction);
       }
     } catch (error) {
-      logger.error('❌ Error in message-receipt.update handler:', error);
+      logger.error('Error in message-receipt.update handler:', error);
     }
   }
 
@@ -414,7 +622,7 @@ class SocketManager {
     try {
       this.emit('group_update', update);
     } catch (error) {
-      logger.error('❌ Error in groups.update handler:', error);
+      logger.error('Error in groups.update handler:', error);
     }
   }
 
@@ -448,18 +656,29 @@ class SocketManager {
     const remoteJid = key.remoteJid || '';
     const isGroup = remoteJid.endsWith('@g.us');
     const fromMe = Boolean(key.fromMe);
-    const author = isGroup ? (baileysMsg.participant || key.participant || remoteJid) : (fromMe ? this.getWid() || remoteJid : remoteJid);
+    
+    // Handle LID (Lightweight ID) and PN (Phone Number) identities
+    const participant = baileysMsg.participant || key.participant || (isGroup ? undefined : remoteJid);
+    const author = isGroup ? participant : (fromMe ? this.getWid() || remoteJid : remoteJid);
+    
     const contextInfo = Object.values(message).find(value => value && typeof value === 'object' && value.contextInfo)?.contextInfo || {};
     const mentionedIds = contextInfo.mentionedJid || contextInfo.mentionedIds || [];
+    
+    // Handle alternate JIDs (LID/PN mapping in Baileys v7)
+    const remoteJidAlt = baileysMsg.key?.remoteJidAlt || contextInfo?.remoteJidAlt;
+    const participantAlt = baileysMsg.key?.participantAlt || contextInfo?.participantAlt;
+    
     let body = '';
     let type = 'chat';
     let hasMedia = false;
+    
     const candidates = [
       ['imageMessage', 'image'], ['videoMessage', 'video'], ['stickerMessage', 'sticker'],
       ['audioMessage', 'audio'], ['documentMessage', 'document'], ['reactionMessage', 'reaction'],
       ['buttonsResponseMessage', 'buttons_response'], ['listResponseMessage', 'list_response'],
       ['templateButtonReplyMessage', 'template_button_reply'],
     ];
+    
     if (message.conversation) body = message.conversation;
     else if (message.extendedTextMessage) body = message.extendedTextMessage.text || '';
     else {
@@ -476,6 +695,7 @@ class SocketManager {
 
     const rawTimestamp = baileysMsg.messageTimestamp ?? baileysMsg.timestamp;
     const timestamp = Number(rawTimestamp?.toString?.() ?? rawTimestamp) || Math.floor(Date.now() / 1000);
+    
     const normalized = {
       id: { _serialized: key.id || '' },
       from: remoteJid,
@@ -506,6 +726,9 @@ class SocketManager {
         isGroup,
         notifyName: baileysMsg.pushName || '',
       },
+      // LID/PN alternate identifiers
+      remoteJidAlt,
+      participantAlt,
     };
 
     normalized.reply = async (content, chatId, options = {}) =>
@@ -519,9 +742,20 @@ class SocketManager {
       const quoted = contextInfo.quotedMessage;
       const quotedId = contextInfo.stanzaId;
       if (!quoted || !quotedId) return null;
-      const participant = contextInfo.participant || (isGroup ? undefined : this.getWid());
+      
+      // Handle alternate JIDs for quoted messages
+      const quotedParticipant = contextInfo.participant || contextInfo.participantAlt || (isGroup ? undefined : this.getWid());
+      const quotedRemoteJid = contextInfo.remoteJid || contextInfo.remoteJidAlt || remoteJid;
+      
       const quotedRaw = {
-        key: { remoteJid, id: quotedId, participant, fromMe: Boolean(participant && participant === this.getWid()) },
+        key: { 
+          remoteJid: quotedRemoteJid, 
+          id: quotedId, 
+          participant: quotedParticipant,
+          fromMe: Boolean(quotedParticipant && (quotedParticipant === this.getWid() || quotedParticipant === this.sock?.user?.id)),
+          remoteJidAlt: contextInfo.remoteJidAlt,
+          participantAlt: contextInfo.participantAlt,
+        },
         message: quoted,
         pushName: contextInfo.pushName || '',
         messageTimestamp: timestamp,
@@ -540,8 +774,10 @@ class SocketManager {
       return this.sock.sendMessage(remoteJid, { pin: key, type: 2 });
     };
     normalized.forward = async jid => this.forwardMessage(jid, baileysMsg);
+    
     return normalized;
   }
+
   /**
    * Send a message
    */
@@ -561,6 +797,8 @@ class SocketManager {
       if (options.quoted) sendOptions.quoted = options.quoted;
       else if (quotedMsg?._baileys) sendOptions.quoted = quotedMsg._baileys;
       if (options.linkPreview !== undefined) sendOptions.linkPreview = options.linkPreview;
+      if (options.messageId) sendOptions.messageId = options.messageId;
+      
       const result = await this.sock.sendMessage(jid, payload, sendOptions);
       if (result?.key) this.registerSentMessage(result.key, result);
       return result;
@@ -569,6 +807,7 @@ class SocketManager {
       throw error;
     }
   }
+
   /**
    * Delete a message
    */
@@ -579,6 +818,7 @@ class SocketManager {
     if (!everyone) return false;
     return this.sock.sendMessage(messageKey.remoteJid, { delete: messageKey });
   }
+
   /**
    * Forward a message
    */
@@ -601,7 +841,7 @@ class SocketManager {
       }
       return result;
     } catch (error) {
-      logger.error('❌ Failed to forward message:', error);
+      logger.error('Failed to forward message:', error);
       throw error;
     }
   }
@@ -612,6 +852,7 @@ class SocketManager {
   async downloadMedia(baileysMsg) {
     return downloadBaileysMedia(this.sock, baileysMsg);
   }
+
   /**
    * Get chat info
    */
@@ -633,23 +874,48 @@ class SocketManager {
       leave: () => this.sock.groupLeave(jid),
     };
   }
+
   /**
    * Get contact info
    */
   async getContact(jid) {
     if (!jid) throw new TypeError('A contact JID is required.');
     const serialized = String(jid);
-    const number = serialized.split('@')[0].split(':')[0];
+    
+    // Handle LID format (e.g., 123456@lid)
+    let number;
+    let isLid = false;
+    
+    if (serialized.includes('@')) {
+      const parts = serialized.split('@');
+      number = parts[0];
+      isLid = parts[1] === 'lid';
+    } else {
+      number = serialized;
+    }
+    
+    const name = this.getContactName(serialized) || number;
     const isMe = serialized === this.getWid();
+    
     return {
       id: { _serialized: serialized, user: number },
       number,
-      name: number,
-      pushname: number,
-      pushName: number,
+      name,
+      pushname: name,
+      pushName: name,
       isMe,
+      isLid,
     };
   }
+
+  /**
+   * Get contact name from cache or fallback
+   */
+  getContactName(jid) {
+    // This can be extended to use a contact cache
+    return null;
+  }
+
   /**
    * React to a message
    */
@@ -659,6 +925,7 @@ class SocketManager {
     if (!messageKey?.remoteJid) throw new TypeError('A valid Baileys message key is required for reaction.');
     return this.sock.sendMessage(messageKey.remoteJid, { react: { text: String(emoji || ''), key: messageKey } });
   }
+
   /**
    * Get MIME type from media type
    */

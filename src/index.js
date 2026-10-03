@@ -18,6 +18,7 @@ import { instrumentHttpClients, wrapWithUsageTracking } from './utils/usageTrack
 import logger from './utils/logger.js';
 import geminiGate from './utils/geminiGate.js';
 import { tryHandleQuizAnswer } from './commands/games/quiz.js';
+import { createReactionHandler } from './utils/aiReactions.js';
 
 // Import WhatsApp adapter
 import wa from './whatsapp/index.js';
@@ -31,6 +32,9 @@ const __dirname = path.dirname(__filename);
 
 // Instrument HTTP clients for usage tracking
 instrumentHttpClients();
+
+// Track if background systems have been initialized
+let backgroundInitialized = false;
 
 // MongoDB connection
 const mongoOptions = {
@@ -225,7 +229,7 @@ function extractMenuCommands(cmdField) {
 // Send quick menu
 async function sendQuickMenu(msg) {
   const header = `
-\u2554\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2557
+\u2554\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2557
 \u2551                    *${BOT_NAME}*                        \u2551
 \u2551  \ud83d\udcf1 Prefix: ${BOT_PREFIX}                                   \u2551
 \u2551  \ud83d\udcdd Commands: ${Object.keys(commands).length}                            \u2551
@@ -255,7 +259,7 @@ async function sendQuickMenu(msg) {
       }
     }
     const lines = cmds.map(cmd => `\u2726 ${cmd}`).join('\n');
-    return `*${section.emoji} ${section.title} ${section.emoji}*\n${lines}\n\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550`;
+    return `*${section.emoji} ${section.title} ${section.emoji}*\n${lines}\n\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550`;
   }).join('\n\n');
 
   const menu = `${header}\n\n${body}\n\nType *${BOT_PREFIX}<command>* to use one.`;
@@ -683,6 +687,31 @@ async function initialize() {
       }
     });
 
+    // Setup AI reaction handler
+    const reactionHandler = createReactionHandler({ client });
+    
+    // Listen for Baileys messages.reaction event
+    wa.on('messages.reaction', (reactions) => {
+      if (Array.isArray(reactions)) {
+        for (const reaction of reactions) {
+          try {
+            reactionHandler.handle(reaction);
+          } catch (err) {
+            logger.error('AI reaction handler error:', err);
+          }
+        }
+      }
+    });
+
+    // Also listen for backward-compatible message_reaction event
+    wa.on('message_reaction', (reaction) => {
+      try {
+        reactionHandler.handle(reaction);
+      } catch (err) {
+        logger.error('AI reaction handler (legacy) error:', err);
+      }
+    });
+
     // Setup other event handlers
     wa.on('qr', (qr) => {
       console.log('QR Code:', qr);
@@ -696,8 +725,18 @@ async function initialize() {
       console.log('\u2705 WhatsApp authenticated');
     });
 
+    // FIX: Only initialize background systems once, not on every reconnect
     wa.on('ready', async () => {
       console.log('\u2705 WhatsApp ready');
+
+      // Only initialize background systems once
+      if (backgroundInitialized) {
+        console.log('\u2705 WhatsApp reconnected');
+        return;
+      }
+
+      backgroundInitialized = true;
+      wa.markBackgroundInitialized();
 
       // Initialize background tasks
       const scheduler = await import('./utils/scheduler.js');
@@ -959,7 +998,7 @@ async function initialize() {
     console.log(`\u2551                    ${BOT_NAME} is ONLINE                      \u2551`);
     console.log(`\u2551  Prefix : ${BOT_PREFIX}                                                  \u2551`);
     console.log(`\u2551  Commands: ${Object.keys(commands).length}                                               \u2551`);
-    console.log('\u255a\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u255d\n');
+    console.log('\u255a\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u255d\n');
 
   } catch (error) {
     console.error('Initialization error:', error);

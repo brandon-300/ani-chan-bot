@@ -1,6 +1,5 @@
-
-// ─── Format Numbers ───────────────────────────────────────────────────────────
-// ─── Fancy Unicode text (used by .profile, .feedback, etc.) ──────────────────
+// ━━━ Format Numbers ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Fancy Unicode text (used by .profile, .feedback, etc.)
 // Generated from plain ASCII at runtime instead of hardcoding the actual
 // glyphs in source — same visual result, but avoids any risk of a
 // mistyped/mis-copied Unicode character sitting invisibly in the file. Both
@@ -12,6 +11,7 @@ import User from '../models/User.js';
 import identity from '../whatsapp/identity.js';
 import groups from '../whatsapp/groups.js';
 import { MIN_REGISTRATION_AGE } from './config.js';
+
 function boldSans(text) {
   return [...text].map(ch => {
     const code = ch.codePointAt(0);
@@ -20,6 +20,7 @@ function boldSans(text) {
     return ch;
   }).join('');
 }
+
 function doubleStruck(text) {
   const legacy = { C: 0x2102, H: 0x210D, N: 0x2115, P: 0x2119, Q: 0x211A, R: 0x211D, Z: 0x2124 };
   return [...text].map(ch => {
@@ -31,7 +32,7 @@ function doubleStruck(text) {
   }).join('');
 }
 
-// ─── AniList description sanitizer ─────────────────────────────────────────
+// ━━━ AniList description sanitizer ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // AniList character descriptions come formatted with AniList's own markdown
 // (bold/italic/strikethrough, spoiler markers, and — the one that was
 // showing up raw in card views — [label](url) links to other AniList
@@ -69,7 +70,7 @@ function formatNum(n) {
   return String(n);
 }
 
-// ─── Flexible Amount Parsing (K/M/B shorthand) ────────────────────────────────
+// ━━━ Flexible Amount Parsing (K/M/B shorthand) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Accepts plain integers ("50000") as well as shorthand people actually type
 // on a phone keyboard ("50k", "1.5m", "2B"), case-insensitive, with optional
 // thousands separators ("1,500,000"). Returns a positive integer (rounded)
@@ -88,7 +89,7 @@ function parseAmount(input) {
   return value > 0 ? value : null;
 }
 
-// ─── Cooldown Helper ──────────────────────────────────────────────────────────
+// ━━━ Cooldown Helper ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 function formatCooldown(ms) {
   const h = Math.floor(ms / 3_600_000);
   const m = Math.floor((ms % 3_600_000) / 60_000);
@@ -100,7 +101,7 @@ function formatCooldown(ms) {
   return parts.join(' ') || '0s';
 }
 
-// ─── Date of Birth Parsing & Age Calculation (.setdob) ────────────────────────
+// ━━━ Date of Birth Parsing & Age Calculation (.setdob) ━━━━━━━━━━━━━━━━━━━━━━
 // Single source of truth for both — used by commands/economy.js's .setdob.
 // Strict DD/MM/YYYY only (matches the format shown in the .setdob usage text
 // and the registration instructions below), parsed/validated in UTC to avoid
@@ -146,7 +147,7 @@ function calculateAge(dob, now = new Date()) {
   return age;
 }
 
-// ─── Registration Steps (.setname/.setdob/.bio/.setpic, commands/economy.js) ──
+// ━━━ Registration Steps (.setname/.setdob/.bio/.setpic, commands/economy.js) ━━━
 // Single source of truth for what counts as a "complete" profile and how to
 // describe outstanding steps — read by BOTH the registration gate in
 // index.js (deciding whether to block a command for an incomplete account)
@@ -185,27 +186,28 @@ function isVerifiedAdult(user) {
 
 function buildRegistrationProgressText(user) {
   const lines = registrationSteps(user).map(
-    s => `${s.done ? '✅' : '❌'} ${s.label}${s.done ? '' : ` — ${s.cmd}`}`
+    s => `${s.done ? '\u2705' : '\u274c'} ${s.label}${s.done ? '' : ` \u2014 ${s.cmd}`}`
   );
-  return `📋 *Profile Progress*\n\n${lines.join('\n')}\n\n⚠️ Your profile isn't finished yet — complete the step(s) above to activate your account.`;
+  return `\ud83d\udccb *Profile Progress*\n\n${lines.join('\n')}\n\n\u26a0\ufe0f Your profile isn't finished yet \u2014 complete the step(s) above to activate your account.`;
 }
 
 function buildRegistrationIntroText(botName) {
-  return `👋 Hey there! I'm *${botName}*, your anime companion.\n\n` +
+  return `\ud83d\udc4b Hey there! I'm *${botName}*, your anime companion.\n\n` +
     `Before you can use my features, start your profile registration in this private chat with *.reg*.\n\n` +
     `You must be 18 or older to register. Once you complete the existing profile steps, I'll activate your account and show you the command menu.`;
 }
-// ─── Random Range ─────────────────────────────────────────────────────────────
+
+// ━━━ Random Range ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 function rand(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
-// ─── Pick Random from Array ───────────────────────────────────────────────────
+// ━━━ Pick Random from Array ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 function pick(arr) {
   return arr[Math.floor(Math.random() * arr.length)];
 }
 
-// ─── Safe Chat Fetch (with retries) ────────────────────────────────────────────
+// ━━━ Safe Chat Fetch (with retries) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // msg.getChat() occasionally throws a generic WhatsApp-internal error when the
 // connection is momentarily unstable. Usually transient, so retry a couple
 // times with increasing backoff before giving up.
@@ -220,7 +222,7 @@ async function safeGetChat(msg, retries = 2) {
   }
 }
 
-// ─── Safe Quoted-Message Fetch (with retries) ─────────────────────────────────
+// ━━━ Safe Quoted-Message Fetch (with retries) ━━━━━━━━━━━━━━━━━━━━━━━━━━━
 async function safeGetQuotedMessage(msg, retries = 2) {
   for (let attempt = 0; ; attempt++) {
     try {
@@ -232,7 +234,7 @@ async function safeGetQuotedMessage(msg, retries = 2) {
   }
 }
 
-// ─── Safe Contact Fetch (with retries) ─────────────────────────────────────────
+// ━━━ Safe Contact Fetch (with retries) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // msg.getContact() can hit the same transient WhatsApp-internal glitch as
 // getChat()/getQuotedMessage() above. Same retry-with-backoff pattern.
 async function safeGetContact(msg, retries = 2) {
@@ -246,7 +248,7 @@ async function safeGetContact(msg, retries = 2) {
   }
 }
 
-// ─── Generic Retry Wrapper ──────────────────────────────────────────────────
+// ━━━ Generic Retry Wrapper ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Same retry-with-backoff shape as safeGetChat/safeGetQuotedMessage/
 // safeGetContact above, generalized for anything else that can hit a
 // transient failure on an unstable connection — most notably MongoDB
@@ -263,22 +265,13 @@ async function withRetry(fn, retries = 2) {
   }
 }
 
-// ─── Robust sender display-name resolution ─────────────────────────────────────
+// ━━━ Robust sender display-name resolution ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // WhatsApp's "LID" (Linked ID) privacy layer means group participants can
-// show up as "@lid" instead of their phone number, and whatsapp-web.js has a
-// known, currently-unresolved bug where getContact() can misresolve a @lid
-// sender into the BOT'S OWN contact instead of throwing — so a broken lookup
-// silently shows up as "Me" rather than failing loudly and triggering our
-// usual fallback.
+// show up as "@lid" instead of their phone number, and the identity service
+// now properly handles both LID and PN formats.
 //
-// This resolves a display name in three steps, each one only used if the
-// previous one comes up empty/untrustworthy:
-//   1. The push name WhatsApp attaches to the message itself
-//      (msg._data.notifyName) — comes straight from the sender and doesn't
-//      depend on contact/LID resolution at all, so the bug above can't touch it.
-//   2. getContact(), but only if it doesn't look like the "resolved as me"
-//      misfire (contact.isMe true while the id we looked up isn't the bot's).
-//   3. The raw WhatsApp id as a last resort.
+// This resolves a display name using the identity service which handles
+// LID/PN resolution correctly.
 async function resolveSenderName(msg, client) {
   const senderId = msg.author || msg.from || '';
 
@@ -297,7 +290,7 @@ async function resolveSenderName(msg, client) {
   }
 }
 
-// ─── Check if user is group admin ─────────────────────────────────────────────
+// ━━━ Check if user is group admin ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 async function isAdmin(msg) {
   try {
     const chatId = msg?.chatId || msg?.from;
@@ -311,7 +304,6 @@ async function isAdmin(msg) {
   }
 }
 
-// ─── Check if bot is admin ────────────────────────────────────────────────────
 // Returns true/false normally, or null specifically when the chat fetch fails
 // (connection glitch) — distinct from false, so callers don't confuse
 // "couldn't verify" with "genuinely not an admin".
@@ -326,7 +318,7 @@ async function botIsAdmin(msg) {
   }
 }
 
-// ─── XP & Level ──────────────────────────────────────────────────────────────
+// ━━━ XP & Level ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // XP granted per action. Numbers are a starting point — tune freely, nothing
 // else needs to change since every caller reads from this one table.
 const XP_REWARDS = {
@@ -373,7 +365,7 @@ async function addXP(userId, amount) {
   return { levelUp, level: user.level };
 }
 
-// ─── Card Tier Roll ───────────────────────────────────────────────────────────
+// ━━━ Card Tier Roll ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Cumulative drop-rate thresholds, single source of truth for rollTier() below
 // AND for the .tier command (commands/cards.js), which displays these odds to
 // users. Exported (rather than kept as private magic numbers inside rollTier)
@@ -402,12 +394,12 @@ function rollTier() {
   return TIER_DROP_RATES[TIER_DROP_RATES.length - 1].tier; // r === 100 edge case
 }
 
-// ─── Tier Emoji ───────────────────────────────────────────────────────────────
+// ━━━ Tier Emoji ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 function tierEmoji(tier) {
-  return { C: '⚪', B: '🟢', A: '🔵', S: '🟡', SS: '🟠', SSS: '🔴' }[tier] || '⚪';
+  return { C: '\u26aa', B: '\ud83d\udfe2', A: '\ud83d\udd35', S: '\ud83d\udfe1', SS: '\ud83d\udfe0', SSS: '\ud83d\udd34' }[tier] || '\u26aa';
 }
 
-// ─── Card Value by Tier ───────────────────────────────────────────────────────
+// ━━━ Card Value by Tier ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Canonical ascending tier order — lowest to highest. Used by fusion (Phase
 // 10) to find "the tier above" a given card.
 const TIER_ORDER = ['C', 'B', 'A', 'S', 'SS', 'SSS'];
@@ -437,7 +429,7 @@ function mentionName(contact) {
   return contact.name || contact.pushname || contact.number || 'Unknown';
 }
 
-// ─── Real WhatsApp @mention text ──────────────────────────────────────────────
+// ━━━ Real WhatsApp @mention text ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // A message only gets an actual tappable @mention when its TEXT contains "@"
 // followed by the exact digits from the contact's JID (contact.id.user) —
 // that's what WhatsApp itself matches against the separate `mentions` array
@@ -450,26 +442,12 @@ function mentionTag(contact) {
   return contact.id.user;
 }
 
-// WhatsApp's LID privacy layer means the same account can arrive under two
-// different ids depending on context — its normal phone-based JID, or a
-// "@lid" id — and there's no guarantee a message from the owner always
-// carries the same one (same underlying whatsapp-web.js quirk documented on
-// resolveSenderName above, just biting a raw id comparison here instead of a
-// display name). A single OWNER_NUMBER can't cover both, so this also
-// checks an optional OWNER_IDS env var — a comma-separated list of any other
-// ids that should also count as the owner. To find the exact id to add: run
-// any command that logs the sender id (.feedback does) from the affected
-// chat, then check pm2 logs for the full id it printed.
-function ownerIds() {
-  const extra = (process.env.OWNER_IDS || '').split(',').map(s => s.trim()).filter(Boolean);
-  return [process.env.OWNER_NUMBER, ...extra].filter(Boolean);
-}
-
+// ━━━ Owner/Mod Identification ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Use the identity service which properly handles both LID and PN formats
 function isOwner(id) {
   return identity.isOwner(id);
 }
 
-// ─── Moderators ──────────────────────────────────────────────────────────────
 // Bot-level moderators, distinct from WhatsApp group admins (isAdmin above) —
 // people the owner trusts bot-wide, across every group, the same way
 // OWNER_NUMBER already works. Configured as a comma-separated list of
@@ -482,7 +460,8 @@ function getModIds() {
 function isMod(id) {
   return identity.isMod(id) || isOwner(id);
 }
-// ─── Map-Safe Key Encoding ─────────────────────────────────────────────────────
+
+// ━━━ Map-Safe Key Encoding ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Mongoose's Map schema type hard-rejects any key containing "." — it throws
 // 'Mongoose maps do not support keys that contain "."' from checkValidKey()
 // any time a Map value is fully cast (.set() on a document, $set updates).
@@ -494,62 +473,13 @@ function isMod(id) {
 function encodeIdKey(id) {
   return String(id).replace(/\./g, '~');
 }
+
 function decodeIdKey(key) {
   return String(key).replace(/~/g, '.');
 }
 
-// ─── Resolve a display name from a raw WhatsApp id ────────────────────────────
-// Guilds (and anything else storing bare ids like leaderId/members[]) only
-// have the WhatsApp id string to go on, not a live Contact object. This
-// resolves the best available display name:
-//   1. Our own User.name (set on first interaction, or via .setname) — no
-//      network round-trip needed, works even if the person left every group.
-//   2. client.getContactById() → mentionName() as a fallback for users the
-//      bot has never seen a command from yet.
-//   3. The raw phone-number portion of the id as a last resort.
-async function resolveNameById(client, id) {
-  if (!id) return 'Unknown';
-  try {
-    const user = await User.findOne({ id });
-    if (user?.name && user.name !== 'Unknown') return user.name;
-  } catch (err) {
-    console.error('resolveNameById: User lookup failed:', err.message);
-  }
-  try {
-    const contact = await client.getContactById(id);
-    // Same known whatsapp-web.js bug documented on resolveSenderName above:
-    // getContactById() can misresolve a @lid id into the bot's OWN contact
-    // instead of throwing — which previously showed up here as a real but
-    // completely unrelated name (the bot account's own registered profile
-    // name) for whoever we were actually looking up. Guard against it the
-    // same way: don't trust a contact claiming to be "me" unless the id we
-    // looked up actually was the bot's own.
-    const myId = client?.info?.wid?._serialized;
-    if (!(contact.isMe && id !== myId)) {
-      const name = mentionName(contact);
-      if (name && name !== 'Unknown') return name;
-    }
-  } catch (err) {
-    // Not fatal — likely a contact the bot can't resolve (left all shared groups, etc).
-  }
-  return id.split('@')[0] || 'Unknown';
-}
-
-// ─── Generic unique 6-char code generator ─────────────────────────────────────
-// Used for anything that needs a short, human-typeable ID (shop listings,
-// auctions, etc). Pass the mongoose Model and the field name to check against.
-async function generateUniqueCode(Model, field = 'code') {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // skips ambiguous 0/O/1/I
-  let code;
-  let exists = true;
-  while (exists) {
-    code = Array.from({ length: 6 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
-    exists = await Model.findOne({ [field]: code });
-  }
-  return code;
-}
-
-export default {
+// Export all helper functions
+export {
   boldSans,
   doubleStruck,
   cleanDescription,
@@ -565,32 +495,28 @@ export default {
   buildRegistrationIntroText,
   rand,
   pick,
-  isAdmin,
-  isMod,
-  getModIds,
-  botIsAdmin,
-  addXP,
-  XP_REWARDS,
-  xpNeededForLevel,
-  rollTier,
-  tierEmoji,
-  TIER_VALUES,
-  TIER_DROP_RATES,
-  TIER_ORDER,
-  tierAbove,
-  cardValue,
-  mentionName,
-  mentionTag,
-  isOwner,
-  resolveNameById,
-  generateUniqueCode,
   safeGetChat,
   safeGetQuotedMessage,
   safeGetContact,
   withRetry,
   resolveSenderName,
+  isAdmin,
+  botIsAdmin,
+  addXP,
+  XP_REWARDS,
+  xpNeededForLevel,
+  rollTier,
+  TIER_DROP_RATES,
+  tierEmoji,
+  TIER_ORDER,
+  tierAbove,
+  cardValue,
+  TIER_VALUES,
+  mentionName,
+  mentionTag,
+  isOwner,
+  getModIds,
+  isMod,
   encodeIdKey,
-  decodeIdKey
+  decodeIdKey,
 };
-
-export { boldSans, doubleStruck, cleanDescription, formatNum, parseAmount, formatCooldown, parseDobInput, calculateAge, registrationSteps, isRegistrationComplete, isVerifiedAdult, buildRegistrationProgressText, buildRegistrationIntroText, rand, pick, isAdmin, isMod, getModIds, botIsAdmin, addXP, XP_REWARDS, xpNeededForLevel, rollTier, tierEmoji, TIER_VALUES, TIER_DROP_RATES, TIER_ORDER, tierAbove, cardValue, mentionName, mentionTag, isOwner, resolveNameById, generateUniqueCode, safeGetChat, safeGetQuotedMessage, safeGetContact, withRetry, resolveSenderName, encodeIdKey, decodeIdKey };

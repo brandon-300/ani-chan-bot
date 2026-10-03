@@ -1,7 +1,12 @@
+/**
+ * Media Service for WhatsApp Adapter
+ * Handles media downloading and sending
+ */
+
 import axios from 'axios';
 import path from 'path';
 import pino from 'pino';
-import { downloadMediaMessage } from '@whiskeysockets/baileys';
+import { downloadMediaMessage, normalizeMessageContent } from '@whiskeysockets/baileys';
 
 const DEFAULT_DOWNLOAD_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_MEDIA_BYTES = 40 * 1024 * 1024;
@@ -53,6 +58,10 @@ function forwardingOptions(options = {}) {
   return result;
 }
 
+/**
+ * MessageMedia compatibility class
+ * Provides whatsapp-web.js-style media object for compatibility
+ */
 export class MessageMedia {
   constructor(mimetype, data, filename = 'file') {
     this.mimetype = cleanMimeType(mimetype) || 'application/octet-stream';
@@ -98,7 +107,10 @@ export class MessageMedia {
   }
 }
 
-/** Convert the project's whatsapp-web.js-shaped media object to a Baileys payload. */
+/**
+ * Convert MessageMedia to Baileys payload
+ * Handles sticker metadata (pack name, author) properly
+ */
 export function toBaileysMediaPayload(content, options = {}) {
   const source = getMediaSource(content);
   if (!source) return null;
@@ -111,23 +123,45 @@ export function toBaileysMediaPayload(content, options = {}) {
   const caption = options.caption ?? content.caption;
   const mentions = options.mentions || content.mentions;
   const common = {};
+  
+  // Sticker metadata
+  const packName = options.packName || options.stickerPack || content.packName || 'AniChan';
+  const author = options.author || options.stickerAuthor || content.author || 'AniChan Bot';
+  const keepScale = options.keepScale !== undefined ? options.keepScale : true;
+  const circle = options.circle !== undefined ? options.circle : false;
+  const removeBackground = options.removeBackground !== undefined ? options.removeBackground : false;
+  
   if (caption) common.caption = String(caption);
   if (Array.isArray(mentions) && mentions.length) common.mentions = mentions;
 
   if (options.sendMediaAsSticker || options.sticker || (mimetype === 'image/webp' && options.asSticker)) {
-    return { sticker: buffer, ...common };
+    return {
+      sticker: buffer,
+      ...common,
+      // Sticker metadata
+      packname: packName,
+      author,
+      categories: options.categories || ['😂'],
+      keepScale,
+      circle,
+      removeBackground,
+    };
   }
   if (mimetype.startsWith('image/')) {
-    // Existing sticker-producing commands set the sticker option; a plain
-    // image/webp without that flag remains an image rather than being silently
-    // converted into a sticker.
     return { image: buffer, mimetype, ...common };
   }
   if (mimetype.startsWith('video/')) {
     return { video: buffer, mimetype, gifPlayback: Boolean(options.sendVideoAsGif || options.gifPlayback), ...common };
   }
   if (mimetype.startsWith('audio/')) {
-    const isVoiceNote = Boolean(options.sendAudioAsVoice || options.ptt || mimetype === 'audio/ogg' || extension === '.opus');
+    // Proper voice note detection: use explicit ptt flag, not just MIME type
+    const isVoiceNote = Boolean(
+      options.sendAudioAsVoice || 
+      options.ptt || 
+      (mimetype === 'audio/ogg' && options.isVoiceNote) ||
+      (mimetype === 'audio/opus' && options.isVoiceNote) ||
+      extension === '.opus'
+    );
     return { audio: buffer, mimetype, ptt: isVoiceNote, ...common };
   }
 
@@ -139,24 +173,96 @@ export function toBaileysMediaPayload(content, options = {}) {
   };
 }
 
+/**
+ * Detect media type from normalized message content
+ * Handles wrapped media (ephemeral, viewOnce, edited, etc.)
+ */
+function detectMediaType(message) {
+  if (!message) return null;
+  
+  // Use Baileys' normalizeMessageContent to unwrap the message
+  const normalized = normalizeMessageContent(message);
+  if (!normalized) return null;
+  
+  // Check for media types in order of priority
+  const mediaTypes = [
+    { type: 'image', key: 'imageMessage' },
+    { type: 'video', key: 'videoMessage' },
+    { type: 'sticker', key: 'stickerMessage' },
+    { type: 'audio', key: 'audioMessage' },
+    { type: 'document', key: 'documentMessage' },
+  ];
+  
+  for (const { type, key } of mediaTypes) {
+    if (normalized[key]) {
+      // For audio, check if it's a voice note
+      if (type === 'audio' && normalized.audioMessage?.ptt) {
+        return 'ptt';
+      }
+      return type;
+    }
+  }
+  
+  return null;
+}
+
+/**
+ * Get media info from message
+ * Handles wrapped media properly
+ */
+function getMediaInfo(message) {
+  if (!message) return null;
+  
+  const normalized = normalizeMessageContent(message);
+  if (!normalized) return null;
+  
+  const mediaTypes = [
+    { type: 'image', key: 'imageMessage' },
+    { type: 'video', key: 'videoMessage' },
+    { type: 'sticker', key: 'stickerMessage' },
+    { type: 'audio', key: 'audioMessage' },
+    { type: 'document', key: 'documentMessage' },
+  ];
+  
+  for (const { type, key } of mediaTypes) {
+    const mediaNode = normalized[key];
+    if (mediaNode) {
+      const mimetype = cleanMimeType(mediaNode.mimetype) || 'application/octet-stream';
+      const filename = mediaNode.fileName || `whatsapp-${Date.now()}`;
+      const caption = mediaNode.caption || '';
+      const isVoiceNote = type === 'audio' && (mediaNode.ptt || mimetype === 'audio/ogg');
+      
+      return {
+        type: isVoiceNote ? 'ptt' : type,
+        mimetype,
+        filename,
+        caption,
+        isVoiceNote,
+      };
+    }
+  }
+  
+  return null;
+}
+
 export async function downloadBaileysMedia(sock, message) {
   if (!sock) throw new Error('WhatsApp socket is not initialized.');
+  
   const baileysMessage = message?._baileys || message;
   if (!baileysMessage?.message) throw new Error('No Baileys message payload is available for download.');
-  const mediaTypes = ['imageMessage', 'videoMessage', 'stickerMessage', 'audioMessage', 'documentMessage'];
-  const content = baileysMessage.message;
-  const mediaNode = mediaTypes.map(type => content?.[type]).find(Boolean);
-  if (!mediaNode) throw new Error('The message does not contain downloadable media.');
-
+  
+  // Use normalized message content to detect media type properly
+  const mediaInfo = getMediaInfo(baileysMessage.message);
+  if (!mediaInfo) throw new Error('The message does not contain downloadable media.');
+  
   const buffer = await downloadMediaMessage(
     baileysMessage,
     'buffer',
     {},
     { logger: mediaLogger, reuploadRequest: sock.updateMediaMessage ? msg => sock.updateMediaMessage(msg) : undefined },
   );
-  const mimetype = cleanMimeType(mediaNode.mimetype) || 'application/octet-stream';
-  const filename = mediaNode.fileName || `whatsapp-${Date.now()}`;
-  return new MessageMedia(mimetype, buffer, filename);
+  
+  return new MessageMedia(mediaInfo.mimetype, buffer, mediaInfo.filename);
 }
 
 class WhatsAppMediaService {
@@ -220,7 +326,16 @@ class WhatsAppMediaService {
 
   async sendSticker(jid, sticker, options = {}) {
     const media = await this.resolveMedia(sticker, options, 'image/webp');
-    return this.sendMessage(jid, media, { ...options, sendMediaAsSticker: true });
+    
+    // Set default sticker metadata if not provided
+    const stickerOptions = {
+      ...options,
+      packName: options.packName || 'AniChan',
+      author: options.author || 'AniChan Bot',
+      sendMediaAsSticker: true,
+    };
+    
+    return this.sendMessage(jid, media, stickerOptions);
   }
 
   async sendDocument(jid, document, options = {}) {
