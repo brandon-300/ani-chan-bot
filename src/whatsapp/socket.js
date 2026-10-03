@@ -971,134 +971,51 @@ class SocketManager {
   
   /**
    * Send a message
-   * Central transport method - all messages should flow through here
+   * Routes through MessagesService for centralized transport
+   * This ensures all messages flow through one authoritative path
    */
   async sendMessage(jid, content, options = {}, quotedMsg = null) {
     if (!this.sock) throw new Error('Socket not initialized');
     if (!jid) throw new TypeError('A recipient JID is required.');
     
-    const normalizedJid = identity.normalizeJid(jid);
-    
-    try {
-      let payload = toBaileysMediaPayload(content, options);
-      if (!payload) {
-        if (typeof content === 'string') payload = { text: content };
-        else if (content && typeof content === 'object') payload = { ...content };
-        else payload = { text: String(content ?? '') };
-        if (Array.isArray(options.mentions) && options.mentions.length) payload.mentions = options.mentions;
-        if (options.caption !== undefined && payload.caption === undefined) payload.caption = options.caption;
-      }
-      
-      const sendOptions = {};
-      if (options.quoted) sendOptions.quoted = options.quoted;
-      else if (quotedMsg?._baileys) sendOptions.quoted = quotedMsg._baileys;
-      if (options.linkPreview !== undefined) sendOptions.linkPreview = options.linkPreview;
-      if (options.messageId) sendOptions.messageId = options.messageId;
-      if (options.ephemeralSettings !== undefined) sendOptions.ephemeralSettings = options.ephemeralSettings;
-      
-      const result = await this.sock.sendMessage(normalizedJid, payload, sendOptions);
-      if (result?.key) this.registerSentMessage(result.key, result);
-      return result;
-    } catch (error) {
-      logger.error({ error, jid: normalizedJid }, 'Failed to send WhatsApp message');
-      throw error;
-    }
+    const messages = await import('./messages.js');
+    return messages.default.sendMessage(jid, content, options, quotedMsg);
   }
 
   /**
    * Delete a message
+   * Routes through MessagesService for centralized transport
    */
   async deleteMessage(key, everyone = true) {
     if (!this.sock) throw new Error('Socket not initialized');
-    const messageKey = key?.id ? { ...key } : null;
-    if (!messageKey?.remoteJid) throw new TypeError('A valid Baileys message key is required for deletion.');
     if (!everyone) return false;
     
-    const normalizedKey = {
-      ...messageKey,
-      remoteJid: identity.normalizeJid(messageKey.remoteJid),
-    };
-    
-    return this.sock.sendMessage(normalizedKey.remoteJid, { delete: normalizedKey });
+    const messages = await import('./messages.js');
+    const message = { key, from: key?.remoteJid, chatId: key?.remoteJid };
+    return messages.default.delete(message, true);
   }
 
   /**
    * Forward a message
-   * Uses Baileys native forwarding mechanism
+   * Routes through MessagesService for centralized transport
    */
   async forwardMessage(jid, baileysMsg) {
-    if (!this.sock) {
-      throw new Error('Socket not initialized');
-    }
-
-    try {
-      const { key, message } = baileysMsg;
-      const forwardMsg = { ...message, key: { ...key } };
-      delete forwardMsg.key.id;
-      
-      // Normalize JIDs in the forwarded message
-      if (forwardMsg.key) {
-        forwardMsg.key.remoteJid = identity.normalizeJid(forwardMsg.key.remoteJid);
-        if (forwardMsg.key.participant) {
-          forwardMsg.key.participant = identity.normalizeJid(forwardMsg.key.participant);
-        }
-      }
-      
-      const normalizedJid = identity.normalizeJid(jid);
-      
-      const result = await this.sock.sendMessage(normalizedJid, {
-        forward: forwardMsg,
-      });
-      
-      if (result && result.key) {
-        this.registerSentMessage(result.key, result);
-      }
-      return result;
-    } catch (error) {
-      logger.error('Failed to forward message:', error);
-      throw error;
-    }
+    if (!this.sock) throw new Error('Socket not initialized');
+    
+    const messages = await import('./messages.js');
+    return messages.default.forward(baileysMsg, jid);
   }
 
   /**
    * Edit a message
-   * Uses Baileys editMessage if available, falls back to delete+send
+   * Routes through MessagesService for centralized transport
    */
   async editMessage(key, newContent, options = {}) {
     if (!this.sock) throw new Error('Socket not initialized');
     
-    const messageKey = key?.id ? { ...key } : null;
-    if (!messageKey?.remoteJid) throw new TypeError('A valid Baileys message key is required for editing.');
-    
-    const normalizedKey = {
-      ...messageKey,
-      remoteJid: identity.normalizeJid(messageKey.remoteJid),
-    };
-    
-    // Try to use Baileys native editMessage if available
-    if (this.sock.editMessage) {
-      try {
-        const payload = typeof newContent === 'string' 
-          ? { text: newContent }
-          : newContent;
-        
-        const result = await this.sock.editMessage(normalizedKey.remoteJid, normalizedKey, payload, options);
-        if (result) {
-          // Update our sent message registry
-          if (result.key) {
-            this.sentMessages.delete(normalizedKey.id || normalizedKey._serialized);
-            this.registerSentMessage(result.key, result);
-          }
-          return result;
-        }
-      } catch (error) {
-        logger.warn('editMessage not supported or failed, falling back to delete+send:', error.message);
-      }
-    }
-    
-    // Fallback: delete and send new message
-    await this.deleteMessage(normalizedKey, true);
-    return this.sendMessage(normalizedKey.remoteJid, newContent, options);
+    const messages = await import('./messages.js');
+    const message = { key, from: key?.remoteJid, chatId: key?.remoteJid, _baileys: { key, message: {} } };
+    return messages.default.edit(message, newContent);
   }
 
   /**

@@ -1,12 +1,17 @@
 /**
  * Messages Service for WhatsApp Adapter
  * Centralized message sending and management
+ * 
+ * This is the AUTHORITATIVE transport path for all outgoing messages.
+ * All send operations should flow through this service.
  */
 
 import { toBaileysMediaPayload } from './media.js';
 import socketManager from './socket.js';
 import identity from './identity.js';
 import pino from 'pino';
+import { BOT_NAME } from '../utils/config.js';
+import { getActivePersonaSafe } from '../utils/persona.js';
 
 const logger = pino({ level: process.env.LOG_LEVEL || 'silent' });
 
@@ -59,12 +64,48 @@ function messageKey(message) {
 }
 
 /**
+ * Get guaranteed sticker metadata
+ * Ensures packName = BOT_NAME and author = active persona
+ */
+function getStickerMetadata(options = {}) {
+  const persona = getActivePersonaSafe();
+  const packName = options.packName || options.stickerPack || BOT_NAME;
+  const author = options.author || options.stickerAuthor || (persona?.stickerAuthor || persona?.displayName || BOT_NAME);
+  const categories = options.categories || ['\ud83d\ude02'];
+  const keepScale = options.keepScale !== undefined ? options.keepScale : true;
+  const circle = options.circle !== undefined ? options.circle : false;
+  const removeBackground = options.removeBackground !== undefined ? options.removeBackground : false;
+  
+  return {
+    packName,
+    author,
+    categories,
+    keepScale,
+    circle,
+    removeBackground,
+  };
+}
+
+/**
  * Convert content to Baileys payload
  * Handles MessageMedia, strings, and objects
+ * Guarantees sticker metadata for sticker content
  */
 function payloadFor(content, options = {}) {
   const mediaPayload = toBaileysMediaPayload(content, options);
-  if (mediaPayload) return mediaPayload;
+  if (mediaPayload) {
+    // Ensure sticker metadata is set
+    if (mediaPayload.sticker && !mediaPayload.packname) {
+      const metadata = getStickerMetadata(options);
+      mediaPayload.packname = metadata.packName;
+      mediaPayload.author = metadata.author;
+      mediaPayload.categories = metadata.categories;
+      mediaPayload.keepScale = metadata.keepScale;
+      mediaPayload.circle = metadata.circle;
+      mediaPayload.removeBackground = metadata.removeBackground;
+    }
+    return mediaPayload;
+  }
   
   if (typeof content === 'string') {
     const text = { text: content };
@@ -76,6 +117,18 @@ function payloadFor(content, options = {}) {
     const payload = { ...content };
     if (Array.isArray(options.mentions) && options.mentions.length) payload.mentions = options.mentions;
     if (options.caption !== undefined && payload.caption === undefined) payload.caption = options.caption;
+    
+    // Ensure sticker metadata for sticker objects
+    if (payload.sticker && !payload.packname) {
+      const metadata = getStickerMetadata(options);
+      payload.packname = metadata.packName;
+      payload.author = metadata.author;
+      payload.categories = metadata.categories;
+      payload.keepScale = metadata.keepScale;
+      payload.circle = metadata.circle;
+      payload.removeBackground = metadata.removeBackground;
+    }
+    
     return payload;
   }
   
@@ -110,6 +163,7 @@ function sendOptions(options = {}, quotedMessage = null) {
 /**
  * Messages Service
  * Centralized message sending and management
+ * THIS IS THE AUTHORITATIVE TRANSPORT PATH
  */
 class MessagesService {
   constructor() {
@@ -129,6 +183,7 @@ class MessagesService {
   /**
    * Register a sent message for tracking
    * Used for reaction detection, message history, etc.
+   * Also registers with socket manager for backward compatibility
    */
   registerSentMessage(key, msg) {
     const msgKey = key.id || key._serialized;
@@ -149,7 +204,7 @@ class MessagesService {
    */
   isBotMessage(key) {
     const msgKey = key.id || key._serialized;
-    return this.sentMessageRegistry.has(msgKey);
+    return this.sentMessageRegistry.has(msgKey) || socketManager.isBotMessage(key);
   }
 
   /**
@@ -157,7 +212,7 @@ class MessagesService {
    */
   getBotSentMessage(key) {
     const msgKey = key.id || key._serialized;
-    return this.sentMessageRegistry.get(msgKey);
+    return this.sentMessageRegistry.get(msgKey) || socketManager.getBotSentMessage(key);
   }
 
   /**
@@ -168,8 +223,9 @@ class MessagesService {
   }
 
   /**
-   * Send message - central method for all message sending
-   * This is the authoritative transport path for all outgoing messages
+   * Send message - CENTRAL AUTHORITATIVE TRANSPORT METHOD
+   * ALL outgoing messages should flow through this method
+   * Guarantees sticker metadata (BOT_NAME + active persona)
    */
   async sendMessage(jid, content, options = {}, quotedMessage = null) {
     if (!jid) throw new TypeError('A recipient JID is required.');
@@ -178,6 +234,7 @@ class MessagesService {
     const normalizedJid = identity.normalizeJid(jid);
     
     try {
+      // Build payload with guaranteed sticker metadata
       const payload = payloadFor(content, options);
       const sendOpts = sendOptions(options, quotedMessage);
       
@@ -196,6 +253,7 @@ class MessagesService {
 
   /**
    * Reply to a message
+   * All replies flow through sendMessage with quoting
    */
   async reply(message, content, options = {}) {
     const jid = message?.chatId || message?.from;
@@ -208,6 +266,53 @@ class MessagesService {
       ...options, 
       quoted: options.quoted || quote 
     });
+  }
+
+  /**
+   * Send sticker with guaranteed metadata
+   * Ensures packName = BOT_NAME and author = active persona
+   */
+  async sendSticker(jid, sticker, options = {}) {
+    // Merge sticker metadata guarantees with provided options
+    const metadata = getStickerMetadata(options);
+    const stickerOptions = {
+      ...metadata,
+      ...options,
+      // Ensure these are always set
+      packName: metadata.packName,
+      author: metadata.author,
+    };
+    
+    return this.sendMessage(jid, sticker, stickerOptions);
+  }
+
+  /**
+   * Send image
+   */
+  async sendImage(jid, image, options = {}) {
+    return this.sendMessage(jid, image, options);
+  }
+
+  /**
+   * Send video
+   */
+  async sendVideo(jid, video, options = {}) {
+    return this.sendMessage(jid, video, options);
+  }
+
+  /**
+   * Send audio
+   * Properly handles voice notes vs regular audio
+   */
+  async sendAudio(jid, audio, options = {}) {
+    return this.sendMessage(jid, audio, options);
+  }
+
+  /**
+   * Send document
+   */
+  async sendDocument(jid, document, options = {}) {
+    return this.sendMessage(jid, document, options);
   }
 
   /**

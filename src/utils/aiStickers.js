@@ -1160,6 +1160,31 @@ function _setAdaptersForTests({ Model, storage, mongoConnected } = {}) {
   geminiGate.setReservationProvider(analysisReservesGemini);
 }
 
+/**
+ * Get available personas for the .persona command
+ * Returns persona objects with id, displayName, series, and description
+ */
+async function getAvailablePersonas() {
+  const personaIds = listPersonaIds();
+  const personas = [];
+  
+  for (const personaId of personaIds) {
+    try {
+      const persona = loadPersona(personaId);
+      personas.push({
+        id: persona.id,
+        displayName: persona.displayName,
+        series: persona.series,
+        description: persona.personality?.split('\n')[0]?.slice(0, 100) || '',
+      });
+    } catch (err) {
+      logger.error('ai.persona.load_failed', err, { personaId });
+    }
+  }
+  
+  return personas;
+}
+
 export default {
   startImportMode,
   stopImportMode,
@@ -1169,6 +1194,7 @@ export default {
   sendCatalogueSticker,
   initialize,
   ALLOWED_REACTIONS,
+  getAvailablePersonas,
   _parseClassification: parseClassification,
   _selectSticker: selectSticker,
   _analyzeSticker: analyzeSticker,

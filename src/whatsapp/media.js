@@ -298,32 +298,12 @@ class WhatsAppMediaService {
   }
 
   /**
-   * Send message - central method for all media sending
-   * All send methods eventually flow through here
+   * Send message - routes through MessagesService for centralized transport
+   * This ensures all messages flow through one authoritative path
    */
   async sendMessage(jid, content, options = {}) {
-    const sock = this.getSock();
-    const sendOptions = forwardingOptions(options);
-    const mediaPayload = toBaileysMediaPayload(content, options);
-    
-    if (mediaPayload) {
-      const result = await sock.sendMessage(jid, mediaPayload, sendOptions);
-      if (result?.key) this.onSent?.(result.key, result);
-      return result;
-    }
-
-    if (typeof content === 'string') {
-      const textPayload = { text: content };
-      if (Array.isArray(options.mentions) && options.mentions.length) textPayload.mentions = options.mentions;
-      const result = await sock.sendMessage(jid, textPayload, sendOptions);
-      if (result?.key) this.onSent?.(result.key, result);
-      return result;
-    }
-
-    const payload = content && typeof content === 'object' ? content : { text: String(content ?? '') };
-    const result = await sock.sendMessage(jid, payload, sendOptions);
-    if (result?.key) this.onSent?.(result.key, result);
-    return result;
+    const messages = await import('./messages.js');
+    return messages.default.sendMessage(jid, content, options);
   }
 
   async sendImage(jid, image, options = {}) {
@@ -347,17 +327,9 @@ class WhatsAppMediaService {
   }
 
   async sendSticker(jid, sticker, options = {}) {
-    const media = await this.resolveMedia(sticker, options, 'image/webp');
-    
-    // Set default sticker metadata if not provided
-    const stickerOptions = {
-      ...options,
-      packName: options.packName || 'AniChan',
-      author: options.author || 'AniChan Bot',
-      sendMediaAsSticker: true,
-    };
-    
-    return this.sendMessage(jid, media, stickerOptions);
+    // Route through MessagesService which guarantees sticker metadata
+    const messages = await import('./messages.js');
+    return messages.default.sendSticker(jid, sticker, options);
   }
 
   async sendDocument(jid, document, options = {}) {
