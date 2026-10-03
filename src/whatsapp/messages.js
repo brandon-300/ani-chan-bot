@@ -12,6 +12,7 @@ import identity from './identity.js';
 import pino from 'pino';
 import { BOT_NAME } from '../utils/config.js';
 import { getActivePersonaSafe } from '../utils/persona.js';
+import { Sticker, StickerTypes } from 'wa-sticker-formatter';
 
 const logger = pino({ level: process.env.LOG_LEVEL || 'silent' });
 
@@ -84,6 +85,35 @@ function getStickerMetadata(options = {}) {
     circle,
     removeBackground,
   };
+}
+
+/**
+ * Embed sticker metadata into WebP buffer using wa-sticker-formatter
+ * @param {Buffer} stickerBuffer - WebP sticker buffer
+ * @param {string} packName - Sticker pack name
+ * @param {string} author - Sticker author
+ * @param {string[]} categories - Sticker categories
+ * @returns {Promise<Buffer>} Sticker buffer with embedded metadata
+ */
+async function embedStickerMetadata(stickerBuffer, packName, author, categories = ['\ud83d\ude02']) {
+  try {
+    // Create sticker with metadata
+    const sticker = new Sticker(stickerBuffer, {
+      pack: packName,
+      author: author,
+      type: StickerTypes.FULL,
+      categories: categories,
+      packName: packName,
+      authorName: author,
+    });
+    
+    // Get the buffer with embedded metadata
+    const bufferWithMetadata = await sticker.toBuffer();
+    return bufferWithMetadata;
+  } catch (error) {
+    // If metadata embedding fails, return original buffer
+    return stickerBuffer;
+  }
 }
 
 /**
@@ -275,6 +305,60 @@ class MessagesService {
   async sendSticker(jid, sticker, options = {}) {
     // Merge sticker metadata guarantees with provided options
     const metadata = getStickerMetadata(options);
+    
+    // If we have a sticker buffer, embed metadata into EXIF
+    let stickerToSend = sticker;
+    if (sticker) {
+      try {
+        // Get the sticker buffer
+        let stickerBuffer;
+        if (Buffer.isBuffer(sticker)) {
+          stickerBuffer = sticker;
+        } else if (sticker.data) {
+          stickerBuffer = Buffer.isBuffer(sticker.data) ? sticker.data : Buffer.from(sticker.data, 'base64');
+        } else if (sticker.buffer) {
+          stickerBuffer = Buffer.isBuffer(sticker.buffer) ? sticker.buffer : Buffer.from(sticker.buffer, 'base64');
+        } else if (typeof sticker === 'string') {
+          stickerBuffer = Buffer.from(sticker, 'base64');
+        }
+        
+        if (stickerBuffer && Buffer.isBuffer(stickerBuffer)) {
+          // Embed metadata into the WebP
+          const bufferWithMetadata = await embedStickerMetadata(
+            stickerBuffer,
+            metadata.packName,
+            metadata.author,
+            metadata.categories
+          );
+          
+          // Create new sticker object with metadata-embedded buffer
+          stickerToSend = {
+            ...(typeof sticker === 'object' ? sticker : {}),
+            buffer: bufferWithMetadata,
+            // Also pass metadata fields for Baileys compatibility
+            packname: metadata.packName,
+            author: metadata.author,
+            categories: metadata.categories,
+            keepScale: metadata.keepScale,
+            circle: metadata.circle,
+            removeBackground: metadata.removeBackground,
+          };
+        }
+      } catch (error) {
+        // If metadata embedding fails, continue with original sticker
+        // Just ensure metadata fields are set
+        stickerToSend = {
+          ...(typeof sticker === 'object' ? sticker : {}),
+          packname: metadata.packName,
+          author: metadata.author,
+          categories: metadata.categories,
+          keepScale: metadata.keepScale,
+          circle: metadata.circle,
+          removeBackground: metadata.removeBackground,
+        };
+      }
+    }
+    
     const stickerOptions = {
       ...metadata,
       ...options,
@@ -283,7 +367,7 @@ class MessagesService {
       author: metadata.author,
     };
     
-    return this.sendMessage(jid, sticker, stickerOptions);
+    return this.sendMessage(jid, stickerToSend, stickerOptions);
   }
 
   /**
