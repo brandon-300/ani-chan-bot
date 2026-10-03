@@ -1,1 +1,1 @@
-SEE_LOCAL_FILE_socket.js_IN_ARTIFACTS
+LOAD_FROM_FILE:/home/workdir/artifacts/socket.js
