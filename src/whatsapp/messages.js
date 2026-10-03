@@ -11,7 +11,7 @@ import socketManager from './socket.js';
 import identity from './identity.js';
 import pino from 'pino';
 import { BOT_NAME } from '../utils/config.js';
-import { getActivePersonaSafe } from '../utils/persona.js';
+import { getActivePersonaSafe, loadPersona } from '../utils/persona.js';
 import { Sticker, StickerTypes } from 'wa-sticker-formatter';
 
 const logger = pino({ level: process.env.LOG_LEVEL || 'silent' });
@@ -69,7 +69,12 @@ function messageKey(message) {
  * Ensures packName = BOT_NAME and author = active persona
  */
 function getStickerMetadata(options = {}) {
-  const persona = getActivePersonaSafe();
+  // Prefer an explicitly selected persona (per-chat) over the global default.
+  let persona = options.persona || null;
+  if (!persona && options.personaId) {
+    try { persona = loadPersona(options.personaId); } catch { persona = null; }
+  }
+  if (!persona) persona = getActivePersonaSafe();
   const packName = options.packName || options.stickerPack || BOT_NAME;
   const author = options.author || options.stickerAuthor || (persona?.stickerAuthor || persona?.displayName || BOT_NAME);
   const categories = options.categories || ['\ud83d\ude02'];
