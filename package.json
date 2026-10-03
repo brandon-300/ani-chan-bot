@@ -9,7 +9,7 @@
     "pm2": "pm2 start src/index.js --name ani-chan-bot",
     "stickers:reset": "node scripts/reset-ai-sticker-library.js",
     "stickers:import": "node scripts/import-anime-sticker-packs.js",
-    "test": "vitest run tests/baileys-integration.js",
+    "test": "vitest run tests/baileys-integration.js tests/baileys-migration-regressions.test.js",
     "test:watch": "vitest watch tests/baileys-integration.js"
   },
   "dependencies": {
