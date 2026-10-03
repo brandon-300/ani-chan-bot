@@ -11,13 +11,13 @@ describe('Baileys reaction identity (real nested key shape)', () => {
       key: {
         id: 'AI_MSG_1',
         remoteJid: '2348012345678@s.whatsapp.net',
-        fromMe: true,
+        fromMe: true, // target is bot message
       },
       reaction: {
         key: {
           id: 'USER_REACT_1',
           remoteJid: '2348012345678@s.whatsapp.net',
-          fromMe: false,
+          fromMe: false, // reactor is the user
         },
         text: '❤️',
         timestamp: Date.now(),
@@ -43,7 +43,7 @@ describe('Baileys reaction identity (real nested key shape)', () => {
         key: {
           id: 'BOT_REACT_1',
           remoteJid: '2348012345678@s.whatsapp.net',
-          fromMe: true,
+          fromMe: true, // reactor is the bot
         },
         text: '😂',
         timestamp: Date.now(),
