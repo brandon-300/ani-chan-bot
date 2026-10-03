@@ -153,7 +153,10 @@ function getMediaInfo(message) {
       const mimetype = cleanMimeType(mediaNode.mimetype) || 'application/octet-stream';
       const filename = mediaNode.fileName || mediaNode.filename || `whatsapp-${Date.now()}`;
       const caption = mediaNode.caption || '';
-      const isVoiceNote = type === 'audio' && (mediaNode.ptt || mimetype === 'audio/ogg' || mimetype === 'audio/opus');
+      
+      // Proper voice note detection: use explicit ptt flag from Baileys
+      // Do NOT infer voice note solely from MIME type (audio/ogg is not always PTT)
+      const isVoiceNote = Boolean(mediaNode.ptt);
       
       return {
         type: isVoiceNote ? 'ptt' : type,
@@ -229,12 +232,11 @@ export function toBaileysMediaPayload(content, options = {}) {
   if (mimetype.startsWith('audio/')) {
     // Proper voice note detection: use explicit ptt flag, not just MIME type
     // audio/ogg and audio/opus are common for voice notes, but we need explicit confirmation
+    // The ptt flag should come from the source message or be explicitly set
     const isVoiceNote = Boolean(
       options.sendAudioAsVoice || 
       options.ptt || 
-      (mimetype === 'audio/ogg' && options.isVoiceNote) ||
-      (mimetype === 'audio/opus' && options.isVoiceNote) ||
-      extension === '.opus'
+      content.ptt
     );
     return { audio: buffer, mimetype, ptt: isVoiceNote, ...common };
   }

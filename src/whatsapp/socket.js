@@ -8,7 +8,7 @@
  * - Automatic reconnection
  */
 
-import { makeWASocket, DisconnectReason, fetchLatestBaileysVersion, makeCacheableSignalKeyStore, Browsers, normalizeMessageContent } from '@whiskeysockets/baileys';
+import { makeWASocket, DisconnectReason, fetchLatestBaileysVersion, fetchLatestWaWebVersion, makeCacheableSignalKeyStore, Browsers, normalizeMessageContent } from '@whiskeysockets/baileys';
 import pino from 'pino';
 import { downloadBaileysMedia, toBaileysMediaPayload } from './media.js';
 import authManager from './auth.js';
@@ -229,6 +229,7 @@ class SocketManager {
   /**
    * Get WhatsApp Web client revision
    * Uses a real abort timeout for network requests
+   * Correctly uses fetchLatestWaWebVersion() for WhatsApp Web revision
    */
   async getWhatsAppRevision() {
     // If we already have a cached revision, return it
@@ -245,22 +246,22 @@ class SocketManager {
       const timeoutId = setTimeout(() => controller.abort(), 10000);
       
       // Try to fetch live WhatsApp Web revision
-      // Baileys 7 provides fetchLatestBaileysVersion which gets version from WhatsApp Web
-      const versionInfo = await fetchLatestBaileysVersion({
+      // Use fetchLatestWaWebVersion() which reads from WhatsApp Web service worker
+      const waWebVersion = await fetchLatestWaWebVersion({
         timeout: 10000,
         signal: controller.signal
       });
       
       clearTimeout(timeoutId);
       
-      if (versionInfo?.version && Array.isArray(versionInfo.version)) {
-        this.whatsappRevision = versionInfo.version;
-        logger.info(`Fetched WhatsApp Web revision: ${versionInfo.version.join('.')}`);
-        return versionInfo.version;
+      if (waWebVersion && Array.isArray(waWebVersion)) {
+        this.whatsappRevision = waWebVersion;
+        logger.info(`Fetched WhatsApp Web revision: ${waWebVersion.join('.')}`);
+        return waWebVersion;
       }
     } catch (error) {
       if (error.name === 'AbortError') {
-        logger.warn('WhatsApp revision fetch timed out, using cached revision');
+        logger.warn('WhatsApp Web revision fetch timed out, using cached revision');
       } else {
         logger.warn({ error: error.message }, 'Could not fetch WhatsApp Web revision');
       }
@@ -420,6 +421,10 @@ class SocketManager {
     });
     this.sock.ev.on('groups.update', update => this.handleGroupsUpdate(update));
     this.sock.ev.on('group-participants.update', update => this.handleGroupParticipantsUpdate(update));
+    
+    // LID (Lightweight ID) mapping events for Baileys v7
+    this.sock.ev.on('lid-mapping.update', update => this.handleLidMappingUpdate(update));
+    this.sock.ev.on('device-list.update', update => this.handleDeviceListUpdate(update));
   }
 
   /**
@@ -658,6 +663,55 @@ class SocketManager {
       else this.emit('group_leave', notification);
     } catch (error) {
       logger.error({ error }, 'Group participant update handler failed');
+    }
+  }
+
+  /**
+   * Handle LID mapping update from Baileys
+   * Updates the identity service with new LID ↔ PN mappings
+   */
+  async handleLidMappingUpdate(update) {
+    try {
+      const { lid, jid: pnJid } = update || {};
+      if (!lid || !pnJid) return;
+      
+      // Normalize the JIDs
+      const normalizedLid = identity.normalizeJid(lid);
+      const normalizedPn = identity.normalizeJid(pnJid);
+      
+      // Add to identity service mapping
+      identity.addLidPnMapping(normalizedLid, normalizedPn);
+      
+      logger.info(`LID mapping updated: ${normalizedLid} <-> ${normalizedPn}`);
+    } catch (error) {
+      logger.error({ error }, 'LID mapping update handler failed');
+    }
+  }
+
+  /**
+   * Handle device list update from Baileys
+   * Extracts and updates LID ↔ PN mappings from device info
+   */
+  async handleDeviceListUpdate(update) {
+    try {
+      const { devices = [] } = update || {};
+      
+      for (const device of devices) {
+        const lid = device?.id;
+        const pnJid = device?.user;
+        
+        if (lid && pnJid) {
+          const normalizedLid = identity.normalizeJid(lid);
+          const normalizedPn = identity.normalizeJid(pnJid);
+          
+          // Add to identity service mapping
+          identity.addLidPnMapping(normalizedLid, normalizedPn);
+          
+          logger.debug(`Device list LID mapping: ${normalizedLid} <-> ${normalizedPn}`);
+        }
+      }
+    } catch (error) {
+      logger.error({ error }, 'Device list update handler failed');
     }
   }
 

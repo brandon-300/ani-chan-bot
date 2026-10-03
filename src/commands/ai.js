@@ -975,9 +975,8 @@ export default {
       // Switch persona - this starts a new conversation thread
       await switchPersona(chatId, senderId, targetPersona.id);
       
-      // Update active persona for this session
-      const personaModule = await import('../utils/persona.js');
-      personaModule.setActivePersona(targetPersona.id);
+      // Note: Persona switching is session-based via conversation history
+      // The active persona for new chats is determined by AI_PERSONA env var
       
       return msg.reply(`\u2705 Switched to persona: *${targetPersona.displayName}*\n${targetPersona.series ? `from "${targetPersona.series}"` : ''}\n\n*${targetPersona.description || 'No description'}*`);
     } catch (err) {

@@ -414,18 +414,17 @@ function mentionName(contact) {
 // digits WhatsApp needs aren't actually there; it just prints as plain text.
 // Use this whenever the goal is a real, tappable mention.
 //
-// For Baileys v7 with LID support: we need to extract the numeric part
-// from either PN or LID format
+// For Baileys v7 with LID support: use identity service for proper resolution
 function mentionTag(contact) {
   if (!contact) return '';
   
-  // Handle both PN and LID formats
-  const userId = contact.id?.user || contact.number || contact.id?._serialized || '';
+  // Use identity service to get the canonical phone number
+  // This handles both LID and PN formats properly
+  const phoneNumber = identity.getPhoneNumber(contact.id?._serialized || contact.id || contact.number || '');
   
-  // Extract just the numeric part (remove @lid or @s.whatsapp.net)
-  const numericPart = String(userId).split('@')[0].split(':')[0];
+  if (!phoneNumber) return '';
   
-  return numericPart;
+  return phoneNumber;
 }
 
 // Owner/Mod Identification
