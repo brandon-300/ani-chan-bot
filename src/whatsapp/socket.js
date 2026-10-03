@@ -12,6 +12,7 @@ import { makeWASocket, DisconnectReason, fetchLatestBaileysVersion, makeCacheabl
 import pino from 'pino';
 import { downloadBaileysMedia, toBaileysMediaPayload } from './media.js';
 import authManager from './auth.js';
+import identity from './identity.js';
 
 // Logger configuration
 const logger = pino({
@@ -144,6 +145,7 @@ class SocketManager {
       qr: [],
       authenticated: [],
       ready: [],
+      reconnect: [],
       disconnected: [],
       error: [],
       group_join: [],
@@ -341,6 +343,13 @@ class SocketManager {
   }
 
   /**
+   * Mark background systems as initialized
+   */
+  markBackgroundInitialized() {
+    this.backgroundInitialized = true;
+  }
+
+  /**
    * Initialize the socket
    */
   async init() {
@@ -489,13 +498,6 @@ class SocketManager {
   }
 
   /**
-   * Mark background systems as initialized
-   */
-  markBackgroundInitialized() {
-    this.backgroundInitialized = true;
-  }
-
-  /**
    * Schedule reconnection
    */
   scheduleReconnect(error) {
@@ -616,10 +618,17 @@ class SocketManager {
   }
 
   /**
-   * Handle groups update
+   * Handle groups update - with cache invalidation
    */
   async handleGroupsUpdate(update) {
     try {
+      // Invalidate group cache for this group
+      const groupJid = update?.id || update?.jid;
+      if (groupJid) {
+        const groups = await import('./groups.js');
+        groups.default.invalidateCache(groupJid);
+      }
+      
       this.emit('group_update', update);
     } catch (error) {
       logger.error('Error in groups.update handler:', error);
@@ -627,12 +636,17 @@ class SocketManager {
   }
 
   /**
-   * Handle group participants update
+   * Handle group participants update - with cache invalidation
    */
   async handleGroupParticipantsUpdate(update) {
     try {
       const { id, participants = [], action } = update || {};
       if (!id || !['add', 'remove'].includes(action)) return;
+      
+      // Invalidate group cache for this group
+      const groups = await import('./groups.js');
+      groups.default.invalidateCache(id);
+      
       const notification = {
         ...update,
         id: { _serialized: id },
@@ -672,6 +686,7 @@ class SocketManager {
     let type = 'chat';
     let hasMedia = false;
     
+    // Check all possible message types, including wrapped ones
     const candidates = [
       ['imageMessage', 'image'], ['videoMessage', 'video'], ['stickerMessage', 'sticker'],
       ['audioMessage', 'audio'], ['documentMessage', 'document'], ['reactionMessage', 'reaction'],
@@ -777,13 +792,17 @@ class SocketManager {
     
     return normalized;
   }
-
+  
   /**
    * Send a message
+   * Central transport method - all messages should flow through here
    */
   async sendMessage(jid, content, options = {}, quotedMsg = null) {
     if (!this.sock) throw new Error('Socket not initialized');
     if (!jid) throw new TypeError('A recipient JID is required.');
+    
+    const normalizedJid = identity.normalizeJid(jid);
+    
     try {
       let payload = toBaileysMediaPayload(content, options);
       if (!payload) {
@@ -793,17 +812,19 @@ class SocketManager {
         if (Array.isArray(options.mentions) && options.mentions.length) payload.mentions = options.mentions;
         if (options.caption !== undefined && payload.caption === undefined) payload.caption = options.caption;
       }
+      
       const sendOptions = {};
       if (options.quoted) sendOptions.quoted = options.quoted;
       else if (quotedMsg?._baileys) sendOptions.quoted = quotedMsg._baileys;
       if (options.linkPreview !== undefined) sendOptions.linkPreview = options.linkPreview;
       if (options.messageId) sendOptions.messageId = options.messageId;
+      if (options.ephemeralSettings !== undefined) sendOptions.ephemeralSettings = options.ephemeralSettings;
       
-      const result = await this.sock.sendMessage(jid, payload, sendOptions);
+      const result = await this.sock.sendMessage(normalizedJid, payload, sendOptions);
       if (result?.key) this.registerSentMessage(result.key, result);
       return result;
     } catch (error) {
-      logger.error({ error, jid }, 'Failed to send WhatsApp message');
+      logger.error({ error, jid: normalizedJid }, 'Failed to send WhatsApp message');
       throw error;
     }
   }
@@ -816,11 +837,18 @@ class SocketManager {
     const messageKey = key?.id ? { ...key } : null;
     if (!messageKey?.remoteJid) throw new TypeError('A valid Baileys message key is required for deletion.');
     if (!everyone) return false;
-    return this.sock.sendMessage(messageKey.remoteJid, { delete: messageKey });
+    
+    const normalizedKey = {
+      ...messageKey,
+      remoteJid: identity.normalizeJid(messageKey.remoteJid),
+    };
+    
+    return this.sock.sendMessage(normalizedKey.remoteJid, { delete: normalizedKey });
   }
 
   /**
    * Forward a message
+   * Uses Baileys native forwarding mechanism
    */
   async forwardMessage(jid, baileysMsg) {
     if (!this.sock) {
@@ -832,7 +860,17 @@ class SocketManager {
       const forwardMsg = { ...message, key: { ...key } };
       delete forwardMsg.key.id;
       
-      const result = await this.sock.sendMessage(jid, {
+      // Normalize JIDs in the forwarded message
+      if (forwardMsg.key) {
+        forwardMsg.key.remoteJid = identity.normalizeJid(forwardMsg.key.remoteJid);
+        if (forwardMsg.key.participant) {
+          forwardMsg.key.participant = identity.normalizeJid(forwardMsg.key.participant);
+        }
+      }
+      
+      const normalizedJid = identity.normalizeJid(jid);
+      
+      const result = await this.sock.sendMessage(normalizedJid, {
         forward: forwardMsg,
       });
       
@@ -844,6 +882,47 @@ class SocketManager {
       logger.error('Failed to forward message:', error);
       throw error;
     }
+  }
+
+  /**
+   * Edit a message
+   * Uses Baileys editMessage if available, falls back to delete+send
+   */
+  async editMessage(key, newContent, options = {}) {
+    if (!this.sock) throw new Error('Socket not initialized');
+    
+    const messageKey = key?.id ? { ...key } : null;
+    if (!messageKey?.remoteJid) throw new TypeError('A valid Baileys message key is required for editing.');
+    
+    const normalizedKey = {
+      ...messageKey,
+      remoteJid: identity.normalizeJid(messageKey.remoteJid),
+    };
+    
+    // Try to use Baileys native editMessage if available
+    if (this.sock.editMessage) {
+      try {
+        const payload = typeof newContent === 'string' 
+          ? { text: newContent }
+          : newContent;
+        
+        const result = await this.sock.editMessage(normalizedKey.remoteJid, normalizedKey, payload, options);
+        if (result) {
+          // Update our sent message registry
+          if (result.key) {
+            this.sentMessages.delete(normalizedKey.id || normalizedKey._serialized);
+            this.registerSentMessage(result.key, result);
+          }
+          return result;
+        }
+      } catch (error) {
+        logger.warn('editMessage not supported or failed, falling back to delete+send:', error.message);
+      }
+    }
+    
+    // Fallback: delete and send new message
+    await this.deleteMessage(normalizedKey, true);
+    return this.sendMessage(normalizedKey.remoteJid, newContent, options);
   }
 
   /**
@@ -894,7 +973,9 @@ class SocketManager {
       number = serialized;
     }
     
-    const name = this.getContactName(serialized) || number;
+    // Use identity service for proper resolution
+    const identityResult = identity.resolveIdentity(serialized);
+    const name = identityResult?.displayName || number;
     const isMe = serialized === this.getWid();
     
     return {
@@ -905,15 +986,9 @@ class SocketManager {
       pushName: name,
       isMe,
       isLid,
+      canonicalId: identityResult?.canonicalId,
+      phoneNumber: identityResult?.phoneNumber,
     };
-  }
-
-  /**
-   * Get contact name from cache or fallback
-   */
-  getContactName(jid) {
-    // This can be extended to use a contact cache
-    return null;
   }
 
   /**
@@ -923,7 +998,13 @@ class SocketManager {
     if (!this.sock) throw new Error('Socket not initialized');
     const messageKey = key?.id ? { ...key } : null;
     if (!messageKey?.remoteJid) throw new TypeError('A valid Baileys message key is required for reaction.');
-    return this.sock.sendMessage(messageKey.remoteJid, { react: { text: String(emoji || ''), key: messageKey } });
+    
+    const normalizedKey = {
+      ...messageKey,
+      remoteJid: identity.normalizeJid(messageKey.remoteJid),
+    };
+    
+    return this.sock.sendMessage(normalizedKey.remoteJid, { react: { text: String(emoji || ''), key: normalizedKey } });
   }
 
   /**

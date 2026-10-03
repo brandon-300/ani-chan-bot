@@ -1,6 +1,12 @@
 /**
  * Media Service for WhatsApp Adapter
- * Handles media downloading and sending
+ * Handles media downloading, sending, and type detection
+ * 
+ * Improvements:
+ * - Proper wrapper detection for ephemeral/viewOnce/edited messages
+ * - Explicit voice note detection (not just MIME-based)
+ * - Sticker metadata handling (pack name, author)
+ * - Library-independent media interface
  */
 
 import axios from 'axios';
@@ -60,7 +66,7 @@ function forwardingOptions(options = {}) {
 
 /**
  * MessageMedia compatibility class
- * Provides whatsapp-web.js-style media object for compatibility
+ * Provides whatsapp-web.js-style media object for backward compatibility
  */
 export class MessageMedia {
   constructor(mimetype, data, filename = 'file') {
@@ -108,6 +114,73 @@ export class MessageMedia {
 }
 
 /**
+ * Detect if message contains media
+ * Handles wrapped media (ephemeral, viewOnce, edited, etc.)
+ */
+function hasMedia(message) {
+  if (!message) return false;
+  
+  // Use Baileys' normalizeMessageContent to unwrap the message first
+  const normalized = normalizeMessageContent(message);
+  if (!normalized) return false;
+  
+  const mediaTypes = ['imageMessage', 'videoMessage', 'stickerMessage', 'audioMessage', 'documentMessage'];
+  return mediaTypes.some(type => normalized[type] !== undefined);
+}
+
+/**
+ * Get media info from message
+ * Handles wrapped media properly
+ */
+function getMediaInfo(message) {
+  if (!message) return null;
+  
+  // Use Baileys' normalizeMessageContent to unwrap the message
+  const normalized = normalizeMessageContent(message);
+  if (!normalized) return null;
+  
+  const mediaTypes = [
+    { type: 'image', key: 'imageMessage' },
+    { type: 'video', key: 'videoMessage' },
+    { type: 'sticker', key: 'stickerMessage' },
+    { type: 'audio', key: 'audioMessage' },
+    { type: 'document', key: 'documentMessage' },
+  ];
+  
+  for (const { type, key } of mediaTypes) {
+    const mediaNode = normalized[key];
+    if (mediaNode) {
+      const mimetype = cleanMimeType(mediaNode.mimetype) || 'application/octet-stream';
+      const filename = mediaNode.fileName || mediaNode.filename || `whatsapp-${Date.now()}`;
+      const caption = mediaNode.caption || '';
+      const isVoiceNote = type === 'audio' && (mediaNode.ptt || mimetype === 'audio/ogg' || mimetype === 'audio/opus');
+      
+      return {
+        type: isVoiceNote ? 'ptt' : type,
+        mimetype,
+        filename,
+        caption,
+        isVoiceNote,
+        ptt: mediaNode.ptt,
+      };
+    }
+  }
+  
+  return null;
+}
+
+/**
+ * Detect media type from message
+ * Returns the media type or null
+ */
+function detectMediaType(message) {
+  if (!message) return null;
+  
+  const mediaInfo = getMediaInfo(message);
+  return mediaInfo?.type || null;
+}
+
+/**
  * Convert MessageMedia to Baileys payload
  * Handles sticker metadata (pack name, author) properly
  */
@@ -122,8 +195,11 @@ export function toBaileysMediaPayload(content, options = {}) {
   const extension = path.extname(filename).toLowerCase();
   const caption = options.caption ?? content.caption;
   const mentions = options.mentions || content.mentions;
-  const common = {};
   
+  const common = {};
+  if (caption) common.caption = String(caption);
+  if (Array.isArray(mentions) && mentions.length) common.mentions = mentions;
+
   // Sticker metadata
   const packName = options.packName || options.stickerPack || content.packName || 'AniChan';
   const author = options.author || options.stickerAuthor || content.author || 'AniChan Bot';
@@ -131,9 +207,6 @@ export function toBaileysMediaPayload(content, options = {}) {
   const circle = options.circle !== undefined ? options.circle : false;
   const removeBackground = options.removeBackground !== undefined ? options.removeBackground : false;
   
-  if (caption) common.caption = String(caption);
-  if (Array.isArray(mentions) && mentions.length) common.mentions = mentions;
-
   if (options.sendMediaAsSticker || options.sticker || (mimetype === 'image/webp' && options.asSticker)) {
     return {
       sticker: buffer,
@@ -155,6 +228,7 @@ export function toBaileysMediaPayload(content, options = {}) {
   }
   if (mimetype.startsWith('audio/')) {
     // Proper voice note detection: use explicit ptt flag, not just MIME type
+    // audio/ogg and audio/opus are common for voice notes, but we need explicit confirmation
     const isVoiceNote = Boolean(
       options.sendAudioAsVoice || 
       options.ptt || 
@@ -174,77 +248,9 @@ export function toBaileysMediaPayload(content, options = {}) {
 }
 
 /**
- * Detect media type from normalized message content
- * Handles wrapped media (ephemeral, viewOnce, edited, etc.)
+ * Download media from Baileys message
+ * Handles wrapped media (ephemeral, viewOnce, edited)
  */
-function detectMediaType(message) {
-  if (!message) return null;
-  
-  // Use Baileys' normalizeMessageContent to unwrap the message
-  const normalized = normalizeMessageContent(message);
-  if (!normalized) return null;
-  
-  // Check for media types in order of priority
-  const mediaTypes = [
-    { type: 'image', key: 'imageMessage' },
-    { type: 'video', key: 'videoMessage' },
-    { type: 'sticker', key: 'stickerMessage' },
-    { type: 'audio', key: 'audioMessage' },
-    { type: 'document', key: 'documentMessage' },
-  ];
-  
-  for (const { type, key } of mediaTypes) {
-    if (normalized[key]) {
-      // For audio, check if it's a voice note
-      if (type === 'audio' && normalized.audioMessage?.ptt) {
-        return 'ptt';
-      }
-      return type;
-    }
-  }
-  
-  return null;
-}
-
-/**
- * Get media info from message
- * Handles wrapped media properly
- */
-function getMediaInfo(message) {
-  if (!message) return null;
-  
-  const normalized = normalizeMessageContent(message);
-  if (!normalized) return null;
-  
-  const mediaTypes = [
-    { type: 'image', key: 'imageMessage' },
-    { type: 'video', key: 'videoMessage' },
-    { type: 'sticker', key: 'stickerMessage' },
-    { type: 'audio', key: 'audioMessage' },
-    { type: 'document', key: 'documentMessage' },
-  ];
-  
-  for (const { type, key } of mediaTypes) {
-    const mediaNode = normalized[key];
-    if (mediaNode) {
-      const mimetype = cleanMimeType(mediaNode.mimetype) || 'application/octet-stream';
-      const filename = mediaNode.fileName || `whatsapp-${Date.now()}`;
-      const caption = mediaNode.caption || '';
-      const isVoiceNote = type === 'audio' && (mediaNode.ptt || mimetype === 'audio/ogg');
-      
-      return {
-        type: isVoiceNote ? 'ptt' : type,
-        mimetype,
-        filename,
-        caption,
-        isVoiceNote,
-      };
-    }
-  }
-  
-  return null;
-}
-
 export async function downloadBaileysMedia(sock, message) {
   if (!sock) throw new Error('WhatsApp socket is not initialized.');
   
@@ -265,6 +271,10 @@ export async function downloadBaileysMedia(sock, message) {
   return new MessageMedia(mediaInfo.mimetype, buffer, mediaInfo.filename);
 }
 
+/**
+ * WhatsApp Media Service
+ * Central service for all media operations
+ */
 class WhatsAppMediaService {
   constructor() {
     this.sock = null;
@@ -285,10 +295,15 @@ class WhatsAppMediaService {
     return downloadBaileysMedia(this.getSock(), message);
   }
 
+  /**
+   * Send message - central method for all media sending
+   * All send methods eventually flow through here
+   */
   async sendMessage(jid, content, options = {}) {
     const sock = this.getSock();
     const sendOptions = forwardingOptions(options);
     const mediaPayload = toBaileysMediaPayload(content, options);
+    
     if (mediaPayload) {
       const result = await sock.sendMessage(jid, mediaPayload, sendOptions);
       if (result?.key) this.onSent?.(result.key, result);
@@ -321,6 +336,11 @@ class WhatsAppMediaService {
 
   async sendAudio(jid, audio, options = {}) {
     const media = await this.resolveMedia(audio, options, options.mimetype || 'audio/mpeg');
+    // Explicitly mark as non-voice note unless specified
+    if (!options.ptt && !options.isVoiceNote && !options.sendAudioAsVoice) {
+      // This is regular audio, not a voice note
+      return this.sendMessage(jid, media, { ...options, ptt: false });
+    }
     return this.sendMessage(jid, media, options);
   }
 
@@ -360,3 +380,5 @@ class WhatsAppMediaService {
 
 const media = new WhatsAppMediaService();
 export default media;
+
+export { hasMedia, getMediaInfo, detectMediaType };

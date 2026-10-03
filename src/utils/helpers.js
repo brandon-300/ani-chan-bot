@@ -1,4 +1,4 @@
-// ━━━ Format Numbers ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Format Numbers
 // Fancy Unicode text (used by .profile, .feedback, etc.)
 // Generated from plain ASCII at runtime instead of hardcoding the actual
 // glyphs in source — same visual result, but avoids any risk of a
@@ -32,7 +32,7 @@ function doubleStruck(text) {
   }).join('');
 }
 
-// ━━━ AniList description sanitizer ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// AniList description sanitizer
 // AniList character descriptions come formatted with AniList's own markdown
 // (bold/italic/strikethrough, spoiler markers, and — the one that was
 // showing up raw in card views — [label](url) links to other AniList
@@ -70,7 +70,7 @@ function formatNum(n) {
   return String(n);
 }
 
-// ━━━ Flexible Amount Parsing (K/M/B shorthand) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Flexible Amount Parsing (K/M/B shorthand)
 // Accepts plain integers ("50000") as well as shorthand people actually type
 // on a phone keyboard ("50k", "1.5m", "2B"), case-insensitive, with optional
 // thousands separators ("1,500,000"). Returns a positive integer (rounded)
@@ -89,7 +89,7 @@ function parseAmount(input) {
   return value > 0 ? value : null;
 }
 
-// ━━━ Cooldown Helper ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Cooldown Helper
 function formatCooldown(ms) {
   const h = Math.floor(ms / 3_600_000);
   const m = Math.floor((ms % 3_600_000) / 60_000);
@@ -101,7 +101,7 @@ function formatCooldown(ms) {
   return parts.join(' ') || '0s';
 }
 
-// ━━━ Date of Birth Parsing & Age Calculation (.setdob) ━━━━━━━━━━━━━━━━━━━━━━
+// Date of Birth Parsing & Age Calculation (.setdob)
 // Single source of truth for both — used by commands/economy.js's .setdob.
 // Strict DD/MM/YYYY only (matches the format shown in the .setdob usage text
 // and the registration instructions below), parsed/validated in UTC to avoid
@@ -118,10 +118,6 @@ function parseDobInput(input) {
   if (year < 1900) return null;
 
   const date = new Date(Date.UTC(year, month - 1, day));
-  // Date.UTC silently rolls invalid days over into the next month (e.g. Feb
-  // 30 -> Mar 2) instead of throwing — re-reading the parts back off the
-  // constructed date and comparing catches that instead of silently
-  // accepting a bogus date.
   if (
     date.getUTCFullYear() !== year ||
     date.getUTCMonth() !== month - 1 ||
@@ -129,15 +125,11 @@ function parseDobInput(input) {
   ) {
     return null;
   }
-  if (date.getTime() > Date.now()) return null; // no future dates
+  if (date.getTime() > Date.now()) return null;
 
   return date;
 }
 
-// Calendar-accurate age — accounts for whether this year's birthday has
-// actually happened yet, not just a plain year subtraction (someone born
-// Sept 20 is still one year younger than that on Sept 5 of what would
-// otherwise look like their birthday year).
 function calculateAge(dob, now = new Date()) {
   let age = now.getUTCFullYear() - dob.getUTCFullYear();
   const hadBirthdayThisYear =
@@ -147,14 +139,12 @@ function calculateAge(dob, now = new Date()) {
   return age;
 }
 
-// ━━━ Registration Steps (.setname/.setdob/.bio/.setpic, commands/economy.js) ━━━
+// Registration Steps (.setname/.setdob/.bio/.setpic, commands/economy.js)
 // Single source of truth for what counts as a "complete" profile and how to
 // describe outstanding steps — read by BOTH the registration gate in
 // index.js (deciding whether to block a command for an incomplete account)
 // and the registration commands themselves in commands/economy.js (the
-// "here's what's left" nudge after each step). Keeping this in one place
-// means the step list, its commands, and its wording can never silently
-// drift between the two call sites.
+// "here's what's left" nudge after each step).
 function registrationSteps(user) {
   const reg = (user && user.registration) || {};
   return [
@@ -169,16 +159,6 @@ function isRegistrationComplete(user) {
   return registrationSteps(user).every(s => s.done);
 }
 
-// The authoritative "is this a verified adult" check — for anything gating
-// content by age (currently: commands/nsfw.js), not just registration
-// completeness. Deliberately does NOT read user.age: that field is
-// user-settable via the legacy .setage command and isn't proof of
-// anything. registration.dobSet only ever gets set to true by .setdob
-// after it already confirmed age >= MIN_REGISTRATION_AGE at the time
-// (see commands/economy.js), and re-deriving the age from user.dob here
-// (rather than trusting that one-time historical check forever) means
-// raising MIN_REGISTRATION_AGE later automatically re-applies to
-// everyone already registered, not just new signups.
 function isVerifiedAdult(user) {
   if (!user || !user.registration || !user.registration.dobSet || !user.dob) return false;
   return calculateAge(user.dob) >= MIN_REGISTRATION_AGE;
@@ -197,17 +177,17 @@ function buildRegistrationIntroText(botName) {
     `You must be 18 or older to register. Once you complete the existing profile steps, I'll activate your account and show you the command menu.`;
 }
 
-// ━━━ Random Range ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Random Range
 function rand(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
-// ━━━ Pick Random from Array ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Pick Random from Array
 function pick(arr) {
   return arr[Math.floor(Math.random() * arr.length)];
 }
 
-// ━━━ Safe Chat Fetch (with retries) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Safe Chat Fetch (with retries)
 // msg.getChat() occasionally throws a generic WhatsApp-internal error when the
 // connection is momentarily unstable. Usually transient, so retry a couple
 // times with increasing backoff before giving up.
@@ -222,7 +202,7 @@ async function safeGetChat(msg, retries = 2) {
   }
 }
 
-// ━━━ Safe Quoted-Message Fetch (with retries) ━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Safe Quoted-Message Fetch (with retries)
 async function safeGetQuotedMessage(msg, retries = 2) {
   for (let attempt = 0; ; attempt++) {
     try {
@@ -234,7 +214,7 @@ async function safeGetQuotedMessage(msg, retries = 2) {
   }
 }
 
-// ━━━ Safe Contact Fetch (with retries) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Safe Contact Fetch (with retries)
 // msg.getContact() can hit the same transient WhatsApp-internal glitch as
 // getChat()/getQuotedMessage() above. Same retry-with-backoff pattern.
 async function safeGetContact(msg, retries = 2) {
@@ -248,12 +228,11 @@ async function safeGetContact(msg, retries = 2) {
   }
 }
 
-// ━━━ Generic Retry Wrapper ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Generic Retry Wrapper
 // Same retry-with-backoff shape as safeGetChat/safeGetQuotedMessage/
 // safeGetContact above, generalized for anything else that can hit a
 // transient failure on an unstable connection — most notably MongoDB
-// operations, which see the same kind of momentary timeout as WhatsApp's own
-// calls do.
+// operations.
 async function withRetry(fn, retries = 2) {
   for (let attempt = 0; ; attempt++) {
     try {
@@ -265,13 +244,10 @@ async function withRetry(fn, retries = 2) {
   }
 }
 
-// ━━━ Robust sender display-name resolution ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Robust sender display-name resolution
 // WhatsApp's "LID" (Linked ID) privacy layer means group participants can
-// show up as "@lid" instead of their phone number, and the identity service
+// show up as "@lid" instead of their phone number. The identity service
 // now properly handles both LID and PN formats.
-//
-// This resolves a display name using the identity service which handles
-// LID/PN resolution correctly.
 async function resolveSenderName(msg, client) {
   const senderId = msg.author || msg.from || '';
 
@@ -290,7 +266,7 @@ async function resolveSenderName(msg, client) {
   }
 }
 
-// ━━━ Check if user is group admin ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Check if user is group admin
 async function isAdmin(msg) {
   try {
     const chatId = msg?.chatId || msg?.from;
@@ -318,7 +294,7 @@ async function botIsAdmin(msg) {
   }
 }
 
-// ━━━ XP & Level ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// XP & Level
 // XP granted per action. Numbers are a starting point — tune freely, nothing
 // else needs to change since every caller reads from this one table.
 const XP_REWARDS = {
@@ -339,8 +315,7 @@ const XP_REWARDS = {
 // Levels still each cost `level * 100` XP to clear (unchanged from before):
 // the gap between consecutive thresholds is
 //   xpNeededForLevel(N+1) - xpNeededForLevel(N) = 50*N*(N+1) - 50*N*(N-1) = 100*N
-// which is exactly the old per-level cost. Level 1 = 0, Level 2 = 100,
-// Level 3 = 300, Level 4 = 600, Level 5 = 1000, etc.
+// which is exactly the old per-level cost.
 function xpNeededForLevel(level) {
   return 50 * level * (level - 1);
 }
@@ -355,7 +330,7 @@ async function addXP(userId, amount) {
   const user = await User.findOne({ id: userId });
   if (!user) return { levelUp: false };
   const startingLevel = user.level;
-  user.xp += amount; // cumulative — never decremented, see note above
+  user.xp += amount;
   while (user.xp >= xpNeededForLevel(user.level + 1)) {
     user.level += 1;
     user.coins += user.level * 200;
@@ -365,7 +340,7 @@ async function addXP(userId, amount) {
   return { levelUp, level: user.level };
 }
 
-// ━━━ Card Tier Roll ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Card Tier Roll
 // Cumulative drop-rate thresholds, single source of truth for rollTier() below
 // AND for the .tier command (commands/cards.js), which displays these odds to
 // users. Exported (rather than kept as private magic numbers inside rollTier)
@@ -391,15 +366,15 @@ function rollTier() {
   for (const { tier, cumulative } of TIER_DROP_RATES) {
     if (r < cumulative) return tier;
   }
-  return TIER_DROP_RATES[TIER_DROP_RATES.length - 1].tier; // r === 100 edge case
+  return TIER_DROP_RATES[TIER_DROP_RATES.length - 1].tier;
 }
 
-// ━━━ Tier Emoji ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Tier Emoji
 function tierEmoji(tier) {
   return { C: '\u26aa', B: '\ud83d\udfe2', A: '\ud83d\udd35', S: '\ud83d\udfe1', SS: '\ud83d\udfe0', SSS: '\ud83d\udd34' }[tier] || '\u26aa';
 }
 
-// ━━━ Card Value by Tier ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Card Value by Tier
 // Canonical ascending tier order — lowest to highest. Used by fusion (Phase
 // 10) to find "the tier above" a given card.
 const TIER_ORDER = ['C', 'B', 'A', 'S', 'SS', 'SSS'];
@@ -407,7 +382,7 @@ const TIER_ORDER = ['C', 'B', 'A', 'S', 'SS', 'SSS'];
 function tierAbove(tier, steps = 1) {
   const i = TIER_ORDER.indexOf(tier);
   if (i === -1) return null;
-  return TIER_ORDER[i + steps] || null; // null if already at/above the top
+  return TIER_ORDER[i + steps] || null;
 }
 
 // Baseline coin value per tier. Used by .cardinfo, leaderboards, and auctions
@@ -426,10 +401,10 @@ function cardValue(tier) {
 }
 
 function mentionName(contact) {
-  return contact.name || contact.pushname || contact.number || 'Unknown';
+  return contact.name || contact.pushname || contact.number || contact.id?.user || 'Unknown';
 }
 
-// ━━━ Real WhatsApp @mention text ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Real WhatsApp @mention text
 // A message only gets an actual tappable @mention when its TEXT contains "@"
 // followed by the exact digits from the contact's JID (contact.id.user) —
 // that's what WhatsApp itself matches against the separate `mentions` array
@@ -438,11 +413,22 @@ function mentionName(contact) {
 // as "@${mentionName(c)}" it looks like a mention but isn't one, since the
 // digits WhatsApp needs aren't actually there; it just prints as plain text.
 // Use this whenever the goal is a real, tappable mention.
+//
+// For Baileys v7 with LID support: we need to extract the numeric part
+// from either PN or LID format
 function mentionTag(contact) {
-  return contact.id.user;
+  if (!contact) return '';
+  
+  // Handle both PN and LID formats
+  const userId = contact.id?.user || contact.number || contact.id?._serialized || '';
+  
+  // Extract just the numeric part (remove @lid or @s.whatsapp.net)
+  const numericPart = String(userId).split('@')[0].split(':')[0];
+  
+  return numericPart;
 }
 
-// ━━━ Owner/Mod Identification ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Owner/Mod Identification
 // Use the identity service which properly handles both LID and PN formats
 function isOwner(id) {
   return identity.isOwner(id);
@@ -461,7 +447,7 @@ function isMod(id) {
   return identity.isMod(id) || isOwner(id);
 }
 
-// ━━━ Map-Safe Key Encoding ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Map-Safe Key Encoding
 // Mongoose's Map schema type hard-rejects any key containing "." — it throws
 // 'Mongoose maps do not support keys that contain "."' from checkValidKey()
 // any time a Map value is fully cast (.set() on a document, $set updates).
