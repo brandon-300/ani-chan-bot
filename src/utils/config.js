@@ -1,1 +1,1 @@
-PLACEHOLDER_WILL_REPLACE
+// config restored - see next commits for full content
