@@ -663,10 +663,15 @@ class SocketManager {
 
   /**
    * Normalize Baileys message to match expected format
+   * Handles ALL Baileys v7 message types including wrapped messages
    */
   normalizeMessage(baileysMsg) {
     const key = baileysMsg?.key || {};
-    const message = normalizeMessageContent(baileysMsg?.message) || baileysMsg?.message || {};
+    
+    // Use Baileys' normalizeMessageContent to unwrap ephemeral, viewOnce, edited messages
+    const rawMessage = baileysMsg?.message || {};
+    const message = normalizeMessageContent(rawMessage) || rawMessage || {};
+    
     const remoteJid = key.remoteJid || '';
     const isGroup = remoteJid.endsWith('@g.us');
     const fromMe = Boolean(key.fromMe);
@@ -675,6 +680,7 @@ class SocketManager {
     const participant = baileysMsg.participant || key.participant || (isGroup ? undefined : remoteJid);
     const author = isGroup ? participant : (fromMe ? this.getWid() || remoteJid : remoteJid);
     
+    // Extract contextInfo from the unwrapped message
     const contextInfo = Object.values(message).find(value => value && typeof value === 'object' && value.contextInfo)?.contextInfo || {};
     const mentionedIds = contextInfo.mentionedJid || contextInfo.mentionedIds || [];
     
@@ -685,26 +691,137 @@ class SocketManager {
     let body = '';
     let type = 'chat';
     let hasMedia = false;
+    let isEphemeral = false;
+    let isViewOnce = false;
+    let isEdited = false;
+    let isProtocol = false;
     
-    // Check all possible message types, including wrapped ones
-    const candidates = [
-      ['imageMessage', 'image'], ['videoMessage', 'video'], ['stickerMessage', 'sticker'],
-      ['audioMessage', 'audio'], ['documentMessage', 'document'], ['reactionMessage', 'reaction'],
-      ['buttonsResponseMessage', 'buttons_response'], ['listResponseMessage', 'list_response'],
+    // Check for wrapped message types first
+    if (rawMessage.ephemeralMessage) {
+      isEphemeral = true;
+      // The actual message is inside ephemeralMessage
+    }
+    if (rawMessage.viewOnceMessage) {
+      isViewOnce = true;
+      // The actual message is inside viewOnceMessage
+    }
+    if (rawMessage.editedMessage) {
+      isEdited = true;
+      // The actual message is inside editedMessage
+    }
+    
+    // Detect protocol messages
+    if (message.protocolMessage) {
+      isProtocol = true;
+      type = 'protocol';
+    }
+    
+    // Check all possible message types on the unwrapped message
+    const mediaTypes = [
+      ['imageMessage', 'image'],
+      ['videoMessage', 'video'],
+      ['stickerMessage', 'sticker'],
+      ['audioMessage', 'audio'],
+      ['documentMessage', 'document'],
+      ['reactionMessage', 'reaction'],
+    ];
+    
+    const interactiveTypes = [
+      ['buttonsResponseMessage', 'buttons_response'],
+      ['listResponseMessage', 'list_response'],
       ['templateButtonReplyMessage', 'template_button_reply'],
     ];
     
-    if (message.conversation) body = message.conversation;
-    else if (message.extendedTextMessage) body = message.extendedTextMessage.text || '';
-    else {
-      for (const [keyName, messageType] of candidates) {
+    const locationTypes = [
+      ['locationMessage', 'location'],
+      ['liveLocationMessage', 'live_location'],
+    ];
+    
+    const contactTypes = [
+      ['contactMessage', 'contact'],
+      ['contactsArrayMessage', 'contacts'],
+    ];
+    
+    const pollTypes = [
+      ['pollCreationMessage', 'poll'],
+      ['pollUpdateMessage', 'poll_update'],
+    ];
+    
+    const groupTypes = [
+      ['groupInviteMessage', 'group_invite'],
+    ];
+    
+    if (message.conversation) {
+      body = message.conversation;
+    } else if (message.extendedTextMessage) {
+      body = message.extendedTextMessage.text || '';
+    } else {
+      // Check media types
+      for (const [keyName, messageType] of mediaTypes) {
         const node = message[keyName];
         if (!node) continue;
         type = messageType;
         if (['image', 'video', 'sticker', 'audio', 'document'].includes(messageType)) hasMedia = true;
         if (messageType === 'audio' && node.ptt) type = 'ptt';
-        body = node.caption || node.text || node.selectedButtonId || node.selectedRowId || node.selectedId || '';
+        body = node.caption || node.text || '';
         break;
+      }
+      
+      // Check interactive types
+      if (type === 'chat') {
+        for (const [keyName, messageType] of interactiveTypes) {
+          const node = message[keyName];
+          if (!node) continue;
+          type = messageType;
+          body = node.selectedButtonId || node.selectedRowId || node.selectedId || '';
+          break;
+        }
+      }
+      
+      // Check location types
+      if (type === 'chat') {
+        for (const [keyName, messageType] of locationTypes) {
+          const node = message[keyName];
+          if (!node) continue;
+          type = messageType;
+          if (node.degreesLatitude !== undefined && node.degreesLongitude !== undefined) {
+            body = `Location: ${node.degreesLatitude}, ${node.degreesLongitude}`;
+          }
+          break;
+        }
+      }
+      
+      // Check contact types
+      if (type === 'chat') {
+        for (const [keyName, messageType] of contactTypes) {
+          const node = message[keyName];
+          if (!node) continue;
+          type = messageType;
+          body = node.displayName || node.vcard || '';
+          break;
+        }
+      }
+      
+      // Check poll types
+      if (type === 'chat') {
+        for (const [keyName, messageType] of pollTypes) {
+          const node = message[keyName];
+          if (!node) continue;
+          type = messageType;
+          body = node.name || node.pollCreationMessage?.name || '';
+          break;
+        }
+      }
+      
+      // Check group invite types
+      if (type === 'chat') {
+        for (const [keyName, messageType] of groupTypes) {
+          const node = message[keyName];
+          if (!node) continue;
+          type = messageType;
+          body = node.groupJid || node.inviteCode || '';
+          break;
+        }
       }
     }
 
@@ -744,6 +861,11 @@ class SocketManager {
       // LID/PN alternate identifiers
       remoteJidAlt,
       participantAlt,
+      // Wrapper flags
+      isEphemeral,
+      isViewOnce,
+      isEdited,
+      isProtocol,
     };
 
     normalized.reply = async (content, chatId, options = {}) =>
