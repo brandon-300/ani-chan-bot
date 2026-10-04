@@ -210,7 +210,13 @@ class IdentityService {
     }
     // Baileys may include a device suffix in a participant JID. Strip only
     // that device marker; preserve LID and group JIDs exactly otherwise.
-    return clean.replace(/:\d+(?=@)/, '');
+    const withoutDevice = clean.replace(/:\d+(?=@)/, '');
+    // "@c.us" is the whatsapp-web.js spelling of a phone-number id. The same
+    // .env and MongoDB are shared with that codebase, so OWNER_NUMBER, MOD_NUMBERS
+    // and stored ids may still use it. Baileys addresses the same account as
+    // "@s.whatsapp.net", so map one to the other here: owner checks and sends
+    // then work with either spelling.
+    return withoutDevice.replace(/@c\.us$/, '@s.whatsapp.net');
   }
 
   /**

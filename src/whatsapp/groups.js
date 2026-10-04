@@ -6,8 +6,9 @@
 import socketManager from './socket.js';
 import identity from './identity.js';
 import pino from 'pino';
+import { WHATSAPP_LOG_LEVEL } from '../utils/config.js';
 
-const logger = pino({ level: process.env.LOG_LEVEL || 'silent' });
+const logger = pino({ level: WHATSAPP_LOG_LEVEL });
 
 /**
  * Groups Service

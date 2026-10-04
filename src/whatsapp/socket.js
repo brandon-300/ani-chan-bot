@@ -13,10 +13,11 @@ import pino from 'pino';
 import { downloadBaileysMedia, toBaileysMediaPayload } from './media.js';
 import authManager from './auth.js';
 import identity from './identity.js';
+import { WHATSAPP_LOG_LEVEL } from '../utils/config.js';
 
 // Logger configuration
 const logger = pino({
-  level: process.env.LOG_LEVEL || 'silent',
+  level: WHATSAPP_LOG_LEVEL,
 });
 
 // Simple in-memory cache for message retry (Termux compatible)
@@ -674,7 +675,7 @@ class SocketManager {
       },
       downloadMedia: async () => {
         if (!hasMedia) return null;
-        return downloadBaileysMedia(baileysMsg, this.sock);
+        return downloadBaileysMedia(this.sock, baileysMsg);
       },
       getQuotedMessage: async () => {
         if (!quoted || !quotedId) return null;
@@ -693,7 +694,7 @@ class SocketManager {
       getChat: async () => {
         const groups = (await import('./groups.js')).default;
         if (isGroup) {
-          return groups.getGroupMetadata(remoteJid);
+          return groups.getGroup(remoteJid);
         }
         return { id: { _serialized: remoteJid }, isGroup: false };
       },

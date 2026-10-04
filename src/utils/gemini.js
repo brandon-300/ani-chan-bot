@@ -120,8 +120,10 @@ function buildGenerationConfig(maxOutputTokens) {
 // doesn't need a heavier model and specifically wants a lighter one with a
 // more generous free-tier request quota. Optional and defaults to
 // TEXT_MODEL, so every existing call site (ai.js, etc.) is unaffected.
-async function generateText({ systemPrompt, history = [], prompt, maxOutputTokens = 2048, model = TEXT_MODEL }) {
-  geminiGate.assertAvailable();
+// bypassGate is set only by the background sticker-analysis queue, the one
+// caller allowed to use Gemini while it is reserved (see utils/geminiGate.js).
+async function generateText({ systemPrompt, history = [], prompt, maxOutputTokens = 2048, model = TEXT_MODEL, bypassGate = false }) {
+  geminiGate.assertAvailable({ bypass: bypassGate });
   assertKey();
 
   const contents = history.map(h => ({

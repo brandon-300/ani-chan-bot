@@ -96,11 +96,11 @@ function createReactionHandler({
   schedule = defaultSchedule,
 } = {}) {
   const cfg = {
-    enabled: settings.enabled ?? config.AI_REACTIONS_ENABLED ?? true,
-    chance: settings.chance ?? config.AI_REACTION_CHANCE ?? 0.55,
-    cooldownMs: settings.cooldownMs ?? config.AI_REACTION_COOLDOWN_MS ?? 8000,
-    delayMinMs: settings.delayMinMs ?? config.AI_REACTION_DELAY_MIN_MS ?? 600,
-    delayMaxMs: settings.delayMaxMs ?? config.AI_REACTION_DELAY_MAX_MS ?? 2200,
+    enabled: settings.enabled ?? config.AI_REACT_TO_REACTIONS ?? true,
+    chance: settings.chance ?? config.AI_REACT_CHANCE ?? 0.6,
+    cooldownMs: settings.cooldownMs ?? config.AI_REACT_COOLDOWN_MS ?? 15000,
+    delayMinMs: settings.delayMinMs ?? config.AI_REACT_DELAY_MIN_MS ?? 1500,
+    delayMaxMs: settings.delayMaxMs ?? config.AI_REACT_DELAY_MAX_MS ?? 6000,
   };
 
   const lastReactionByChat = new Map();
@@ -179,7 +179,7 @@ function createBaileysReactionAdapter(client, ledger) {
   };
 }
 
-export { normalizeReaction };
+export { normalizeReaction, createReactionHandler, createBaileysReactionAdapter, pickReactionEmoji };
 
 export default {
   createReactionHandler,

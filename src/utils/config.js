@@ -206,6 +206,25 @@ const AI_STICKER_ANALYSIS_VERSION = positiveEnvInt('AI_STICKER_ANALYSIS_VERSION'
 const AI_STICKER_MATCH_THRESHOLD = positiveEnvInt('AI_STICKER_MATCH_THRESHOLD', 18);
 const AI_STICKER_MIN_PERSONA_FIT = Math.max(0, Math.min(1, Number(process.env.AI_STICKER_MIN_PERSONA_FIT ?? 0.6) || 0.6));
 const AI_STICKER_ANALYSIS_DELAY_MS = envInt('AI_STICKER_ANALYSIS_DELAY_MS', 8000);
+// Sticker analysis batching (only used when the owner runs .stickeranalyze).
+// One Gemini request covers many stickers and every persona at once:
+//   FIT_BATCH    stickers judged per text request (all personas included)
+//   VISION_BATCH stickers looked at per image request, only for stickers that
+//                have no description yet (one look is shared by all personas)
+// A library of N stickers costs about N/FIT_BATCH requests to analyse.
+const AI_STICKER_FIT_BATCH = positiveEnvInt('AI_STICKER_FIT_BATCH', 20);
+const AI_STICKER_VISION_BATCH = positiveEnvInt('AI_STICKER_VISION_BATCH', 6);
+
+// ─── Baileys / pino log level ───────────────────────────────────────────────
+// The bot's own logger (utils/logger.js) takes LOG_LEVEL=ERROR|WARN|INFO|DEBUG.
+// pino, which Baileys uses internally, ONLY accepts lowercase names and throws
+// on anything else - so passing LOG_LEVEL=INFO straight to pino crashed the bot
+// at startup. This is a separate setting for the WhatsApp layer. It defaults to
+// silent (Baileys is very chatty), and an unknown value falls back to silent
+// instead of crashing. Valid: fatal, error, warn, info, debug, trace, silent.
+const PINO_LEVELS = ['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'];
+const configuredWhatsappLogLevel = String(process.env.WHATSAPP_LOG_LEVEL || '').trim().toLowerCase();
+const WHATSAPP_LOG_LEVEL = PINO_LEVELS.includes(configuredWhatsappLogLevel) ? configuredWhatsappLogLevel : 'silent';
 
 // ─── Gemini quota protection ────────────────────────────────────────────────
 // When Gemini reports the quota is used up, the background sticker-analysis
@@ -258,6 +277,9 @@ export default {
   AI_STICKER_MATCH_THRESHOLD,
   AI_STICKER_MIN_PERSONA_FIT,
   AI_STICKER_ANALYSIS_DELAY_MS,
+  AI_STICKER_FIT_BATCH,
+  AI_STICKER_VISION_BATCH,
+  WHATSAPP_LOG_LEVEL,
   AI_STICKER_QUOTA_COOLDOWN_MS,
   AI_STICKER_QUOTA_MAX_COOLDOWN_MS,
   GEMINI_PAUSE_DURING_STICKER_ANALYSIS,
@@ -311,6 +333,9 @@ export {
   AI_STICKER_MATCH_THRESHOLD,
   AI_STICKER_MIN_PERSONA_FIT,
   AI_STICKER_ANALYSIS_DELAY_MS,
+  AI_STICKER_FIT_BATCH,
+  AI_STICKER_VISION_BATCH,
+  WHATSAPP_LOG_LEVEL,
   AI_STICKER_QUOTA_COOLDOWN_MS,
   AI_STICKER_QUOTA_MAX_COOLDOWN_MS,
   GEMINI_PAUSE_DURING_STICKER_ANALYSIS,

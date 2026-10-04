@@ -10,11 +10,11 @@ import { toBaileysMediaPayload } from './media.js';
 import socketManager from './socket.js';
 import identity from './identity.js';
 import pino from 'pino';
-import { BOT_NAME } from '../utils/config.js';
+import { BOT_NAME, WHATSAPP_LOG_LEVEL } from '../utils/config.js';
 import { getActivePersonaSafe, loadPersona } from '../utils/persona.js';
 import { Sticker, StickerTypes } from 'wa-sticker-formatter';
 
-const logger = pino({ level: process.env.LOG_LEVEL || 'silent' });
+const logger = pino({ level: WHATSAPP_LOG_LEVEL });
 
 /**
  * Extract message key from various message formats

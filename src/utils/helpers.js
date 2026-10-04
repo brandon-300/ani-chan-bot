@@ -463,6 +463,55 @@ function decodeIdKey(key) {
   return String(key).replace(/~/g, '.');
 }
 
+// Resolve a display name from a bare WhatsApp id
+// Used wherever the bot only has an id (leaderboards, guild rosters, game
+// lobbies, .mods) and still needs something readable to print. Order:
+//   1. the name the user registered with the bot (Mongo User.name)
+//   2. whatever the Baileys identity service knows (push names seen in chats
+//      and group participant lists, remembered via identity.rememberContact)
+//   3. the number part of the id
+// Never throws — a name lookup must not be able to break the command that
+// asked for it.
+async function resolveNameById(client, id) {
+  if (!id) return 'Unknown';
+  try {
+    const user = await User.findOne({ id });
+    if (user?.name && user.name !== 'Unknown') return user.name;
+  } catch (err) {
+    console.error('resolveNameById: User lookup failed:', err.message);
+  }
+  try {
+    const contact = await client.getContactById(id);
+    // Same guard the whatsapp-web.js version had: never trust a contact that
+    // claims to be the bot ("isMe") unless the id we looked up really was the
+    // bot's own id, otherwise someone else would be shown with the bot's name.
+    const myId = client?.info?.wid?._serialized;
+    if (contact && !(contact.isMe && id !== myId)) {
+      const name = mentionName(contact);
+      if (name && name !== 'Unknown') return name;
+    }
+  } catch (err) {
+    // Not fatal — an id the bot can't resolve falls through to the number below.
+  }
+  return String(id).split('@')[0].split(':')[0] || 'Unknown';
+}
+
+// Unique Short Code Generation (card codes, listing codes)
+// Random 6-character code that doesn't collide with anything already stored
+// in `Model[field]`. The alphabet skips look-alike characters (0/O, 1/I) so
+// codes survive being typed on a phone. Used by commands/cards.js for owned
+// card codes.
+async function generateUniqueCode(Model, field = 'code') {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let code;
+  let exists = true;
+  while (exists) {
+    code = Array.from({ length: 6 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+    exists = await Model.findOne({ [field]: code });
+  }
+  return code;
+}
+
 // Export all helper functions
 export {
   boldSans,
@@ -504,4 +553,6 @@ export {
   isMod,
   encodeIdKey,
   decodeIdKey,
+  resolveNameById,
+  generateUniqueCode,
 };

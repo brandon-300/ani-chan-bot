@@ -10,7 +10,7 @@
 import AiConversation from '../models/AiConversation.js';
 import aiReactions from './aiReactions.js';
 import { getActivePersonaSafe } from './persona.js';
-import { BOT_OWNER } from './config.js';
+import { BOT_OWNER, AI_MESSAGE_MEMORY_MS, AI_MESSAGE_MEMORY_MAX } from './config.js';
 
 // Fish Audio expression tags that should be filtered out for TTS
 // These are internal control codes that shouldn't be spoken aloud
@@ -44,45 +44,107 @@ function isBotOwner(senderId) {
 }
 
 /**
- * Track AI sent messages for reaction detection
+ * Ledger of messages the AI itself sent.
+ *
+ * A reaction event only says "someone reacted to message X". To react back only
+ * to the AI's own replies, voice notes, images and stickers (and not to every
+ * message the bot account ever sent), the AI output paths record each sent
+ * message here.
+ *
+ * In-memory only, bounded by age and size: after a restart, reactions to older
+ * messages are simply ignored. Nothing here touches the network or MongoDB.
  */
-const aiSentMessages = new Map();
+const aiSentMessages = new Map(); // message id -> { msg, kind, personaId, at, reactedAt, ... }
+let clock = () => Date.now();
 
 /**
- * Remember an AI sent message for reaction tracking
+ * Message id from whatever the caller has: an id string, a Baileys message or
+ * key ({ key: { id } } / { id, remoteJid }), or the older { id: { _serialized } }.
  */
-function remember(msg, kind, personaId = 'default') {
-  if (!msg || !msg.id) return;
-  
-  const key = msg.id._serialized || msg.id;
-  aiSentMessages.set(key, {
+function serializedId(sent) {
+  if (!sent) return null;
+  if (typeof sent === 'string') return sent;
+  const id = sent.key?.id
+    || sent.id?._serialized
+    || sent.id?.id
+    || sent._serialized
+    || (typeof sent.id === 'string' ? sent.id : null);
+  return id ? String(id) : null;
+}
+
+function prune(now) {
+  for (const [id, entry] of aiSentMessages) {
+    if (now - entry.at > AI_MESSAGE_MEMORY_MS) aiSentMessages.delete(id);
+    else break; // Map keeps insertion order, oldest first
+  }
+  while (aiSentMessages.size > AI_MESSAGE_MEMORY_MAX) aiSentMessages.delete(aiSentMessages.keys().next().value);
+}
+
+/**
+ * Remember an AI sent message for reaction tracking.
+ * `msg` is what msg.reply()/client.sendMessage() returned (a Baileys message)
+ * or an id string. Returns true when it was recorded.
+ */
+function remember(msg, kind = 'text', personaId = 'default') {
+  const id = serializedId(msg);
+  if (!id) return false;
+  const now = clock();
+  aiSentMessages.delete(id);
+  aiSentMessages.set(id, {
     msg,
     kind,
     personaId,
-    timestamp: Date.now(),
-    fromMe: msg.fromMe || false,
-    chatId: msg.chatId || msg.from,
+    at: now,
+    reactedAt: 0,
+    fromMe: true,
+    chatId: msg?.chatId || msg?.key?.remoteJid || msg?.from || '',
   });
-  
-  setTimeout(() => aiSentMessages.delete(key), 3600000);
+  prune(now);
+  return true;
 }
 
 /**
- * Check if a message is a bot's own message
+ * The ledger entry for a message id/key, or null when it is not one of the AI's
+ * messages (or has aged out).
+ */
+function get(idOrKey) {
+  const id = serializedId(idOrKey);
+  const entry = id ? aiSentMessages.get(id) : null;
+  if (!entry) return null;
+  if (clock() - entry.at > AI_MESSAGE_MEMORY_MS) {
+    aiSentMessages.delete(id);
+    return null;
+  }
+  return entry;
+}
+
+/**
+ * Mark that the AI already reacted to this message, so it reacts at most once.
+ */
+function markReacted(idOrKey) {
+  const entry = get(idOrKey);
+  if (entry) entry.reactedAt = clock();
+  return Boolean(entry);
+}
+
+/**
+ * Check if a message is one the AI sent
  */
 function isAIBotMessage(msg) {
-  if (!msg || !msg.id) return false;
-  const key = msg.id._serialized || msg.id;
-  return aiSentMessages.has(key);
+  return get(msg) !== null;
 }
 
 /**
- * Get the AI's sent message by key
+ * Get the AI's sent message entry by key
  */
 function getAISentMessage(key) {
-  const id = key._serialized || key.id || key;
-  return aiSentMessages.get(id);
+  return get(key) || undefined;
 }
+
+// Test hooks.
+function _reset() { aiSentMessages.clear(); clock = () => Date.now(); }
+function _setClock(fn) { clock = typeof fn === 'function' ? fn : () => Date.now(); }
+function _size() { return aiSentMessages.size; }
 
 /**
  * Handle reaction to AI's own message
@@ -322,6 +384,8 @@ async function switchPersona(msg, newPersonaId) {
 
 export { 
   remember,
+  get,
+  markReacted,
   isAIBotMessage,
   getAISentMessage,
   handleReactionToAI,
@@ -336,6 +400,11 @@ export {
 
 export default {
   remember,
+  get,
+  markReacted,
+  _reset,
+  _setClock,
+  _size,
   isAIBotMessage,
   getAISentMessage,
   handleReactionToAI,
