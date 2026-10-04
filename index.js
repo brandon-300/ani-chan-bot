@@ -15,6 +15,7 @@ const geminiGate = require('./utils/geminiGate');
 const aiReactions = require('./utils/aiReactions');
 const { tryHandleQuizAnswer } = require('./commands/games/quiz');
 const AiConversation = require('./models/AiConversation');
+const aiConversations = require('./utils/aiConversations');
 const GroupActivity = require('./models/GroupActivity');
 
 // Installed as early as possible, before any command file's axios/fetch
@@ -99,18 +100,28 @@ async function connectMongo() {
       logger.error('background.ai_sticker_metadata_startup.failed', err);
     });
 
-    // One-time self-healing schema migration: AiConversation used to be
-    // keyed by chatId alone (unique), which meant every member of a group
-    // shared one AI conversation. It's now keyed by (chatId, senderId).
-    // syncIndexes() drops the stale chatId-only unique index (if it's
-    // still there from before this change) and creates the new compound
-    // one declared in models/AiConversation.js — no manual mongosh/Atlas
-    // step required. Failure here isn't fatal to startup (the old index
-    // just means a second user in a chat would fail to get their own
-    // conversation document until this succeeds on a later restart).
-    AiConversation.syncIndexes().catch(err => {
-      logger.error('background.ai_conversation_indexes.failed', err);
-    });
+    // AI conversations are now one per (chat, sender, PERSONA). Two one-time,
+    // self-healing steps, safe to repeat on every start, in this order:
+    //   1. Conversations saved before personas were part of the key have no
+    //      personaId; they become the active persona's conversation and get the
+    //      new 7-day expiry (or none, for the owner).
+    //   2. syncIndexes() drops the old unique (chatId, senderId) index, which
+    //      would otherwise block a second persona's conversation with the same
+    //      person, and builds the new unique (chatId, senderId, personaId) one.
+    // No manual mongosh/Atlas step. A failure is logged and is not fatal to startup.
+    (async () => {
+      try {
+        await aiConversations.migrateLegacyConversations(getActivePersonaSafe()?.id);
+      } catch (err) {
+        logger.error('background.ai_conversation_migration.failed', err);
+      }
+      try {
+        await AiConversation.syncIndexes();
+        logger.write('INFO', 'ai.history.indexes.synced', {});
+      } catch (err) {
+        logger.error('background.ai_conversation_indexes.failed', err);
+      }
+    })();
 
     // See migrateGroupActivityLog()'s own comment — safe to run on every
     // restart, not fatal to startup if it fails.

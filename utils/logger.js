@@ -118,7 +118,7 @@ function clockOf(value) {
 function aiLine(event, d) {
   switch (event) {
     case 'ai.input':
-      return `[ai] Input from ${d.sender || 'user'} (${d.chat || 'chat'}) via .${d.command || 'ai'}: ${d.kind === 'sticker' ? 'sticker reply' : (d.kind || 'text')}${d.kind === 'text' ? ` ${quote(d.promptPreview)}` : ''} · ${d.historyTurns != null ? `${d.historyTurns} earlier messages · ` : ''}${d.stickersOffered || 0} stickers offered`;
+      return `[ai] Input from ${d.sender || 'user'} (${d.chat || 'chat'}) via .${d.command || 'ai'}${d.persona ? ` as ${d.persona}` : ''}: ${d.kind === 'sticker' ? 'sticker reply' : (d.kind || 'text')}${d.kind === 'text' ? ` ${quote(d.promptPreview)}` : ''} · ${d.historyTurns != null ? `${d.historyTurns} earlier messages · ` : ''}${d.stickersOffered || 0} stickers offered`;
     case 'ai.catalogue': {
       if (d.reason === 'stickers_disabled') return '[ai] Sticker catalogue: stickers are switched off (AI_STICKERS_ENABLED)';
       const ex = d.excluded || {};
@@ -147,6 +147,21 @@ function aiLine(event, d) {
       return `[ai] Sent sticker #${d.id}: ${d.anime || 'unknown anime'}${d.description ? ` - ${d.description}` : ''} (${shortenHash(d.hash)})`;
     case 'ai.emoji.react':
       return `[ai] Reacted ${d.emoji} to the user's ${d.messageType === 'sticker' ? 'sticker' : 'message'}`;
+    case 'ai.history.loaded':
+      return `[ai] ${d.continuing ? `Continuing the conversation with ${d.personaId} (${d.messages} earlier message${d.messages === 1 ? '' : 's'})` : `No earlier conversation with ${d.personaId}: starting a new one`}${d.owner ? ' · owner: nothing expires' : ''}`;
+    case 'ai.history.saved': {
+      const when = d.expiresAt ? new Date(d.expiresAt).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }) : '';
+      const expiry = d.owner
+        ? 'owner: never expires'
+        : `expires ${d.days} day${d.days === 1 ? '' : 's'} after the last message${d.scope === 'user' ? ' with any character' : ''} (${when})`;
+      return `[ai] Saved to the ${d.personaId} conversation${d.kept != null ? ` (${d.kept} messages kept)` : ''} · ${expiry}${d.refreshed ? ` · extended ${d.refreshed} conversation(s)` : ''}`;
+    }
+    case 'ai.history.expired':
+      return `[ai] The earlier conversation with ${d.personaId} had expired: starting fresh`;
+    case 'ai.history.migrated':
+      return `[ai] One-time update: ${d.moved} earlier conversation(s) are now the ${d.personaId} conversation (they were saved before each character had its own)`;
+    case 'ai.history.indexes.synced':
+      return '[ai] Conversation indexes are up to date: one conversation per chat, person and character';
     case 'ai.status_reaction.cleared':
       return "[ai] Removed the ⏳ from the user's message";
     case 'ai.status_reaction.clear_failed':

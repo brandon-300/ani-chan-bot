@@ -307,12 +307,14 @@ async function runScenario({ sticker, geminiReply, catalogue, args = [] }) {
   const originalSend = aiStickers.sendCatalogueSticker;
   const originalFindOne = AiConversation.findOne;
   const originalUpdate = AiConversation.findOneAndUpdate;
+  const originalUpdateMany = AiConversation.updateMany;
   const calls = { gemini: null, stickers: [], saved: [] };
   gemini.generateVision = async options => { calls.gemini = { kind: 'vision', ...options }; return geminiReply; };
   gemini.generateText = async options => { calls.gemini = { kind: 'text', ...options }; return geminiReply; };
   aiStickers.buildStickerCatalogue = async () => catalogue;
   aiStickers.sendCatalogueSticker = async (_c, _m, cat, id) => { calls.stickers.push(id); return { sent: true, reason: null, item: cat.items.find(i => i.id === id) }; };
   AiConversation.findOne = () => Promise.resolve(null);
+  AiConversation.updateMany = () => Promise.resolve({ modifiedCount: 0 });
   AiConversation.findOneAndUpdate = (filter, update) => { calls.saved.push(update.$push.messages.$each); return Promise.resolve(null); };
   const msg = scenarioMessage({ sticker });
   const logs = captureLogs();
@@ -326,6 +328,7 @@ async function runScenario({ sticker, geminiReply, catalogue, args = [] }) {
     aiStickers.sendCatalogueSticker = originalSend;
     AiConversation.findOne = originalFindOne;
     AiConversation.findOneAndUpdate = originalUpdate;
+    AiConversation.updateMany = originalUpdateMany;
   }
   return { msg, calls, logs: logs.lines };
 }
@@ -363,7 +366,9 @@ test('REPLAY: the user sends a "THE STRUGGLE" meme sticker -> the AI reacts like
 
   // what the logs show
   const text = logs.join('\n');
-  assert.match(text, /\[ai\] Input from Brandon \(DM\) via \.copilot: sticker reply/);
+  assert.match(text, /\[ai\] Input from Brandon \(DM\) via \.copilot as marin: sticker reply/);
+  assert.match(text, /\[ai\] No earlier conversation with marin: starting a new one/);
+  assert.match(text, /\[ai\] Saved to the marin conversation · expires 7 days after the last message with any character/);
   assert.match(text, /\[ai\] Gemini chose: no words · react 😂/);
   assert.match(text, /\[ai\] Reacted 😂 to the user's sticker/);
   assert.match(text, /\[ai\] Decision: reaction 😂 · replying to a user sticker/);

@@ -203,6 +203,25 @@ const AI_STICKER_MATCH_THRESHOLD = positiveEnvInt('AI_STICKER_MATCH_THRESHOLD', 
 const AI_STICKER_MIN_PERSONA_FIT = Math.max(0, Math.min(1, Number(process.env.AI_STICKER_MIN_PERSONA_FIT ?? 0.6) || 0.6));
 const AI_STICKER_ANALYSIS_DELAY_MS = envInt('AI_STICKER_ANALYSIS_DELAY_MS', 8000);
 
+// ─── AI conversation memory ─────────────────────────────────────────────────
+// Each user has one conversation PER PERSONA (switching persona starts a fresh
+// one; switching back returns to the old one). A conversation expires after
+// AI_HISTORY_EXPIRY_DAYS of inactivity: every exchange moves the expiry to
+// "last message + N days". AI_HISTORY_EXPIRY_SCOPE decides what counts as activity:
+//   user     any exchange with ANY persona keeps ALL of that user's conversations alive
+//   persona  only an exchange with a persona keeps that persona's conversation alive
+// The bot owner (OWNER_NUMBER / OWNER_IDS) is exempt: owner conversations never expire.
+const AI_HISTORY_EXPIRY_DAYS = positiveEnvInt('AI_HISTORY_EXPIRY_DAYS', 7);
+const AI_HISTORY_EXPIRY_SCOPE = (process.env.AI_HISTORY_EXPIRY_SCOPE || '').trim().toLowerCase() === 'persona' ? 'persona' : 'user';
+// Messages kept (and sent to Gemini) per conversation for everyone else.
+const AI_HISTORY_MESSAGES = positiveEnvInt('AI_HISTORY_MESSAGES', 20);
+// The owner's history is not trimmed to 20: this many messages are kept in the
+// database per conversation, and this many of the newest are sent to Gemini each
+// turn. (Sending everything ever said would grow every request without limit and
+// burn the Gemini quota, so the context window stays bounded.)
+const AI_HISTORY_OWNER_KEPT = positiveEnvInt('AI_HISTORY_OWNER_KEPT', 2000);
+const AI_HISTORY_OWNER_CONTEXT = positiveEnvInt('AI_HISTORY_OWNER_CONTEXT', 100);
+
 // ─── Sticker analysis cost control ──────────────────────────────────────────
 // Analysis is MANUAL (.stickeranalyze in the owner's private DM): nothing runs
 // at startup, after an update, or when a sticker is imported. When it does run,
@@ -280,6 +299,11 @@ module.exports = {
   AI_STICKER_RECENT_EXCLUDE,
   AI_STICKER_FIT_BATCH,
   AI_STICKER_VISION_BATCH,
+  AI_HISTORY_EXPIRY_DAYS,
+  AI_HISTORY_EXPIRY_SCOPE,
+  AI_HISTORY_MESSAGES,
+  AI_HISTORY_OWNER_KEPT,
+  AI_HISTORY_OWNER_CONTEXT,
   AI_REACT_TO_REACTIONS,
   AI_REACT_CHANCE,
   AI_REACT_COOLDOWN_MS,

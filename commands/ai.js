@@ -46,65 +46,28 @@ function cleanup(...files) {
   }
 }
 
-// ─── Conversation memory (per chat AND per sender, clears after 30 min idle) ──
-// Persisted in Mongo (models/AiConversation.js) with a native TTL index
-// doing the 30-minute idle cleanup — see that file's comment for why this
-// replaced the old in-memory Map (it didn't survive PM2 restarts, and its
-// per-call setTimeout cleanup had a real bug: an earlier timer could wipe
-// out a chat's newer history mid-conversation).
-const AiConversation = require('../models/AiConversation');
-
-const HISTORY_LIMIT = 20; // messages kept per conversation
-const HISTORY_TTL_MS = 30 * 60 * 1000; // idle window before Mongo auto-expires it
-
-// Returns this (chat, sender) pair's recent conversation as a plain
-// { role, content }[] array for gemini.js — empty for a fresh conversation,
-// or one Mongo's TTL index already expired. Reading never touches
-// expiresAt itself — only addTurnToHistory extends the idle window, so a
-// history can't be kept alive just by being read.
+// ─── Conversation memory (per chat, per sender AND per persona) ────────────
+// Stored in Mongo and expired by its native TTL index; all the rules (a separate
+// conversation for each persona, 7 days of inactivity, the owner exempt) live in
+// utils/aiConversations.js. These wrappers keep the call sites short.
 //
-// senderId matters here: in a DM, chatId alone is already unique per
-// person, but in a GROUP chatId is the same for every member — without
-// senderId, everyone in a group would read and write the SAME
-// conversation, which is exactly the "only one conversation, shared by
-// whoever uses the AI commands" behavior this replaces. Pass msg.author in
-// a group (the actual sender) and msg.from in a DM (there is no
-// msg.author there) — see the call sites below.
-async function getHistory(chatId, senderId) {
-  const convo = await AiConversation.findOne({ chatId, senderId }).catch(err => {
-    console.error('getHistory: lookup failed:', err.message);
-    return null;
-  });
-  return convo ? convo.messages.map(m => ({ role: m.role, content: m.content })) : [];
+// msg.author is the actual sender inside a group; it is undefined in a DM, where
+// msg.from IS the sender (and already unique per person).
+const aiConversations = require('../utils/aiConversations');
+
+// The conversation belongs to the persona that is answering. If the persona
+// cannot be loaded the reply fails with its own clear error a moment later, so
+// a placeholder id here is only ever used for that failing request.
+function activePersonaId() {
+  return getActivePersonaSafe()?.id || 'unavailable';
 }
 
-// Appends BOTH sides of one exchange — the user's message and the
-// assistant's reply — in a single $push, so they land in Mongo as one
-// atomic write instead of the two independent, unawaited writes this used
-// to be. That distinction matters two ways: a process crash between the
-// old pair of writes could leave a user message permanently stored with no
-// reply ever recorded next to it, and two overlapping requests for the
-// SAME conversation could have their four separate writes land in the
-// wrong order relative to each other. One $push means both messages of a
-// given exchange succeed together or neither does, and nothing else can
-// land in between them.
-async function addTurnToHistory(chatId, senderId, userContent, assistantContent) {
-  await AiConversation.findOneAndUpdate(
-    { chatId, senderId },
-    {
-      $push: {
-        messages: {
-          $each: [
-            { role: 'user', content: userContent },
-            { role: 'assistant', content: assistantContent },
-          ],
-          $slice: -HISTORY_LIMIT,
-        },
-      },
-      $set: { expiresAt: new Date(Date.now() + HISTORY_TTL_MS) },
-    },
-    { upsert: true }
-  ).catch(err => console.error('addTurnToHistory: save failed:', err.message));
+async function getHistory(chatId, senderId, personaId = activePersonaId()) {
+  return aiConversations.getConversationHistory({ chatId, senderId, personaId });
+}
+
+async function addTurnToHistory(chatId, senderId, userContent, assistantContent, personaId = activePersonaId()) {
+  return aiConversations.appendConversationTurn({ chatId, senderId, personaId, userContent, assistantContent });
 }
 
 // ─── Persona prompts and internal text controls ─────────────────────────────
@@ -487,6 +450,8 @@ module.exports = {
   _stripSpeechFormatting: stripSpeechFormatting,
   _buildPersonaSystemPrompt: buildPersonaSystemPrompt,
   _deliverTextResponse: deliverTextResponse,
+  _getHistory: getHistory,
+  _addTurnToHistory: addTurnToHistory,
   _buildReplyControlsPrompt: buildReplyControlsPrompt,
   _stripLegacyReactionBlock: stripLegacyReactionBlock,
   _historyAssistantText: historyAssistantText,
@@ -542,6 +507,7 @@ module.exports = {
       const inputKind = resolved.stickerReply ? 'sticker' : (resolved.images?.length ? 'image' : 'text');
       logger.write('INFO', 'ai.input', {
         command: 'copilot',
+        persona: activePersonaId(),
         sender: senderName,
         chat: chat.isGroup ? 'group' : 'DM',
         kind: inputKind,
