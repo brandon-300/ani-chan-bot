@@ -1,5 +1,6 @@
 
 import AiConversation from '../models/AiConversation.js';
+import aiConversations from '../utils/aiConversations.js';
 import aiMessageLedger from '../utils/aiMessageLedger.js';
 import aiStickers from '../utils/aiStickers.js';
 import axios from 'axios';
@@ -11,10 +12,10 @@ import logger from '../utils/logger.js';
 import os from 'os';
 import path from 'path';
 import speechText from '../utils/speechText.js';
-import { BOT_NAME, FISH_EXPRESSION_TAGS, AI_VOICE_MAX_OUTPUT_TOKENS, BOT_OWNER } from '../utils/config.js';
+import { BOT_NAME, FISH_EXPRESSION_TAGS, AI_VOICE_MAX_OUTPUT_TOKENS, BOT_OWNER, AI_HISTORY_EXPIRY_DAYS } from '../utils/config.js';
 import { MessageMedia } from '../whatsapp/media.js';
 import { getActivePersonaSafe, loadPersona } from '../utils/persona.js';
-import { safeGetChat, safeGetQuotedMessage, resolveSenderName } from '../utils/helpers.js';
+import { safeGetChat, safeGetQuotedMessage, resolveSenderName, isOwner as isBotOwnerId } from '../utils/helpers.js';
 const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY;
 
 // 	 Small tmp-file / ffmpeg helpers 											
@@ -58,9 +59,7 @@ const HISTORY_LIMIT = 20; // messages kept per conversation
  * Check if user is bot owner
  */
 function isBotOwner(senderId) {
-  const owner = BOT_OWNER || process.env.BOT_OWNER;
-  if (!owner) return false;
-  return senderId === owner || senderId.includes(owner.split('@')[0]);
+  return isBotOwnerId(senderId);
 }
 
 /**
@@ -68,62 +67,22 @@ function isBotOwner(senderId) {
  * Each user has 3 separate conversations (one per persona)
  */
 async function getHistory(chatId, senderId, personaId = 'default') {
-  const isOwner = isBotOwner(senderId);
-  
-  // For bot owner, no expiration - get conversation without updating expiry
-  if (isOwner) {
-    const convo = await AiConversation.findOne({ 
-      chatId, 
-      senderId, 
-      personaId: personaId || 'default' 
-    }).catch(err => {
-      console.error('getHistory: lookup failed:', err.message);
-      return null;
-    });
-    return convo ? convo.messages.map(m => ({ role: m.role, content: m.content })) : [];
-  }
-  
-  // For non-owner users, update lastActivityAt on read to extend expiration
-  const conversation = await AiConversation.findOneAndUpdate(
-    { chatId, senderId, personaId: personaId || 'default' },
-    { $set: { lastActivityAt: new Date() } },
-    { upsert: true, new: true }
-  ).catch(err => {
-    console.error('getHistory: lookup failed:', err.message);
-    return null;
-  });
-  
-  return conversation ? conversation.messages.map(m => ({ role: m.role, content: m.content })) : [];
+  return aiConversations.getConversationHistory({ chatId, senderId, personaId: personaId || 'default' });
 }
 
 /**
- * Add a turn to conversation history with persona support
- * Updates lastActivityAt and extends expiration for non-owner users
+ * Add a turn to conversation history with persona support.
+ * Storage, trimming and expiry rules live in utils/aiConversations.js so the
+ * Baileys and whatsapp-web.js versions of the bot read and write the same way.
  */
 async function addTurnToHistory(chatId, senderId, personaId, userContent, assistantContent) {
-  const isOwner = isBotOwner(senderId);
-  const now = new Date();
-  const newExpiresAt = isOwner ? null : new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
-  
-  await AiConversation.findOneAndUpdate(
-    { chatId, senderId, personaId: personaId || 'default' },
-    {
-      $push: {
-        messages: {
-          $each: [
-            { role: 'user', content: userContent, timestamp: now },
-            { role: 'assistant', content: assistantContent, timestamp: now },
-          ],
-          $slice: -HISTORY_LIMIT,
-        },
-      },
-      $set: { 
-        lastActivityAt: now,
-        ...(newExpiresAt ? { expiresAt: newExpiresAt } : {})
-      },
-    },
-    { upsert: true }
-  ).catch(err => console.error('addTurnToHistory: save failed:', err.message));
+  return aiConversations.appendConversationTurn({
+    chatId,
+    senderId,
+    personaId: personaId || 'default',
+    userContent,
+    assistantContent,
+  });
 }
 
 /**
@@ -132,7 +91,7 @@ async function addTurnToHistory(chatId, senderId, personaId, userContent, assist
 async function switchPersona(chatId, senderId, newPersonaId) {
   const isOwner = isBotOwner(senderId);
   const now = new Date();
-  const expiresAt = isOwner ? null : new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+  const expiresAt = isOwner ? null : new Date(now.getTime() + AI_HISTORY_EXPIRY_DAYS * 24 * 60 * 60 * 1000);
   
   const conversation = await AiConversation.findOneAndUpdate(
     { chatId, senderId, personaId: newPersonaId || 'default' },
@@ -154,7 +113,7 @@ async function switchPersona(chatId, senderId, newPersonaId) {
 async function getPersonaIdForChat(chatId, senderId) {
   // Try to find an active conversation with a specific persona
   const conversation = await AiConversation.findOne(
-    { chatId, senderId },
+    { chatId, senderId, lastActivityAt: { $exists: true } },
     { personaId: 1 },
     { sort: { lastActivityAt: -1 } }
   );

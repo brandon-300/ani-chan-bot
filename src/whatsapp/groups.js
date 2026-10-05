@@ -25,7 +25,8 @@ class GroupsService {
   init(sock) {
     this.sock = sock || socketManager.getSocket();
     
-    // Setup cache cleanup
+    // Setup cache cleanup (init runs again after every reconnect; keep ONE timer)
+    if (this.cacheCleanupInterval) clearInterval(this.cacheCleanupInterval);
     this.cacheCleanupInterval = setInterval(() => {
       this.cleanupCache();
     }, 60000);
@@ -84,43 +85,127 @@ class GroupsService {
       
       if (!group) throw new Error('Group not found');
       
-      const participants = (group.participants || []).map(p => {
-        const participantId = identity.normalizeJid(p.id);
-        const name = p.pushName || participantId.split('@')[0].split(':')[0];
-        identity.rememberContact(participantId, name);
-        
-        return {
-          id: { _serialized: participantId, user: participantId.split('@')[0].split(':')[0] },
-          number: participantId.split('@')[0].split(':')[0],
-          name,
-          pushname: name,
-          pushName: name,
-          isAdmin: Boolean(p.isAdmin),
-          isSuperAdmin: Boolean(p.isSuperAdmin),
-        };
-      });
-      
-      const result = {
-        id: { _serialized: normalized },
-        name: group.subject || normalized,
-        isGroup: true,
-        participants,
-        adminIds: participants.filter(p => p.isAdmin).map(p => p.id._serialized),
-        ownerId: group.owner?._serialized || '',
-        desc: group.desc || '',
-        descId: group.descId || '',
-        descOwner: group.descOwner?._serialized || '',
-        creation: group.creation ? new Date(group.creation * 1000) : null,
-      };
-      
-      // Cache the result
-      this.groupCache.set(normalized, { data: result, timestamp: Date.now() });
-      
-      return result;
+      return this.buildGroup(normalized, group);
     } catch (error) {
       logger.error(`Failed to fetch group metadata for ${normalized}:`, error);
       throw error;
     }
+  }
+
+  /**
+   * Turn raw Baileys group metadata into the internal group record and cache it.
+   * Internal ids stay in Baileys form; getChat() is what exposes the
+   * whatsapp-web.js spelling to commands.
+   */
+  buildGroup(normalized, group) {
+    const participants = (group.participants || []).map(p => {
+      const participantId = identity.normalizeJid(p.id);
+      const name = p.pushName || participantId.split('@')[0].split(':')[0];
+      identity.rememberContact(participantId, name);
+      // Baileys 7 reports the phone number of LID-addressed members separately.
+      if (p.phoneNumber && participantId.endsWith('@lid')) identity.addLidPnMapping(participantId, p.phoneNumber);
+      // Phone-number-addressed groups can report the member's LID instead.
+      if (p.lid && !participantId.endsWith('@lid')) identity.addLidPnMapping(p.lid, participantId);
+
+      return {
+        id: { _serialized: participantId, user: participantId.split('@')[0].split(':')[0] },
+        number: participantId.split('@')[0].split(':')[0],
+        name,
+        pushname: name,
+        pushName: name,
+        isAdmin: Boolean(p.isAdmin || p.admin === 'admin' || p.admin === 'superadmin'),
+        isSuperAdmin: Boolean(p.isSuperAdmin || p.admin === 'superadmin'),
+      };
+    });
+
+    const ownerJid = typeof group.owner === 'string' ? group.owner : (group.owner?._serialized || '');
+    const result = {
+      id: { _serialized: normalized },
+      name: group.subject || normalized,
+      isGroup: true,
+      participants,
+      adminIds: participants.filter(p => p.isAdmin).map(p => p.id._serialized),
+      ownerId: ownerJid ? identity.normalizeJid(ownerJid) : '',
+      desc: group.desc || '',
+      descId: group.descId || '',
+      descOwner: group.descOwner?._serialized || group.descOwner || '',
+      creation: group.creation ? new Date(group.creation * 1000) : null,
+    };
+
+    this.groupCache.set(normalized, { data: result, timestamp: Date.now() });
+    return result;
+  }
+
+  /**
+   * The chat object commands work with (what msg.getChat() / client.getChatById()
+   * return). Same shape as whatsapp-web.js: ids in the legacy spelling, plus the
+   * methods commands call on a chat (sendMessage, getInviteCode, ...).
+   * The returned object is a copy; the internal cache is never handed out.
+   */
+  async getChat(jid) {
+    if (!jid) throw new TypeError('A chat JID is required.');
+    const normalized = identity.normalizeJid(jid);
+    if (!normalized.endsWith('@g.us')) return this.buildDirectChat(normalized);
+    return this.exposeGroup(await this.getGroup(normalized));
+  }
+
+  /** Same as getChat() for metadata the caller already fetched (used by getChats()). */
+  getChatFromMetadata(jid, metadata) {
+    const normalized = identity.normalizeJid(jid);
+    return this.exposeGroup(this.buildGroup(normalized, metadata));
+  }
+
+  // The bot is listed in LID-addressed groups under its LID; commands compare
+  // participants with client.info.wid, so show the bot under that id.
+  legacyMemberId(jid) {
+    const botPn = this.getSock()?.user?.id;
+    if (botPn && identity.isBotJid(jid)) return identity.toLegacyId(botPn);
+    return identity.toStoredId(jid);
+  }
+
+  exposeGroup(group) {
+    const groupJid = group.id._serialized;
+    const exposeMember = p => {
+      const id = this.legacyMemberId(p.id._serialized);
+      return { ...p, id: { _serialized: id, user: id.split('@')[0].split(':')[0] } };
+    };
+    const send = async (content, options = {}) => {
+      const messages = (await import('./messages.js')).default;
+      return messages.sendMessage(groupJid, content, options);
+    };
+    return {
+      ...group,
+      id: { _serialized: groupJid, user: groupJid.split('@')[0], server: 'g.us' },
+      participants: group.participants.map(exposeMember),
+      adminIds: group.adminIds.map(id => this.legacyMemberId(id)),
+      ownerId: group.ownerId ? this.legacyMemberId(group.ownerId) : '',
+      owner: group.ownerId ? { _serialized: this.legacyMemberId(group.ownerId) } : undefined,
+      sendMessage: send,
+      getInviteCode: () => this.getInviteCode(groupJid),
+      setMessagesAdminsOnly: onlyAdmins => this.setMessagesAdminsOnly(groupJid, onlyAdmins),
+      addParticipants: ids => this.addParticipants(groupJid, ids),
+      removeParticipants: ids => this.removeParticipants(groupJid, ids),
+      promoteParticipants: ids => this.promote(groupJid, ids),
+      demoteParticipants: ids => this.demote(groupJid, ids),
+      setSubject: subject => this.updateSubject(groupJid, subject),
+      setDescription: desc => this.updateDescription(groupJid, desc),
+      leave: () => this.leave(groupJid),
+    };
+  }
+
+  buildDirectChat(normalized) {
+    const send = async (content, options = {}) => {
+      const messages = (await import('./messages.js')).default;
+      return messages.sendMessage(normalized, content, options);
+    };
+    const legacy = identity.toStoredId(normalized);
+    return {
+      id: { _serialized: legacy, user: legacy.split('@')[0] },
+      name: identity.getDisplayName(normalized),
+      isGroup: false,
+      participants: [],
+      sendMessage: send,
+    };
   }
 
   /**

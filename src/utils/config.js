@@ -215,6 +215,60 @@ const AI_STICKER_ANALYSIS_DELAY_MS = envInt('AI_STICKER_ANALYSIS_DELAY_MS', 8000
 const AI_STICKER_FIT_BATCH = positiveEnvInt('AI_STICKER_FIT_BATCH', 20);
 const AI_STICKER_VISION_BATCH = positiveEnvInt('AI_STICKER_VISION_BATCH', 6);
 
+// ─── AI conversation memory (same settings as the whatsapp-web.js version) ─────
+// A conversation expires AI_HISTORY_EXPIRY_DAYS after its last message. The
+// expiry scope decides whether activity with ANY persona keeps all of a user's
+// conversations alive ('user', default) or only the same persona's ('persona').
+// The bot owner never expires and keeps a much larger history.
+const AI_HISTORY_EXPIRY_DAYS = positiveEnvInt('AI_HISTORY_EXPIRY_DAYS', 7);
+const AI_HISTORY_EXPIRY_SCOPE = (process.env.AI_HISTORY_EXPIRY_SCOPE || '').trim().toLowerCase() === 'persona' ? 'persona' : 'user';
+const AI_HISTORY_MESSAGES = positiveEnvInt('AI_HISTORY_MESSAGES', 20);
+const AI_HISTORY_OWNER_KEPT = positiveEnvInt('AI_HISTORY_OWNER_KEPT', 2000);
+const AI_HISTORY_OWNER_CONTEXT = positiveEnvInt('AI_HISTORY_OWNER_CONTEXT', 100);
+
+// ─── Shared "already handled" record (both bot versions) ──────────────────────
+// The whatsapp-web.js and Baileys versions are ONE bot on ONE WhatsApp account. A
+// version that was switched off is sent every message it missed as soon as it
+// starts again, so without a shared record it would answer commands the other
+// version already answered. Each incoming message id is claimed in MongoDB by the
+// first version that sees it; the other skips it. These settings must be the same
+// for both versions, which is why they come from the shared .env.
+//   MESSAGE_CLAIM_ENABLED      set to false to turn the record off
+//   MESSAGE_CLAIM_TTL_HOURS    how long a claim is remembered (WhatsApp keeps
+//                              undelivered messages for days, so keep this generous)
+//   MESSAGE_CLAIM_TIMEOUT_MS   if MongoDB does not answer in time the message is
+//                              processed anyway (never drop messages because of a slow database)
+//   MESSAGE_CLAIM_COOLDOWN_MS  after such a failure, skip the record for this long so every
+//                              message is not delayed in turn
+const MESSAGE_CLAIM_ENABLED = (process.env.MESSAGE_CLAIM_ENABLED || 'true').trim().toLowerCase() !== 'false';
+const MESSAGE_CLAIM_TTL_HOURS = positiveEnvInt('MESSAGE_CLAIM_TTL_HOURS', 168);
+const MESSAGE_CLAIM_TIMEOUT_MS = positiveEnvInt('MESSAGE_CLAIM_TIMEOUT_MS', 4000);
+const MESSAGE_CLAIM_COOLDOWN_MS = positiveEnvInt('MESSAGE_CLAIM_COOLDOWN_MS', 30000);
+const BOT_ENGINE = 'baileys';
+
+// ─── .tourl: free anonymous file hosts, tried in this order ─────────────────────
+// 0x0.st switched uploads off in spring 2026 ("no ETA"), so .tourl now walks a list
+// of hosts and uses the first that works. Change the order, or drop a host that
+// stops working, with TOURL_PROVIDER_ORDER in .env (comma separated ids):
+//   catbox     catbox.moe                permanent    up to 200 MB
+//   litterbox  litterbox.catbox.moe      temporary    up to 1 GB, kept TOURL_LITTERBOX_HOURS (1, 12, 24 or 72)
+//   uguu       uguu.se                   temporary    up to 128 MB, kept a few hours
+// The endpoints can be overridden with TOURL_CATBOX_URL / TOURL_LITTERBOX_URL / TOURL_UGUU_URL.
+const TOURL_TIMEOUT_MS = positiveEnvInt('TOURL_TIMEOUT_MS', 45000);
+const TOURL_USER_AGENT = process.env.TOURL_USER_AGENT || 'AniChanBot/1.0 (+WhatsApp media relay; Termux)';
+const configuredLitterboxHours = positiveEnvInt('TOURL_LITTERBOX_HOURS', 72);
+const TOURL_LITTERBOX_HOURS = [1, 12, 24, 72].includes(configuredLitterboxHours) ? configuredLitterboxHours : 72;
+const TOURL_PROVIDER_CATALOG = {
+  catbox: { id: 'catbox', name: 'catbox.moe', url: process.env.TOURL_CATBOX_URL || 'https://catbox.moe/user/api.php', maxBytes: 200 * 1024 * 1024, expires: null },
+  litterbox: { id: 'litterbox', name: 'litterbox', url: process.env.TOURL_LITTERBOX_URL || 'https://litterbox.catbox.moe/resources/internals/api.php', maxBytes: 1024 * 1024 * 1024, expires: `${TOURL_LITTERBOX_HOURS} hours` },
+  uguu: { id: 'uguu', name: 'uguu.se', url: process.env.TOURL_UGUU_URL || 'https://uguu.se/upload?output=text', maxBytes: 128 * 1024 * 1024, expires: 'a few hours' },
+};
+const requestedProviderOrder = (process.env.TOURL_PROVIDER_ORDER || 'catbox,litterbox,uguu')
+  .split(',').map(id => id.trim().toLowerCase()).filter(id => TOURL_PROVIDER_CATALOG[id]);
+const TOURL_PROVIDERS = (requestedProviderOrder.length ? requestedProviderOrder : ['catbox', 'litterbox', 'uguu'])
+  .filter((id, index, all) => all.indexOf(id) === index)
+  .map(id => TOURL_PROVIDER_CATALOG[id]);
+
 // ─── Baileys / pino log level ───────────────────────────────────────────────
 // The bot's own logger (utils/logger.js) takes LOG_LEVEL=ERROR|WARN|INFO|DEBUG.
 // pino, which Baileys uses internally, ONLY accepts lowercase names and throws
@@ -280,6 +334,20 @@ export default {
   AI_STICKER_FIT_BATCH,
   AI_STICKER_VISION_BATCH,
   WHATSAPP_LOG_LEVEL,
+  MESSAGE_CLAIM_ENABLED,
+  MESSAGE_CLAIM_TTL_HOURS,
+  MESSAGE_CLAIM_TIMEOUT_MS,
+  MESSAGE_CLAIM_COOLDOWN_MS,
+  BOT_ENGINE,
+  TOURL_TIMEOUT_MS,
+  TOURL_USER_AGENT,
+  TOURL_LITTERBOX_HOURS,
+  TOURL_PROVIDERS,
+  AI_HISTORY_EXPIRY_DAYS,
+  AI_HISTORY_EXPIRY_SCOPE,
+  AI_HISTORY_MESSAGES,
+  AI_HISTORY_OWNER_KEPT,
+  AI_HISTORY_OWNER_CONTEXT,
   AI_STICKER_QUOTA_COOLDOWN_MS,
   AI_STICKER_QUOTA_MAX_COOLDOWN_MS,
   GEMINI_PAUSE_DURING_STICKER_ANALYSIS,
@@ -336,6 +404,20 @@ export {
   AI_STICKER_FIT_BATCH,
   AI_STICKER_VISION_BATCH,
   WHATSAPP_LOG_LEVEL,
+  MESSAGE_CLAIM_ENABLED,
+  MESSAGE_CLAIM_TTL_HOURS,
+  MESSAGE_CLAIM_TIMEOUT_MS,
+  MESSAGE_CLAIM_COOLDOWN_MS,
+  BOT_ENGINE,
+  TOURL_TIMEOUT_MS,
+  TOURL_USER_AGENT,
+  TOURL_LITTERBOX_HOURS,
+  TOURL_PROVIDERS,
+  AI_HISTORY_EXPIRY_DAYS,
+  AI_HISTORY_EXPIRY_SCOPE,
+  AI_HISTORY_MESSAGES,
+  AI_HISTORY_OWNER_KEPT,
+  AI_HISTORY_OWNER_CONTEXT,
   AI_STICKER_QUOTA_COOLDOWN_MS,
   AI_STICKER_QUOTA_MAX_COOLDOWN_MS,
   GEMINI_PAUSE_DURING_STICKER_ANALYSIS,

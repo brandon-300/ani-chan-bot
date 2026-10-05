@@ -105,6 +105,13 @@ function createReactionHandler({
 
   const lastReactionByChat = new Map();
 
+  // "@c.us" (what commands see) and "@s.whatsapp.net" (raw Baileys) are the same
+  // account, and a device suffix (":12") does not change who it is.
+  function sameUser(a, b) {
+    const clean = jid => String(jid || '').replace(/:\d+(?=@)/, '').replace(/@c\.us$/, '@s.whatsapp.net');
+    return Boolean(a && b) && clean(a) === clean(b);
+  }
+
   function skipOnAiMessage(reason, emoji, entry) {
     return { action: 'skip', reason, emoji, kind: entry?.kind };
   }
@@ -119,7 +126,7 @@ function createReactionHandler({
     if (!emoji) return { action: 'skip', reason: 'reaction_removed' };
 
     const botId = client?.info?.wid?._serialized || '';
-    const ownReaction = normalized.fromMe === true || (botId && normalized.from === botId);
+    const ownReaction = normalized.fromMe === true || (botId && sameUser(normalized.from, botId));
     if (ownReaction) return { action: 'skip', reason: 'own_reaction' };
 
     const targetId = normalized.messageId;

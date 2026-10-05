@@ -23,6 +23,13 @@ class WhatsAppAdapter {
     this.media = media;
     this.identity = identity;
     this.groups = groups;
+
+    this.bindServices = sock => {
+      this.media.init(sock, (key, msg) => socketManager.registerSentMessage(key, msg));
+      this.messages.init(sock);
+      this.identity.init(sock);
+      this.groups.init(sock);
+    };
     
     // Expose socket manager methods
     this.on = this.socket.on.bind(this.socket);
@@ -34,12 +41,17 @@ class WhatsAppAdapter {
     this.disconnect = this.socket.disconnect.bind(this.socket);
     this.isConnected = () => this.socket.isConnected;
     this.isAuthenticated = () => this.socket.isAuthenticated();
+    // Called once by src/index.js after the first 'ready' so reconnects don't re-run startup tasks.
+    this.markBackgroundInitialized = this.socket.markBackgroundInitialized.bind(this.socket);
     
     // Bot info
     this.info = {
       get wid() {
+        // Same id whatsapp-web.js reported: "<number>@c.us", no device suffix.
         const jid = socketManager.getWid();
-        return jid ? { _serialized: jid } : null;
+        if (!jid) return null;
+        const id = identity.toLegacyId(jid);
+        return { _serialized: id, user: id.split('@')[0] };
       },
       get user() {
         return socketManager.getUser();
@@ -57,15 +69,12 @@ class WhatsAppAdapter {
     // Ensure auth is initialized first
     await authManager.init();
     
+    // Hand every service the socket now AND every time it is recreated after a
+    // connection drop (same function each time, so it is only registered once).
+    socketManager.onSocketCreated(this.bindServices);
+
     // Initialize socket
     await socketManager.init();
-    
-    // Initialize all services with the socket
-    const sock = socketManager.getSocket();
-    this.media.init(sock, (key, msg) => socketManager.registerSentMessage(key, msg));
-    this.messages.init(sock);
-    this.identity.init(sock);
-    this.groups.init(sock);
     
     return this;
   }
@@ -236,34 +245,14 @@ class WhatsAppAdapter {
   }
 
   async getChatById(jid) {
-    return socketManager.getChat(jid);
+    return groups.getChat(jid);
   }
 
   async getChats() {
     const sock = socketManager.getSocket();
     if (!sock?.groupFetchAllParticipating) throw new Error('WhatsApp socket is not connected.');
     const groupsById = await sock.groupFetchAllParticipating();
-    return Object.entries(groupsById || {}).map(([jid, group]) => ({
-      id: { _serialized: jid },
-      name: group.subject || jid,
-      isGroup: true,
-      participants: (group.participants || []).map(participant => {
-        const participantId = identity.normalizeJid(participant.id);
-        const name = participant.pushName || participantId.split('@')[0].split(':')[0];
-        identity.rememberContact(participantId, name);
-        return {
-          id: { _serialized: participantId, user: participantId.split('@')[0].split(':')[0] },
-          number: participantId.split('@')[0].split(':')[0],
-          name,
-          pushname: name,
-          pushName: name,
-          isAdmin: Boolean(participant.isAdmin),
-          isSuperAdmin: Boolean(participant.isSuperAdmin),
-        };
-      }),
-      sendMessage: (content, options = {}) => this.sendMessage(jid, content, options),
-      setMessagesAdminsOnly: onlyAdmins => this.setMessagesAdminsOnly(jid, onlyAdmins),
-    }));
+    return Object.entries(groupsById || {}).map(([jid, metadata]) => groups.getChatFromMetadata(jid, metadata));
   }
 
   async getContactById(jid) {

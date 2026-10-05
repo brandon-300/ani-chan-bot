@@ -326,6 +326,16 @@ class SocketManager {
     this.backgroundInitialized = true;
   }
 
+  // Services (messages, media, groups, identity) keep a reference to the socket they
+  // send through. A reconnect creates a NEW socket, so each of them has to be handed
+  // the new one, otherwise every reply after the first connection drop would go
+  // through the dead socket and fail with "Connection Closed".
+  onSocketCreated(listener) {
+    if (typeof listener !== 'function') return;
+    if (!this.socketCreatedListeners) this.socketCreatedListeners = new Set();
+    this.socketCreatedListeners.add(listener);
+  }
+
   async init() {
     if (this.isConnecting || this.isConnected) return;
     this.isShuttingDown = false;
@@ -353,6 +363,10 @@ class SocketManager {
       };
 
       this.sock = makeWASocket(sockConfig);
+      for (const listener of this.socketCreatedListeners || []) {
+        try { listener(this.sock); }
+        catch (error) { logger.error({ error }, 'Socket-created listener failed'); }
+      }
       this.eventHandlersSetup = false;
       this.setupEventHandlers();
       this.eventHandlersSetup = true;
@@ -421,6 +435,7 @@ class SocketManager {
       if (authManager.isAuthenticated() && !this.backgroundInitialized) {
         this.emit('ready');
       } else if (authManager.isAuthenticated()) {
+        console.log('\u2705 WhatsApp reconnected');
         this.emit('reconnect');
       }
       return;
@@ -439,6 +454,21 @@ class SocketManager {
     if (this.isShuttingDown) return;
     if (statusCode === DisconnectReason.loggedOut) {
       this.emit('error', new Error('WhatsApp logged this device out. Remove auth_info_baileys only if you intend to pair again.'));
+      console.error([
+        '',
+        '❌ WhatsApp rejected the saved Baileys login (401 / logged out).',
+        '   The session in auth_info_baileys is no longer linked to the account.',
+        '   To pair again, move it aside and start the bot in the foreground:',
+        '     mv auth_info_baileys auth_info_baileys.old-$(date +%s)',
+        '     node src/index.js',
+        '   (this does NOT touch the whatsapp-web.js session)',
+        '',
+      ].join('\n'));
+      // Exit code 64 is listed in ecosystem.config.cjs as "do not restart", so PM2
+      // shows the process as stopped instead of retrying a login WhatsApp already
+      // refused (or leaving a dead bot that still looks online).
+      process.exitCode = 64;
+      setTimeout(() => process.exit(64), 300);
       return;
     }
     logger.warn({ statusCode, error: error?.message }, 'WhatsApp connection closed; reconnecting');
@@ -490,7 +520,16 @@ class SocketManager {
     if (sock?.ws && typeof sock.ws.close === 'function') sock.ws.close();
   }
 
-  async handleMessagesUpsert(upsert) {
+  // Upserts are processed one at a time, in arrival order: resolving ids touches
+  // the LID store (async), and two batches must never overtake each other.
+  handleMessagesUpsert(upsert) {
+    this.upsertChain = (this.upsertChain || Promise.resolve())
+      .then(() => this.processMessagesUpsert(upsert))
+      .catch(error => logger.error({ error }, 'Failed to process messages.upsert'));
+    return this.upsertChain;
+  }
+
+  async processMessagesUpsert(upsert) {
     if (upsert?.type && upsert.type !== 'notify') return;
     const incoming = upsert?.messages;
     if (!Array.isArray(incoming)) return;
@@ -503,6 +542,15 @@ class SocketManager {
         if (baileysMsg?.key?.id && baileysMsg?.key?.remoteJid) {
           messageStore.set(baileysMsg.key, baileysMsg);
         }
+
+        // LID -> phone-number ids must be known before the message is normalized.
+        await identity.learnIds(baileysMsg);
+
+        // Exactly one bot version may act on a message: the whatsapp-web.js and Baileys
+        // versions share one account, and a version that was offline is sent every
+        // message it missed when it starts again. See utils/messageClaims.js.
+        const { claimMessage } = await import('../utils/messageClaims.js');
+        if (!(await claimMessage(baileysMsg.key.id))) continue;
         
         const normalizedMsg = this.normalizeMessage(baileysMsg);
         this.emit('message', normalizedMsg);
@@ -567,16 +615,38 @@ class SocketManager {
 
   async handleGroupParticipantsUpdate(update) {
     try {
-      const { id, participants, action } = update || {};
-      if (action === 'add') {
-        this.emit('group_join', { groupJid: id, participants });
-      } else if (action === 'remove') {
-        this.emit('group_leave', { groupJid: id, participants });
-      }
+      const { id, participants, action, author } = update || {};
       if (id) {
+        // Refresh membership BEFORE emitting, so notification.getChat() is current.
         const groups = await import('./groups.js');
         groups.default.invalidateCache(id);
       }
+      if (action !== 'add' && action !== 'remove') return;
+
+      // Baileys 7 reports participants as strings or as { id, phoneNumber, ... }.
+      for (const p of participants || []) {
+        if (p && typeof p === 'object' && p.id && p.phoneNumber) identity.addLidPnMapping(p.id, p.phoneNumber);
+      }
+      const recipientIds = (participants || [])
+        .map(p => (typeof p === 'string' ? p : p?.id))
+        .filter(Boolean)
+        .map(jid => this.exposeId(jid));
+      const authorId = author ? this.exposeId(author) : '';
+
+      // Same shape whatsapp-web.js gave commands/admin.js: chatId, recipientIds,
+      // getChat(), getRecipients().
+      const notification = {
+        groupJid: id,
+        chatId: id,
+        action,
+        participants,
+        recipientIds,
+        author: authorId,
+        getChat: () => this.getChat(id),
+        getRecipients: async () => Promise.all(recipientIds.map(jid => identity.getContact(jid))),
+        getContact: async () => (authorId ? identity.getContact(authorId) : null),
+      };
+      this.emit(action === 'add' ? 'group_join' : 'group_leave', notification);
     } catch (error) {
       logger.error('Error in group-participants.update handler:', error);
     }
@@ -584,12 +654,37 @@ class SocketManager {
 
   async handleLidMappingUpdate(update) {
     try {
-      if (update && identity?.handleLidMapping) {
-        identity.handleLidMapping(update);
+      // Baileys 7: { lid, pn } (or a list of them) whenever WhatsApp reveals a mapping.
+      for (const item of Array.isArray(update) ? update : [update]) {
+        if (item?.lid && item?.pn) identity.addLidPnMapping(item.lid, item.pn);
       }
     } catch (error) {
       logger.error('Error in lid-mapping.update handler:', error);
     }
+  }
+
+  // Chat object (group or DM) in the whatsapp-web.js shape, used by msg.getChat()
+  // and client.getChatById().
+  async getChat(jid) {
+    const groups = (await import('./groups.js')).default;
+    return groups.getChat(jid);
+  }
+
+  // True for the bot's own phone-number id AND its LID (LID-addressed groups
+  // and mentions use the LID).
+  isOwnJid(jid) {
+    const user = this.sock?.user;
+    if (!user || !jid) return false;
+    const target = identity.normalizeJid(jid);
+    return [user.id, user.lid].filter(Boolean).some(own => identity.normalizeJid(own) === target);
+  }
+
+  // Id commands see for a participant/mention: the bot always appears as its
+  // phone-number id (what client.info.wid reports), whichever way WhatsApp spelled it.
+  exposeId(jid) {
+    if (!jid) return '';
+    if (this.isOwnJid(jid)) return identity.toLegacyId(this.sock.user.id);
+    return identity.toStoredId(jid);
   }
 
   normalizeMessage(baileysMsg) {
@@ -597,16 +692,24 @@ class SocketManager {
     const key = baileysMsg.key || {};
     const rawMessage = baileysMsg.message;
     const message = normalizeMessageContent(rawMessage) || rawMessage || {};
-    
+
     const remoteJid = key.remoteJid || '';
     const isGroup = remoteJid.endsWith('@g.us');
-    const from = isGroup ? (key.participant || key.remoteJid) : remoteJid;
-    const author = isGroup ? (key.participant || '') : '';
-    
+    identity.learnFromKey(key);
+
+    // Same meaning as whatsapp-web.js, which every command was written against:
+    //   msg.from   = the CHAT (the group, or the other person in a DM)
+    //   msg.author = the SENDER inside a group ('' in a DM)
+    // Ids use the legacy spelling (see identity.toLegacyId) so they match what is
+    // stored in MongoDB. Raw Baileys values stay on msg._baileys / msg.key.
+    const senderJid = isGroup ? (key.participant || '') : remoteJid;
+    const chatId = this.exposeId(remoteJid);
+    const author = isGroup ? this.exposeId(senderJid) : '';
+
     let body = '';
     let type = 'chat';
     let hasMedia = false;
-    
+
     if (message.conversation) {
       body = message.conversation;
       type = 'chat';
@@ -636,33 +739,58 @@ class SocketManager {
     } else if (message.locationMessage) {
       type = 'location';
     }
-    
-    const quoted = message.extendedTextMessage?.contextInfo?.quotedMessage
-      || message.imageMessage?.contextInfo?.quotedMessage
-      || message.videoMessage?.contextInfo?.quotedMessage
-      || null;
-    const quotedId = message.extendedTextMessage?.contextInfo?.stanzaId
-      || message.imageMessage?.contextInfo?.stanzaId
-      || message.videoMessage?.contextInfo?.stanzaId
-      || null;
-    
+
+    // Every message type carries its own contextInfo (quote + mentions).
+    let contextInfo = null;
+    for (const value of Object.values(message)) {
+      if (value && typeof value === 'object' && value.contextInfo) { contextInfo = value.contextInfo; break; }
+    }
+    const quoted = contextInfo?.quotedMessage || null;
+    const quotedId = contextInfo?.stanzaId || null;
+    const quotedParticipant = contextInfo?.participant || null;
+    const mentionedIds = [...new Set((contextInfo?.mentionedJid || []).map(jid => this.exposeId(jid)).filter(Boolean))];
+
+    const botLegacyId = this.sock?.user?.id ? identity.toLegacyId(this.sock.user.id) : undefined;
+    const pushName = baileysMsg.pushName || '';
+
     const normalized = {
       id: { _serialized: key.id, id: key.id, remote: remoteJid, fromMe: key.fromMe },
-      from: from,
-      to: key.fromMe ? remoteJid : undefined,
-      author: author,
-      body: body,
-      type: type,
+      from: chatId,
+      to: key.fromMe ? chatId : botLegacyId,
+      author,
+      body,
+      type,
       timestamp: baileysMsg.messageTimestamp,
       fromMe: Boolean(key.fromMe),
-      hasMedia: hasMedia,
-      isGroup: isGroup,
-      chatId: remoteJid,
+      hasMedia,
+      isGroup,
+      chatId,
+      pushName,
+      mentionedIds,
+      hasQuotedMsg: Boolean(quoted),
       _baileys: baileysMsg,
-      key: key,
-      
-      reply: async (content, options = {}) => {
+      key,
+
+      // whatsapp-web.js signature, which ~70 call sites use:
+      //   msg.reply(content, chatId?, options?)   e.g. msg.reply(media, undefined, { caption })
+      // The second argument is an optional chat id, NOT the options. Treating it as
+      // options silently dropped every caption, mention, sticker and voice-note flag.
+      // msg.reply(content, { ...options }) is accepted as well.
+      reply: async (content, chatIdOrOptions, maybeOptions) => {
         const messages = (await import('./messages.js')).default;
+        let options = {};
+        let targetChat = null;
+        if (typeof chatIdOrOptions === 'string' && chatIdOrOptions) {
+          targetChat = chatIdOrOptions;
+          options = maybeOptions || {};
+        } else if (chatIdOrOptions && typeof chatIdOrOptions === 'object') {
+          options = chatIdOrOptions;
+        } else {
+          options = maybeOptions || {};
+        }
+        if (targetChat && identity.normalizeJid(targetChat) !== identity.normalizeJid(remoteJid)) {
+          return messages.sendMessage(identity.normalizeJid(targetChat), content, options);
+        }
         return messages.reply(normalized, content, options);
       },
       react: async (emoji) => {
@@ -677,36 +805,40 @@ class SocketManager {
         if (!hasMedia) return null;
         return downloadBaileysMedia(this.sock, baileysMsg);
       },
+      // WhatsApp includes the quoted message's content with the quote, so this
+      // works for old messages and after a restart, not only for stored ones.
       getQuotedMessage: async () => {
-        if (!quoted || !quotedId) return null;
+        if (!quoted) return null;
         const quotedKey = {
           remoteJid,
-          id: quotedId,
-          fromMe: false,
-          participant: message.extendedTextMessage?.contextInfo?.participant
-            || message.imageMessage?.contextInfo?.participant
-            || undefined,
+          id: quotedId || undefined,
+          fromMe: this.isOwnJid(quotedParticipant),
+          participant: isGroup ? (quotedParticipant || undefined) : undefined,
         };
-        const stored = messageStore.get(quotedKey);
+        const stored = quotedId ? messageStore.get(quotedKey) : null;
         if (stored) return this.normalizeMessage(stored);
-        return null;
+        return this.normalizeMessage({ key: quotedKey, message: quoted, messageTimestamp: baileysMsg.messageTimestamp });
       },
-      getChat: async () => {
-        const groups = (await import('./groups.js')).default;
-        if (isGroup) {
-          return groups.getGroup(remoteJid);
-        }
-        return { id: { _serialized: remoteJid }, isGroup: false };
-      },
+      getMentions: async () => Promise.all(mentionedIds.map(id => identity.getContact(id))),
+      getChat: async () => this.getChat(remoteJid),
       getContact: async () => {
-        return {
-          id: { _serialized: from },
-          number: from.replace(/@.*/, ''),
-          pushname: baileysMsg.pushName || '',
-        };
+        const jid = senderJid || remoteJid;
+        if (baileysMsg.pushName && jid) identity.rememberContact(identity.normalizeJid(jid), baileysMsg.pushName);
+        const contact = await identity.getContact(this.isOwnJid(jid) ? this.sock.user.id : jid);
+        return { ...contact, pushname: baileysMsg.pushName || contact.pushname, isMe: Boolean(key.fromMe) || contact.isMe };
+      },
+      pin: async (duration = 86400) => {
+        if (!this.sock) return false;
+        await this.sock.sendMessage(identity.normalizeJid(remoteJid), { pin: key, type: 1, time: Number(duration) || 86400 });
+        return true;
+      },
+      unpin: async () => {
+        if (!this.sock) return false;
+        await this.sock.sendMessage(identity.normalizeJid(remoteJid), { pin: key, type: 2 });
+        return true;
       },
     };
-    
+
     return normalized;
   }
 

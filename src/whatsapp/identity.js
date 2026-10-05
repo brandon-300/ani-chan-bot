@@ -220,6 +220,147 @@ class IdentityService {
   }
 
   /**
+   * The spelling of an id that the rest of the bot sees and stores in MongoDB.
+   *
+   * The whatsapp-web.js version of this bot keyed every user, group member and
+   * chat by "<number>@c.us" (or "<id>@lid" for people WhatsApp addresses by
+   * LID). Both libraries receive the same stanzas from WhatsApp, so only the
+   * spelling of phone-number ids differs. Everything the commands READ from the
+   * adapter (msg.from / msg.author / contacts / participants / mentions) goes
+   * through this, so a user keeps the SAME id (and therefore the same coins,
+   * cards, guild and AI history) whichever library is running. Ids going back
+   * OUT to WhatsApp are mapped the other way by normalizeJid().
+   */
+  toLegacyId(jid) {
+    const normalized = this.normalizeJid(jid);
+    if (!normalized || typeof normalized !== 'string') return normalized;
+    return normalized.replace(/@s\.whatsapp\.net$/, '@c.us');
+  }
+
+  /**
+   * The id a person is STORED under in MongoDB (and so the id commands see).
+   *
+   * WhatsApp can address one person two ways: by phone number ("234...@s.whatsapp.net")
+   * or by LID ("177...@lid"). Baileys 7 hands us the LID in many chats, but the
+   * whatsapp-web.js version resolved people to their phone-number id ("234...@c.us")
+   * before saving them, so that is what the database holds. To find the same
+   * account, a LID is translated to the phone-number id whenever WhatsApp has told
+   * us the mapping (see learnFromKey / learnIds). Only when no mapping is known
+   * does the LID itself come back, and a warning is logged once so it is visible.
+   */
+  toStoredId(jid) {
+    const normalized = this.normalizeJid(jid);
+    if (!normalized || typeof normalized !== 'string') return normalized;
+    if (isLid(normalized)) {
+      const pn = this.lidToPnMap.get(normalized);
+      if (pn) return this.toLegacyId(pn);
+      this.warnUnresolvedLid(normalized);
+      return normalized;
+    }
+    return this.toLegacyId(normalized);
+  }
+
+  warnUnresolvedLid(lid) {
+    if (!this.unresolvedLidWarned) this.unresolvedLidWarned = new Set();
+    if (this.unresolvedLidWarned.has(lid) || this.unresolvedLidWarned.size > 500) return;
+    this.unresolvedLidWarned.add(lid);
+    console.warn(`[identity] No phone number known yet for ${lid}; using the LID as the user id. ` +
+      'If this person is already registered under their phone number, they would be treated as new.');
+  }
+
+  /** True for the bot's own phone-number id and its LID. */
+  isBotJid(jid) {
+    const user = this.getSock()?.user;
+    if (!user || !jid) return false;
+    const target = this.normalizeJid(jid);
+    return [user.id, user.lid].filter(Boolean).some(own => this.normalizeJid(own) === target);
+  }
+
+  /**
+   * Learn LID <-> phone-number mappings straight from a message key. Baileys 7 puts
+   * the "other" spelling of the sender in participantAlt (groups) / remoteJidAlt (DMs).
+   * Synchronous, so normalizeMessage() can use it.
+   */
+  learnFromKey(key) {
+    if (!key) return;
+    const pairs = [[key.participant, key.participantAlt], [key.remoteJid, key.remoteJidAlt]];
+    for (const [a, b] of pairs) {
+      if (!a || !b) continue;
+      const first = this.normalizeJid(a);
+      const second = this.normalizeJid(b);
+      if (isLid(first) && !isLid(second) && second.endsWith('@s.whatsapp.net')) this.addLidPnMapping(first, second);
+      else if (isLid(second) && !isLid(first) && first.endsWith('@s.whatsapp.net')) this.addLidPnMapping(second, first);
+    }
+  }
+
+  /**
+   * Phone-number id for a LID, asking Baileys' own persisted LID store when the
+   * in-memory cache does not know it yet. Never throws; resolves to null if unknown.
+   */
+  async lookupPnForLid(lidJid) {
+    const lid = this.normalizeJid(lidJid);
+    if (!lid || !isLid(lid)) return null;
+    const cached = this.lidToPnMap.get(lid);
+    if (cached) return cached;
+    const store = this.getBaileysLidMapping();
+    if (!store?.getPNForLID) return null;
+    try {
+      const pn = await Promise.race([
+        Promise.resolve(store.getPNForLID(lid)),
+        new Promise(resolve => setTimeout(() => resolve(null), 1500)),
+      ]);
+      if (pn && typeof pn === 'string') {
+        this.addLidPnMapping(lid, pn);
+        return this.lidToPnMap.get(lid) || null;
+      }
+    } catch (error) {
+      // an unresolvable LID falls back to the LID id (and a warning), see toStoredId()
+    }
+    return null;
+  }
+
+  /**
+   * Make sure every id a message mentions is resolvable BEFORE the message is
+   * normalized (normalizeMessage is synchronous): sender, chat, mentioned people
+   * and the quoted author.
+   */
+  async learnIds(baileysMsg) {
+    if (!baileysMsg?.key) return;
+    this.learnFromKey(baileysMsg.key);
+    const candidates = new Set();
+    const key = baileysMsg.key;
+    if (key.participant) candidates.add(key.participant);
+    if (key.remoteJid && !key.remoteJid.endsWith('@g.us')) candidates.add(key.remoteJid);
+    const content = baileysMsg.message || {};
+    for (const value of Object.values(content)) {
+      const ctx = value && typeof value === 'object' ? value.contextInfo : null;
+      if (!ctx) continue;
+      for (const jid of ctx.mentionedJid || []) candidates.add(jid);
+      if (ctx.participant) candidates.add(ctx.participant);
+      break;
+    }
+    for (const jid of candidates) {
+      const normalized = this.normalizeJid(jid);
+      if (isLid(normalized) && !this.lidToPnMap.has(normalized)) await this.lookupPnForLid(normalized);
+    }
+  }
+
+  /**
+   * Mentions may be given as id strings or as contact objects ({ id: { _serialized } }),
+   * in either spelling. Baileys needs plain "@s.whatsapp.net" / "@lid" strings.
+   */
+  toMentionJids(list) {
+    if (!Array.isArray(list)) return [];
+    const out = [];
+    for (const item of list) {
+      const raw = typeof item === 'string' ? item : (item?.id?._serialized || item?._serialized || item?.id || '');
+      const jid = this.normalizeJid(raw);
+      if (jid && typeof jid === 'string' && jid.includes('@') && !out.includes(jid)) out.push(jid);
+    }
+    return out;
+  }
+
+  /**
    * Get the canonical identity for a JID
    * Returns the preferred identifier (LID if available, otherwise PN)
    * @param {string} jid - JID to resolve
@@ -517,13 +658,14 @@ class IdentityService {
    */
   async getContact(jid) {
     if (!jid) throw new TypeError('A contact JID is required.');
-    const normalized = this.normalizeJid(jid);
+    let normalized = this.normalizeJid(jid);
+    if (isLid(normalized) && !this.lidToPnMap.has(normalized)) await this.lookupPnForLid(normalized);
     const number = this.getPhoneNumber(normalized);
     const name = this.contacts.get(normalized) || this.getDisplayName(normalized) || number || 'Unknown';
-    const isMe = normalized === this.getBotJid();
+    const isMe = this.isBotJid(normalized) || normalized === this.getBotJid();
     
     return {
-      id: { _serialized: normalized, user: number },
+      id: { _serialized: this.toStoredId(normalized), user: number },
       number,
       name,
       pushname: name,

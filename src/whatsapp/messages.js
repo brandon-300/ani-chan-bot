@@ -13,6 +13,7 @@ import pino from 'pino';
 import { BOT_NAME, WHATSAPP_LOG_LEVEL } from '../utils/config.js';
 import { getActivePersonaSafe, loadPersona } from '../utils/persona.js';
 import { Sticker, StickerTypes } from 'wa-sticker-formatter';
+import { embedStickerExif } from './stickerMeta.js';
 
 const logger = pino({ level: WHATSAPP_LOG_LEVEL });
 
@@ -122,6 +123,27 @@ async function embedStickerMetadata(stickerBuffer, packName, author, categories 
 }
 
 /**
+ * Stickers: write the pack name and author into the .webp (see stickerMeta.js) and
+ * drop the helper fields Baileys does not understand. A .webp is edited in place; any
+ * other image/video is converted to a sticker first. If anything goes wrong the
+ * sticker is still sent, just without the metadata.
+ */
+async function finalizeStickerPayload(payload) {
+  if (!payload || !Buffer.isBuffer(payload.sticker)) return payload;
+  const { packname, author, categories, keepScale, circle, removeBackground, ...rest } = payload;
+  const pack = packname || BOT_NAME;
+  const authorName = author || BOT_NAME;
+  let sticker = payload.sticker;
+  try {
+    const embedded = await embedStickerExif(sticker, { pack, author: authorName, emojis: categories });
+    sticker = embedded || await embedStickerMetadata(sticker, pack, authorName, categories);
+  } catch (error) {
+    logger.error({ error }, 'Could not write sticker pack/author; sending the sticker as-is');
+  }
+  return { ...rest, sticker };
+}
+
+/**
  * Convert content to Baileys payload
  * Handles MessageMedia, strings, and objects
  * Guarantees sticker metadata for sticker content
@@ -144,13 +166,15 @@ function payloadFor(content, options = {}) {
   
   if (typeof content === 'string') {
     const text = { text: content };
-    if (Array.isArray(options.mentions) && options.mentions.length) text.mentions = options.mentions;
+    const textMentions = identity.toMentionJids(options.mentions);
+    if (textMentions.length) text.mentions = textMentions;
     return text;
   }
   
   if (content && typeof content === 'object') {
     const payload = { ...content };
-    if (Array.isArray(options.mentions) && options.mentions.length) payload.mentions = options.mentions;
+    const payloadMentions = identity.toMentionJids(options.mentions ?? payload.mentions);
+    if (payloadMentions.length) payload.mentions = payloadMentions;
     if (options.caption !== undefined && payload.caption === undefined) payload.caption = options.caption;
     
     // Ensure sticker metadata for sticker objects
@@ -270,13 +294,19 @@ class MessagesService {
     
     try {
       // Build payload with guaranteed sticker metadata
-      const payload = payloadFor(content, options);
+      const payload = await finalizeStickerPayload(payloadFor(content, options));
       const sendOpts = sendOptions(options, quotedMessage);
       
       const result = await sock.sendMessage(normalizedJid, payload, sendOpts);
       
       if (result?.key) {
         this.registerSentMessage(result.key, result);
+        // whatsapp-web.js returned an object with id._serialized; commands (quiz,
+        // games) keep it to recognise later replies that quote this message. It is
+        // the same short id an incoming/quoted message reports.
+        if (!result.id) {
+          result.id = { _serialized: result.key.id, id: result.key.id, remote: result.key.remoteJid, fromMe: true };
+        }
       }
       
       return result;
@@ -291,7 +321,9 @@ class MessagesService {
    * All replies flow through sendMessage with quoting
    */
   async reply(message, content, options = {}) {
-    const jid = message?.chatId || message?.from;
+    // The chat the message really arrived in. message.chatId / message.from are the
+    // ids commands see (phone-number spelling) and are only a fallback here.
+    const jid = message?._baileys?.key?.remoteJid || message?.key?.remoteJid || message?.chatId || message?.from;
     if (!jid) throw new TypeError('Cannot reply to a message without a chat JID.');
     
     const normalizedJid = identity.normalizeJid(jid);

@@ -13,6 +13,7 @@ import axios from 'axios';
 import path from 'path';
 import pino from 'pino';
 import { downloadMediaMessage, normalizeMessageContent } from '@whiskeysockets/baileys';
+import identity from './identity.js';
 
 const DEFAULT_DOWNLOAD_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_MEDIA_BYTES = 40 * 1024 * 1024;
@@ -197,14 +198,14 @@ export function toBaileysMediaPayload(content, options = {}) {
   const filename = source.filename || 'file';
   const extension = path.extname(filename).toLowerCase();
   const caption = options.caption ?? content.caption;
-  const mentions = options.mentions || content.mentions;
+  const mentions = identity.toMentionJids(options.mentions || content.mentions);
   
   const common = {};
   if (caption) common.caption = String(caption);
   if (Array.isArray(mentions) && mentions.length) common.mentions = mentions;
 
   // Sticker metadata
-  const packName = options.packName || options.stickerPack || content.packName || 'AniChan';
+  const packName = options.packName || options.stickerName || options.stickerPack || content.packName || 'AniChan';
   const author = options.author || options.stickerAuthor || content.author || 'AniChan Bot';
   const keepScale = options.keepScale !== undefined ? options.keepScale : true;
   const circle = options.circle !== undefined ? options.circle : false;
