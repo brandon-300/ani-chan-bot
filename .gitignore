@@ -14,3 +14,13 @@ imports/anime-stickers/**/*.png
 imports/anime-stickers/**/*.jpg
 imports/anime-stickers/**/*.jpeg
 voice-tests/
+auth_info_baileys*/
+# Baileys auth / session (never commit)
+auth_info_baileys/
+auth_info_baileys.*/
+auth_info_baileys.old*/
+
+# Safety nets
+**/auth_info_baileys*/
+*.old-*/
+
