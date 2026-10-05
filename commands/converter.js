@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { safeGetQuotedMessage } = require('../utils/helpers');
-const { BOT_NAME } = require('../utils/config');
+const { BOT_NAME, TOURL_PROVIDERS, TOURL_TIMEOUT_MS, TOURL_USER_AGENT, TOURL_LITTERBOX_HOURS } = require('../utils/config');
 
 const TMP = os.tmpdir();
 
@@ -87,69 +87,86 @@ async function getTargetMessage(msg) {
   }
 }
 
-// 0x0.st is a hobby-run anonymous file host with no uptime guarantees, and
-// its anti-abuse layer is known to block/rate-limit requests that don't
-// send a real User-Agent (Node's fetch sends nothing distinguishing by
-// default). We: (1) set a real User-Agent, (2) retry with backoff on
-// transient 503/429 responses, (3) fall back to catbox.moe if 0x0.st is
-// still down after retries — a single point of failure isn't good enough
-// on an unstable connection.
-const UPLOAD_USER_AGENT = 'AniChanBot/1.0 (+WhatsApp media relay; Termux)';
+// ─── .tourl uploaders ─────────────────────────────────────────────────────────
+// Free anonymous hosts have no uptime guarantee (0x0.st, the old first choice,
+// switched uploads off in 2026), so .tourl tries each host listed in
+// TOURL_PROVIDERS (utils/config.js, order set by TOURL_PROVIDER_ORDER in .env) and
+// uses the first that returns a real link. A reply that is not a link (for example
+// a "service disabled" message that still comes back as HTTP 200) counts as a
+// failure instead of being passed on to the user as if it were the link.
 
-async function uploadOnceTo0x0(buffer, filename) {
+function buildUploadForm(provider, buffer, filename) {
   const form = new FormData();
-  form.append('file', new Blob([buffer]), filename);
+  const file = new Blob([buffer]);
+  if (provider.id === 'litterbox') {
+    form.append('reqtype', 'fileupload');
+    form.append('time', `${TOURL_LITTERBOX_HOURS}h`);
+    form.append('fileToUpload', file, filename);
+  } else if (provider.id === 'uguu') {
+    form.append('files[]', file, filename);
+  } else {
+    form.append('reqtype', 'fileupload');
+    form.append('fileToUpload', file, filename);
+  }
+  return form;
+}
 
-  const res = await fetch('https://0x0.st', {
+function describeUploadError(err) {
+  if (err?.name === 'TimeoutError' || err?.name === 'AbortError') return 'timed out';
+  return String(err?.message || err).slice(0, 120);
+}
+
+async function uploadOnceToProvider(provider, buffer, filename) {
+  const res = await fetch(provider.url, {
     method: 'POST',
-    headers: { 'User-Agent': UPLOAD_USER_AGENT },
-    body: form,
+    headers: { 'User-Agent': TOURL_USER_AGENT },
+    body: buildUploadForm(provider, buffer, filename),
+    signal: AbortSignal.timeout(TOURL_TIMEOUT_MS),
   });
 
+  const text = (await res.text()).trim();
   if (!res.ok) {
-    const err = new Error(`HTTP ${res.status}`);
+    const err = new Error(`HTTP ${res.status}${text ? ` (${text.replace(/\s+/g, ' ').slice(0, 80)})` : ''}`);
     err.status = res.status;
     throw err;
   }
 
-  const text = (await res.text()).trim();
-  if (!text) throw new Error('empty response');
-  return text;
+  const link = text.split(/\s+/)[0] || '';
+  if (!/^https?:\/\/\S+$/i.test(link)) {
+    throw new Error(`not a link: ${text.replace(/\s+/g, ' ').slice(0, 100) || 'empty response'}`);
+  }
+  return link;
 }
 
-async function uploadTo0x0(buffer, filename, retries = 2) {
-  for (let attempt = 0; ; attempt++) {
+async function uploadToProvider(provider, buffer, filename) {
+  try {
+    return await uploadOnceToProvider(provider, buffer, filename);
+  } catch (err) {
+    // 429 / 503 mean "busy right now": one short retry. Anything else moves on to the next host.
+    if (err.status !== 429 && err.status !== 503) throw err;
+    await new Promise(r => setTimeout(r, 1500));
+    return await uploadOnceToProvider(provider, buffer, filename);
+  }
+}
+
+// Resolves { url, provider } for the first host that works; otherwise throws an
+// error whose message lists why each host failed.
+async function uploadToAnyHost(buffer, filename) {
+  const failures = [];
+  for (const provider of TOURL_PROVIDERS) {
+    if (buffer.length > provider.maxBytes) {
+      failures.push(`${provider.name}: file too big (limit ${Math.round(provider.maxBytes / 1048576)} MB)`);
+      continue;
+    }
     try {
-      return await uploadOnceTo0x0(buffer, filename);
+      const url = await uploadToProvider(provider, buffer, filename);
+      return { url, provider };
     } catch (err) {
-      // 503 (overloaded) / 429 (rate-limited) are transient — worth a
-      // retry with backoff. Anything else (bad file, 4xx, etc.) fails
-      // immediately since retrying won't help.
-      const transient = err.status === 503 || err.status === 429;
-      if (!transient || attempt >= retries) throw err;
-      await new Promise(r => setTimeout(r, 1500 * (attempt + 1)));
+      console.error(`[tourl] ${provider.name} failed:`, describeUploadError(err));
+      failures.push(`${provider.name}: ${describeUploadError(err)}`);
     }
   }
-}
-
-async function uploadToCatbox(buffer, filename) {
-  const form = new FormData();
-  form.append('reqtype', 'fileupload');
-  form.append('fileToUpload', new Blob([buffer]), filename);
-
-  const res = await fetch('https://catbox.moe/user/api.php', {
-    method: 'POST',
-    headers: { 'User-Agent': UPLOAD_USER_AGENT },
-    body: form,
-  });
-
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
-  const text = (await res.text()).trim();
-  if (!text || !text.startsWith('http')) {
-    throw new Error(`unexpected response: ${text.slice(0, 200)}`);
-  }
-  return text;
+  throw new Error(failures.join(' | ') || 'no upload host is configured');
 }
 
 module.exports = {
@@ -548,23 +565,11 @@ module.exports = {
       const buffer = Buffer.from(media.data, 'base64');
       const filename = `ani-chan_${Date.now()}.${mimeToExt(media.mimetype)}`;
 
-      let url;
-      try {
-        url = await uploadTo0x0(buffer, filename);
-      } catch (primaryErr) {
-        // 0x0.st is a hobby service with no uptime guarantee — fall back
-        // to catbox.moe rather than failing outright.
-        console.error('[tourl] 0x0.st failed, falling back to catbox.moe:', primaryErr.message);
-        try {
-          url = await uploadToCatbox(buffer, filename);
-        } catch (fallbackErr) {
-          throw new Error(`0x0.st: ${primaryErr.message} | catbox.moe: ${fallbackErr.message}`);
-        }
-      }
-
-      await msg.reply(`✅ Uploaded:\n${url}`);
+      const { url, provider } = await uploadToAnyHost(buffer, filename);
+      const note = provider.expires ? `\n⏳ This link is temporary (kept about ${provider.expires}).` : '';
+      await msg.reply(`✅ Uploaded:\n${url}${note}`);
     } catch (err) {
-      return msg.reply('❌ Upload failed: ' + err.message);
+      return msg.reply('❌ Upload failed. ' + err.message);
     }
   },
 };

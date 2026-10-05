@@ -128,6 +128,49 @@ const AI_STICKERS_ENABLED = envBool('AI_STICKERS_ENABLED', false);
 // Retired: sticker analysis is manual now (.stickeranalyze). The value is only read
 // so the bot can tell an owner whose .env still sets it that it is ignored.
 const AI_STICKER_AUTO_ANALYZE = envBool('AI_STICKER_AUTO_ANALYZE', false);
+// ─── Shared "already handled" record (both bot versions) ──────────────────────
+// The whatsapp-web.js and Baileys versions are ONE bot on ONE WhatsApp account. A
+// version that was switched off is sent every message it missed as soon as it
+// starts again, so without a shared record it would answer commands the other
+// version already answered. Each incoming message id is claimed in MongoDB by the
+// first version that sees it; the other skips it. These settings must be the same
+// for both versions, which is why they come from the shared .env.
+//   MESSAGE_CLAIM_ENABLED      set to false to turn the record off
+//   MESSAGE_CLAIM_TTL_HOURS    how long a claim is remembered (WhatsApp keeps
+//                              undelivered messages for days, so keep this generous)
+//   MESSAGE_CLAIM_TIMEOUT_MS   if MongoDB does not answer in time the message is
+//                              processed anyway (never drop messages because of a slow database)
+//   MESSAGE_CLAIM_COOLDOWN_MS  after such a failure, skip the record for this long so every
+//                              message is not delayed in turn
+const MESSAGE_CLAIM_ENABLED = (process.env.MESSAGE_CLAIM_ENABLED || 'true').trim().toLowerCase() !== 'false';
+const MESSAGE_CLAIM_TTL_HOURS = positiveEnvInt('MESSAGE_CLAIM_TTL_HOURS', 168);
+const MESSAGE_CLAIM_TIMEOUT_MS = positiveEnvInt('MESSAGE_CLAIM_TIMEOUT_MS', 4000);
+const MESSAGE_CLAIM_COOLDOWN_MS = positiveEnvInt('MESSAGE_CLAIM_COOLDOWN_MS', 30000);
+const BOT_ENGINE = 'wweb';
+
+// ─── .tourl: free anonymous file hosts, tried in this order ─────────────────────
+// 0x0.st switched uploads off in spring 2026 ("no ETA"), so .tourl now walks a list
+// of hosts and uses the first that works. Change the order, or drop a host that
+// stops working, with TOURL_PROVIDER_ORDER in .env (comma separated ids):
+//   catbox     catbox.moe                permanent    up to 200 MB
+//   litterbox  litterbox.catbox.moe      temporary    up to 1 GB, kept TOURL_LITTERBOX_HOURS (1, 12, 24 or 72)
+//   uguu       uguu.se                   temporary    up to 128 MB, kept a few hours
+// The endpoints can be overridden with TOURL_CATBOX_URL / TOURL_LITTERBOX_URL / TOURL_UGUU_URL.
+const TOURL_TIMEOUT_MS = positiveEnvInt('TOURL_TIMEOUT_MS', 45000);
+const TOURL_USER_AGENT = process.env.TOURL_USER_AGENT || 'AniChanBot/1.0 (+WhatsApp media relay; Termux)';
+const configuredLitterboxHours = positiveEnvInt('TOURL_LITTERBOX_HOURS', 72);
+const TOURL_LITTERBOX_HOURS = [1, 12, 24, 72].includes(configuredLitterboxHours) ? configuredLitterboxHours : 72;
+const TOURL_PROVIDER_CATALOG = {
+  catbox: { id: 'catbox', name: 'catbox.moe', url: process.env.TOURL_CATBOX_URL || 'https://catbox.moe/user/api.php', maxBytes: 200 * 1024 * 1024, expires: null },
+  litterbox: { id: 'litterbox', name: 'litterbox', url: process.env.TOURL_LITTERBOX_URL || 'https://litterbox.catbox.moe/resources/internals/api.php', maxBytes: 1024 * 1024 * 1024, expires: `${TOURL_LITTERBOX_HOURS} hours` },
+  uguu: { id: 'uguu', name: 'uguu.se', url: process.env.TOURL_UGUU_URL || 'https://uguu.se/upload?output=text', maxBytes: 128 * 1024 * 1024, expires: 'a few hours' },
+};
+const requestedProviderOrder = (process.env.TOURL_PROVIDER_ORDER || 'catbox,litterbox,uguu')
+  .split(',').map(id => id.trim().toLowerCase()).filter(id => TOURL_PROVIDER_CATALOG[id]);
+const TOURL_PROVIDERS = (requestedProviderOrder.length ? requestedProviderOrder : ['catbox', 'litterbox', 'uguu'])
+  .filter((id, index, all) => all.indexOf(id) === index)
+  .map(id => TOURL_PROVIDER_CATALOG[id]);
+
 const AI_STICKER_IMPORT_TIMEOUT_MINUTES = positiveEnvInt('AI_STICKER_IMPORT_TIMEOUT_MINUTES', 10);
 const AI_STICKER_MAX_BYTES = positiveEnvInt('AI_STICKER_MAX_BYTES', 2 * 1024 * 1024);
 const AI_STICKER_DOWNLOAD_TIMEOUT_MS = positiveEnvInt('AI_STICKER_DOWNLOAD_TIMEOUT_MS', 30000);
@@ -311,4 +354,13 @@ module.exports = {
   AI_REACT_DELAY_MAX_MS,
   AI_MESSAGE_MEMORY_MS,
   AI_MESSAGE_MEMORY_MAX,
+  MESSAGE_CLAIM_ENABLED,
+  MESSAGE_CLAIM_TTL_HOURS,
+  MESSAGE_CLAIM_TIMEOUT_MS,
+  MESSAGE_CLAIM_COOLDOWN_MS,
+  BOT_ENGINE,
+  TOURL_TIMEOUT_MS,
+  TOURL_USER_AGENT,
+  TOURL_LITTERBOX_HOURS,
+  TOURL_PROVIDERS,
 };

@@ -173,6 +173,16 @@ if (process.env.BOT_NUMBER) {
 
 const client = new Client(clientOptions);
 
+// ─── Shared "already handled" gate ────────────────────────────────────────────
+// This bot also exists as a Baileys version on the SAME WhatsApp account, and
+// whichever version was switched off is re-sent every message it missed when it
+// starts again. Each incoming message id is claimed in MongoDB (utils/messageClaims.js)
+// by the first version that sees it, so a message the other version already
+// answered is dropped here, before ANY of the 'message' listeners below run.
+// Messages are passed on strictly in arrival order; a claim failure lets the
+// message through (see messageClaims.js).
+require('./utils/messageClaims').gateClientMessages(client);
+
 const PREFIX = BOT_PREFIX;
 
 const commands = {};
