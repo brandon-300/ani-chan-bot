@@ -136,6 +136,34 @@ function seriesMainTitle(title) {
   return normalizeText(String(title || '').split(/[:\-–—(]/)[0]);
 }
 
+// "Is your character from <Title>?" -> "<Title>". Only a capitalised name counts as a title:
+// "from a romance anime", "from the 2000s", "from a long-running series" are genre / era
+// questions, not guesses at a specific series.
+const NOT_A_TITLE = new Set(['japan', 'earth', 'america', 'korea', 'china', 'europe', 'asia']);
+
+function titleFromQuestion(question) {
+  const text = String(question || '').trim();
+  const match = text.match(/\bfrom\s+(?:the\s+)?(?:(?:an?|the)\s+)?(?:(?:anime|series|show|manga)\s+)*(.+?)\s*[?!.]*$/i);
+  if (!match) return '';
+  const title = match[1].replace(/[?!.]+$/g, '').trim();
+  if (!/^[A-Z0-9]/.test(title)) return '';
+  if (/^(?:\d{4}s?|\d{2}s)\b/i.test(title)) return '';
+  if (NOT_A_TITLE.has(title.toLowerCase())) return '';
+  return title;
+}
+
+function isSeriesTitleQuestion(question) {
+  return Boolean(titleFromQuestion(question));
+}
+
+function sameSeries(a, b) {
+  const x = seriesMainTitle(a);
+  const y = seriesMainTitle(b);
+  if (!x || !y) return false;
+  if (x === y) return true;
+  return x.length >= 4 && y.length >= 4 && (` ${x} `.includes(` ${y} `) || ` ${y} `.includes(` ${x} `));
+}
+
 function seriesTitles(history) {
   const seen = new Map();
   for (const item of Array.isArray(history) ? history : []) {
@@ -205,7 +233,13 @@ function deriveEstablished(answers, history = []) {
     }
 
     // ── series the bot has been testing ──
-    for (const [main, full] of titles) {
+    const asked = new Map(titles);
+    const written = titleFromQuestion(entry?.question);
+    if (written) {
+      const main = seriesMainTitle(written);
+      if (main.length >= 3 && !asked.has(main)) asked.set(main, written);
+    }
+    for (const [main, full] of asked) {
       if (!info.has(main)) continue;
       if (answer === 'yes') confirmedSeries.push({ main, full });
       else if (isNegative(answer)) deniedSeries.push({ main, full });
@@ -217,7 +251,13 @@ function deriveEstablished(answers, history = []) {
   }
   if (confirmedSeries.length) {
     const keep = new Set(confirmedSeries.map(series => series.main));
-    for (const [main, full] of titles) {
+    const everyTitle = new Map(titles);
+    for (const entry of Array.isArray(answers) ? answers : []) {
+      const written = titleFromQuestion(entry?.question);
+      const main = written ? seriesMainTitle(written) : '';
+      if (main.length >= 3 && !everyTitle.has(main)) everyTitle.set(main, written);
+    }
+    for (const [main, full] of everyTitle) {
       if (!keep.has(main)) rules.push({ kind: 'series', main, full, reason: `the series is already confirmed` });
     }
   }
@@ -260,6 +300,76 @@ function findViolation(question, established, modelRuledOut = []) {
   return '';
 }
 
+// The series (as written in the rule) that a guessed anime title contradicts, or ''.
+// A guess from a series the player said "no" to - or from another series once one was
+// confirmed - is wrong whatever the model's confidence says.
+function seriesConflict(animeTitle, established) {
+  for (const rule of established?.rules || []) {
+    if (rule.kind === 'series' && sameSeries(animeTitle, rule.full || rule.main)) return rule.full || rule.main;
+  }
+  return '';
+}
+
+// ── series-title questions are rationed ────────────────────────────────────────
+// Asking about one series after another ("Is it Toradora? Horimiya? Nisekoi?") is not
+// guessing, it is reading a list. Title questions are allowed only after some questions
+// about the character itself, with gaps between them and within a budget; when the model
+// is already confident it may confirm a series sooner.
+function seriesQuestionProblem(question, answers, settings, confidence = 0) {
+  if (!isSeriesTitleQuestion(question)) return '';
+  const list = Array.isArray(answers) ? answers : [];
+  let total = 0;
+  let sinceLast = list.length;
+  list.forEach((entry, index) => {
+    if (isSeriesTitleQuestion(entry.question)) { total += 1; sinceLast = list.length - 1 - index; }
+  });
+  const confident = Number(confidence) >= settings.AKINATOR_SERIES_CONFIRM_CONFIDENCE;
+  if (total >= settings.AKINATOR_MAX_SERIES_QUESTIONS) return 'budget';
+  if (!confident && list.length < settings.AKINATOR_SERIES_QUESTION_MIN_ANSWERS) return 'too_early';
+  if (total > 0 && sinceLast < (confident ? 2 : settings.AKINATOR_SERIES_QUESTION_GAP)) return 'gap';
+  return '';
+}
+
+function seriesQuestionCount(answers) {
+  return (Array.isArray(answers) ? answers : []).filter(entry => isSeriesTitleQuestion(entry.question)).length;
+}
+
+// ── which parts of the CHARACTER have been asked about ──────────────────────────
+const CHARACTER_DIMENSIONS = [
+  { id: 'personality', label: 'personality (shy, cheerful, tsundere, serious, kind ...)', words: ['personality', 'tsundere', 'kuudere', 'yandere', 'dandere', 'shy', 'cheerful', 'serious', 'cold', 'kind', 'gentle', 'energetic', 'lazy', 'arrogant', 'cunning', 'mysterious', 'calm', 'clumsy', 'smart', 'intelligent', 'genius', 'confident', 'quiet', 'outgoing', 'stoic', 'bubbly', 'sarcastic', 'loyal', 'temper', 'tomboy', 'proud', 'stubborn', 'selfless', 'playful', 'mean', 'rude', 'sweet', 'honest', 'jealous', 'caring', 'ambitious'] },
+  { id: 'role', label: 'role in the story (main heroine, rival, love interest, side character ...)', words: ['protagonist', 'main character', 'heroine', 'hero', 'villain', 'antagonist', 'rival', 'mentor', 'sidekick', 'love interest', 'side character', 'supporting', 'deuteragonist', 'harem', 'lead', 'minor character'] },
+  { id: 'relationships', label: 'relationships and love life (family, childhood friend, crush ...)', words: ['sister', 'brother', 'sibling', 'family', 'mother', 'father', 'parent', 'friend', 'childhood', 'lover', 'boyfriend', 'girlfriend', 'crush', 'married', 'fiance', 'fiancee', 'engaged', 'love', 'dating', 'relationship', 'romantic', 'confess', 'confessed', 'kiss'] },
+  { id: 'age', label: 'age or school year', words: ['age', 'old', 'older', 'young', 'younger', 'teen', 'teenager', 'adult', 'child', 'kid', 'elderly', 'grade', 'first year', 'second year', 'third year', 'year old', 'middle school', 'elementary', 'university', 'college', 'senior', 'junior'] },
+  { id: 'affiliation', label: 'occupation, club or organisation', words: ['club', 'team', 'student council', 'organization', 'organisation', 'guild', 'military', 'teacher', 'idol', 'maid', 'nurse', 'doctor', 'detective', 'pilot', 'noble', 'royal', 'king', 'queen', 'princess', 'prince', 'president', 'job', 'occupation', 'works', 'work', 'part time', 'class', 'committee', 'academy'] },
+  { id: 'abilities', label: 'abilities or fighting style', words: ['fight', 'fights', 'fighter', 'combat', 'skill', 'skills', 'ability', 'abilities', 'strong', 'strength', 'fast', 'speed', 'magic', 'powers', 'weapon', 'weapons', 'talent', 'talented', 'skilled', 'athletic'] },
+  { id: 'appearance', label: 'appearance details (hairstyle, accessories, clothes)', words: ['glasses', 'ribbon', 'ribbons', 'uniform', 'dress', 'kimono', 'hat', 'cape', 'coat', 'scar', 'tattoo', 'horns', 'tail', 'ears', 'wings', 'mask', 'armor', 'jacket', 'hoodie', 'costume', 'skirt', 'accessory', 'accessories', 'bow', 'headband', 'clothes', 'wear', 'wears', 'ponytail', 'twin tails', 'twintails', 'pigtails', 'bangs', 'braid', 'braids', 'bun', 'tall', 'short', 'height', 'curvy', 'slim', 'long hair', 'short hair', 'curly', 'straight'] },
+  { id: 'species', label: 'species (human, demon, robot ...)', words: ['human', 'robot', 'android', 'demon', 'angel', 'vampire', 'ghost', 'alien', 'monster', 'elf', 'spirit', 'god', 'goddess', 'cyborg', 'beastman', 'fairy'] },
+  { id: 'signature', label: 'signature habit, catchphrase or famous moment', words: ['catchphrase', 'signature', 'famous for', 'known for', 'nickname', 'habit', 'always', 'never', 'favorite', 'favourite', 'hobby', 'hobbies', 'loves', 'afraid', 'fear', 'secret'] },
+];
+
+function dimensionsOf(question) {
+  const found = new Set();
+  // "Is your character from Kaguya-sama: Love is War?" says nothing about the character.
+  if (isSeriesTitleQuestion(question)) return found;
+  const info = analyze(question);
+  if (contextOf(info)) found.add('appearance');
+  if (gendersIn(info).length) found.add('gender');
+  for (const dimension of CHARACTER_DIMENSIONS) {
+    if (info.hasAny(dimension.words)) found.add(dimension.id);
+  }
+  return found;
+}
+
+// Labels of the character dimensions nobody has asked about yet, so the model can be
+// pointed at them. `answers` are the questions asked so far.
+function untouchedDimensions(answers) {
+  const touched = new Set();
+  for (const entry of Array.isArray(answers) ? answers : []) {
+    for (const id of dimensionsOf(entry.question)) touched.add(id);
+  }
+  return CHARACTER_DIMENSIONS.filter(dimension => !touched.has(dimension.id)).map(dimension => dimension.label);
+}
+
 // Dimensions a question touches, used to stop the game circling one subject.
 function topicsOf(question) {
   const info = analyze(question);
@@ -297,6 +407,13 @@ function topicStreak(question, recentAnswers) {
 const akinatorTopics = {
   deriveEstablished,
   findViolation,
+  seriesConflict,
+  seriesQuestionProblem,
+  seriesQuestionCount,
+  untouchedDimensions,
+  dimensionsOf,
+  titleFromQuestion,
+  isSeriesTitleQuestion,
   topicsOf,
   topicStreak,
   normalizeText,
@@ -304,4 +421,4 @@ const akinatorTopics = {
 };
 
 export default akinatorTopics;
-export { deriveEstablished, findViolation, topicsOf, topicStreak, normalizeText, TOPICS };
+export { deriveEstablished, findViolation, seriesConflict, seriesQuestionProblem, seriesQuestionCount, untouchedDimensions, dimensionsOf, titleFromQuestion, isSeriesTitleQuestion, topicsOf, topicStreak, normalizeText, TOPICS };

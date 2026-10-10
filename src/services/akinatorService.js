@@ -277,7 +277,7 @@ const EMPTY_PENDING = { questionMessageId: '', question: '' };
 
 // ─── what the model is asked ─────────────────────────────────────────────────
 
-function buildDecisionPrompt({ answers, questionsAsked, questionNumber, retryInstruction = '', history = [], facts = [], ruledOut = [] }) {
+function buildDecisionPrompt({ answers, questionsAsked, questionNumber, retryInstruction = '', history = [], facts = [], ruledOut = [], untouched = [], seriesAsked = 0 }) {
   const answerLines = answers.length
     ? answers.map((entry, index) => `${index + 1}. ${entry.question} -> ${answerMeaning(entry.answer)}`).join('\n')
     : '(No answers yet. Choose a strong opening question.)';
@@ -299,7 +299,10 @@ function buildDecisionPrompt({ answers, questionsAsked, questionNumber, retryIns
     'Good questions cover gender, age group, role in the story, appearance (hair, eyes, clothing), abilities and weapons, personality, affiliation, the series\' genre, setting and era, and finally the series itself. Early on, ask broad questions that split the whole anime world in two; later, ask the question that best separates your top candidates. Once the series is plausible you may ask whether the character is from that series.',
     'NEVER put any character\'s name in a question and never ask whether the character is a particular person: no "Is your character X?", no "Is your character\'s name X?", no "named X". The player must not be asked to confirm a name. When you are sure who it is, say so by setting action to "guess"; the application announces the character itself.',
     'Every answer settles more than the one question asked. Before you ask anything, check ESTABLISHED FACTS and RULED OUT below and never ask what they already answer. A "no" or "probably not" to a broad question (sports, weapons, magic, music, animals, food ...) rules out EVERYTHING inside it: after "Does your character play sports? no" never ask about volleyball, golf, tennis or any other sport. A "yes" to one value of an exclusive trait (hair colour, eye colour, gender, age group, species) settles it: after "blonde hair? yes" never ask about green, black or any other hair colour. Treat "probably not" like "no".',
-    'Test one hypothesis at a time with as few questions as possible. To check a series or genre, ask about it directly ("Is your character from a sports anime?", "Is your character from <series>?") instead of asking about each element inside it. When the answer is no, abandon that series completely, add it to ruledOut, and move on to the next most likely series or to a different dimension. Name three to five plausible series from the answers, test the likeliest, then the next. Never ask more than two questions in a row about the same dimension; vary what you ask about.',
+    'Narrow the character down by asking about the CHARACTER, not by reading out series titles. Never list series one after another ("Is it Toradora? Horimiya? Nisekoi?"): that is not guessing. After a "no" to a series do NOT try the next title; ask about the character instead. Ask "Is your character from <title>?" only when the answers strongly point to one series, never twice in a row, and the application will refuse more than a few such questions per game. A series has several names (Japanese title, English title, abbreviation); asking about the same series under another name is a repeat.',
+    'Once the kind of series is known (for example romance, sports, fantasy, school life), concentrate on the character: personality (shy, cheerful, tsundere, serious ...), role in the story (main heroine, rival, love interest, side character), relationships (childhood friend, sibling, who she is in love with), age or school year, occupation or club, hairstyle details (twin tails, ponytail, length), clothing and accessories (ribbon, glasses, uniform), abilities, habits and catchphrases. These narrow the field far faster than guessing titles. Vary the dimension from question to question and never ask more than two questions in a row about the same one.',
+    untouched.length ? `Dimensions of the character you have NOT asked about yet (prefer these): ${untouched.join('; ')}.` : '',
+    seriesAsked ? `Series-title questions asked so far: ${seriesAsked}.` : '',
     'Return knownFacts: the complete current list (at most ' + config.AKINATOR_STATE_LIST_LIMIT + ') of short conclusions you can draw from the answers, for example "Female", "Hair: blonde", "Not related to any sport", "Not from Haikyuu". Return ruledOut: the complete current list of topics, traits and series that must no longer be asked about.',
     'Each question must be a single, simple question the player can answer with yes / no / idk / prob (probably yes) / probnot (probably not). No multi-part questions, no ambiguous wording.',
     'Never repeat or merely paraphrase a question that was already asked.',
@@ -512,7 +515,7 @@ async function completeSession(session, reason) {
 // ─── Gemini calls ────────────────────────────────────────────────────────────
 
 async function getDecision(answers, questionsAsked, questionNumber, retryInstruction = '', state = {}) {
-  const prompt = buildDecisionPrompt({ answers, questionsAsked, questionNumber, retryInstruction, history: state.history || [], facts: state.facts || [], ruledOut: state.ruledOut || [] });
+  const prompt = buildDecisionPrompt({ answers, questionsAsked, questionNumber, retryInstruction, history: state.history || [], facts: state.facts || [], ruledOut: state.ruledOut || [], untouched: state.untouched || [], seriesAsked: state.seriesAsked || 0 });
   const raw = await gemini.generateStructured({
     model: config.AKINATOR_GEMINI_MODEL,
     systemPrompt: 'Return only the requested structured Akinator decision. The player-selected character is secret; reason from the supplied answer history and do not fabricate facts.',
@@ -536,6 +539,7 @@ async function getFallbackQuestion(answers, questionsAsked, questionNumber, avoi
     (state.facts || []).map(fact => `- ${fact}`).join('\n') || '(none)',
     'RULED OUT (never ask about these or anything inside them):',
     (state.ruledOut || []).map(item => `- ${item}`).join('\n') || '(none)',
+    (state.untouched || []).length ? `Ask about the CHARACTER, not about a series title. Not asked yet: ${state.untouched.join('; ')}.` : 'Ask about the CHARACTER, not about a series title.',
     'ANSWER HISTORY:',
     answers.map((entry, index) => `${index + 1}. ${entry.question} -> ${answerMeaning(entry.answer)}`).join('\n') || '(none)',
   ].join('\n');
@@ -687,10 +691,15 @@ async function startOrContinue(client, msg, args = []) {
         await AkinatorSession.updateOne({ _id: existing._id, status: 'active' }, { $set: { status: 'completed', endReason: 'expired', currentQuestionMessageId: '' } });
       }
 
-      const decision = await getDecision([], [], 0);
+      const decision = await getDecision([], [], 0, '', { untouched: topics.untouchedDimensions([]) });
+      // The opening question follows the same rules as every later one: new, no character name,
+      // and not a series title (nothing is known yet, so naming a series would be a blind guess).
+      const subjects = namesToAvoid(decision, {});
+      const unusable = q => !q || isRepeatedQuestion(q, []) || looksLikeNameQuestion(q, subjects)
+        || Boolean(topics.seriesQuestionProblem(q, [], config, decision.confidence));
       let question = decision.question;
-      if (!question || isRepeatedQuestion(question, [])) question = await getFallbackQuestion([], [], 0);
-      if (!question || isRepeatedQuestion(question, [])) throw new Error('Gemini did not provide a valid opening question.');
+      if (unusable(question)) question = await getFallbackQuestion([], [], 0, subjects, { untouched: topics.untouchedDimensions([]) });
+      if (unusable(question)) throw new Error('Gemini did not provide a valid opening question.');
 
       const session = await AkinatorSession.findOneAndUpdate(
         { chatId, userId },
@@ -811,6 +820,8 @@ async function handleIncomingAnswer(client, msg) {
       history: decisionSnapshot(session, { candidate: '' }),
       facts: [...new Set([...established.facts, ...(Array.isArray(session.knownFacts) ? session.knownFacts : [])])].slice(0, config.AKINATOR_STATE_LIST_LIMIT * 2),
       ruledOut: Array.isArray(session.ruledOut) ? session.ruledOut : [],
+      untouched: topics.untouchedDimensions(answers),
+      seriesAsked: topics.seriesQuestionCount(answers),
     });
 
     let decision;
@@ -830,6 +841,10 @@ async function handleIncomingAnswer(client, msg) {
     // names the character without a picture instead of asking forever.
     const finishWithGuess = async (current, { force = false } = {}) => {
       const reasons = force ? [] : explainGuessGate(current, session.questionNumber, answers, config, decisionSnapshot(session, current));
+      // The player said it is NOT from that series (or another series was confirmed): whatever the
+      // model's confidence, announcing a character from it would contradict the player.
+      const conflict = topics.seriesConflict(current.anime, established);
+      if (conflict) reasons.push(`series_ruled_out (${conflict})`);
       logTurn(session, current, answers, reasons, force);
       if (reasons.length) return false;
       const found = await findVerifiedCandidate(current, answers);
@@ -849,6 +864,18 @@ async function handleIncomingAnswer(client, msg) {
     };
 
     if (await finishWithGuess(decision)) return true;
+
+    // The model ignored a "no": its candidate is from a series the player ruled out.
+    const contradicted = topics.seriesConflict(decision.anime, established);
+    if (contradicted) {
+      try {
+        decision = await getDecision(answers, questionsAsked, session.questionNumber,
+          `The player said the character is NOT from "${contradicted}", yet your candidate is from it. Drop that candidate completely and every character from that series; propose the best candidate from other series, and ask about the character instead of naming series.`, stateFor());
+        if (await finishWithGuess(decision)) return true;
+      } catch (err) {
+        console.warn('[Akinator] re-asking after a contradicted candidate failed:', err.message);
+      }
+    }
 
     if (Number(session.questionNumber) >= config.AKINATOR_MAX_QUESTIONS) {
       try {
@@ -874,6 +901,8 @@ async function handleIncomingAnswer(client, msg) {
       if (settled) return `settled: ${settled}`;
       const streak = topics.topicStreak(question, answers);
       if (streak.count >= config.AKINATOR_TOPIC_STREAK_LIMIT) return `streak: ${streak.topic}`;
+      const series = topics.seriesQuestionProblem(question, answers, config, decision.confidence);
+      if (series) return `series: ${series}`;
       return '';
     };
     const usable = question => !problemWith(question);
@@ -885,6 +914,8 @@ async function handleIncomingAnswer(client, msg) {
         ? 'Your last question named a character. Never put a character\'s name in a question and never ask whether the character is a particular person; ask about traits or the series instead. If you are certain who it is, set action to "guess".'
         : problem.startsWith('settled:')
           ? `Your last question asked about something the answers already settled (${problem.slice(9)}). Do not ask about anything inside a ruled-out topic or another value of a trait that is already known. Move to a different dimension or the next most likely series, or set action to "guess" if you are certain.`
+          : problem.startsWith('series:')
+            ? `You are asking about specific series titles too early or too often (${problem.slice(8)}). Do not read out series one after another and do not try the next title after a no. Ask about the CHARACTER instead. Not asked yet: ${topics.untouchedDimensions(answers).join('; ') || 'her personality, role in the story, relationships, age, club or occupation, hairstyle details, clothing'}. If you are certain who it is, set action to "guess".`
           : problem.startsWith('streak:')
             ? `You have asked several questions in a row about the same subject (${problem.slice(8)}). Switch to a different dimension (for example the series, the story role, the personality or the abilities) or test the next most likely series.`
             : 'Your last question repeated one that was already asked. Ask something genuinely different, or set action to "guess" if you are certain.';
