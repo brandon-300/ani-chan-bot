@@ -4,6 +4,7 @@ const connect4 = require('./games/connect4');
 const chessGame = require('./games/chess');
 const battle = require('./games/battle');
 const quiz = require('./games/quiz');
+const akinatorService = require('../services/akinatorService');
 
 const GREEK_GODS = [
   { name: 'Zeus', domain: 'Sky & Thunder', symbol: '⚡' },
@@ -26,17 +27,6 @@ const WCG_QUESTIONS = [
   { q: 'Would you rather have no fingers or no toes?', opts: ['No fingers', 'No toes'] },
 ];
 
-// ─── Akinator-style guessing (simplified) ─────────────────────────────────────
-const akinatorSessions = new Map();
-
-const AKI_QUESTIONS = [
-  'Is your character male? (yes/no)',
-  'Is your character from an anime? (yes/no)',
-  'Is your character a hero? (yes/no)',
-  'Is your character known for their power? (yes/no)',
-  'Is your character popular worldwide? (yes/no)',
-];
-
 module.exports = {
   battleGames: battle.battleGames,
   ttt: tictactoe.ttt,
@@ -45,6 +35,15 @@ module.exports = {
   // .quitgame / .quit — forfeit whichever game you're currently in. Your
   // opponent is declared the winner regardless of the current board state.
   async quitgame(client, msg, args) {
+    // Akinator is per player (not per chat), so only the sender's own game is stopped.
+    try {
+      if (await akinatorService.cancelForMessage(msg)) {
+        return msg.reply('🛑 Your Akinator game was stopped.');
+      }
+    } catch (err) {
+      console.warn('[Akinator] .quitgame cancellation check failed:', err.message);
+    }
+
     const chat = await safeGetChat(msg);
     if (!chat) return;
     const contact = await msg.getContact();
@@ -120,20 +119,10 @@ module.exports = {
   // .flee
   flee: battle.flee,
 
-  // .akinator
-  async akinator(client, msg, args) {
-    const chat = await safeGetChat(msg);
-    if (!chat) return;
-    if (!chat) return;
-    const contact = await msg.getContact();
-
-    akinatorSessions.set(chat.id._serialized, {
-      userId: contact.id._serialized,
-      step: 0,
-      answers: [],
-    });
-
-    return msg.reply(`🔮 *Akinator*\n\nThink of a character and I'll guess it!\n\nQ1: ${AKI_QUESTIONS[0]}`);
+  // .akinator [start|stop|help] — alias .aki
+  // The service owns the persistent per-player game and handles the quoted answers.
+  akinator(client, msg, args) {
+    return akinatorService.startOrContinue(client, msg, args);
   },
 
   // .greekgod

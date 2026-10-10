@@ -16,6 +16,8 @@ const aiReactions = require('./utils/aiReactions');
 const { tryHandleQuizAnswer } = require('./commands/games/quiz');
 const AiConversation = require('./models/AiConversation');
 const aiConversations = require('./utils/aiConversations');
+const akinatorService = require('./services/akinatorService');
+const AkinatorSession = require('./models/AkinatorSession');
 const GroupActivity = require('./models/GroupActivity');
 
 // Installed as early as possible, before any command file's axios/fetch
@@ -122,6 +124,12 @@ async function connectMongo() {
         logger.error('background.ai_conversation_indexes.failed', err);
       }
     })();
+
+    // Akinator games are one per (chat, player) and expire on their own: the unique
+    // and TTL indexes keep that true. Best effort, not fatal to startup.
+    AkinatorSession.createIndexes().catch(err => {
+      logger.error('background.akinator_indexes.failed', err);
+    });
 
     // See migrateGroupActivityLog()'s own comment — safe to run on every
     // restart, not fatal to startup if it fails.
@@ -753,7 +761,7 @@ const HEAVY_COMMANDS = new Set([
   // fun.js — ffmpeg + headless-browser caption rendering
   'meme',
   // ai.js — external AI/API calls
-  'copilot', 'gpt', 'voice', 'imagine', 'upscale', 'translate', 'transcribe', 'tts',
+  'copilot', 'gpt', 'voice', 'imagine', 'upscale', 'translate', 'transcribe', 'tts', 'akinator',
   // search.js — external API/scraping calls
   'pinterest', 'sauce', 'wallpaper', 'lyrics',
   // cardmanager.js — multi-call AniList lookups / background-batch triggers / bulk DB repair
@@ -1044,6 +1052,24 @@ client.on('message', (msg) => {
         logger.write('INFO', 'route.ai_sticker_import', { messageType: msg.type, chatId: msg.from });
         return;
       }
+    }
+
+    // ── Akinator answers ─────────────────────────────────────────────────
+    // Must come before the generic reply-to-bot router further down, otherwise a
+    // quoted answer ("yes") to an Akinator question would also be sent to Copilot.
+    // The service only takes a message that quotes the sender's CURRENT question;
+    // everything else falls through untouched.
+    try {
+      if (await akinatorService.handleIncomingAnswer(client, msg)) {
+        logger.write('INFO', 'route.akinator_answer', { chatId: msg.from, messageType: msg.type });
+        return;
+      }
+    } catch (err) {
+      logger.error('route.akinator_answer.failed', err, { chatId: msg.from });
+      try {
+        await msg.reply('⚠️ Akinator could not process that reply just now. Your progress is saved; please try again.');
+      } catch (_replyErr) { /* nothing more to do */ }
+      return;
     }
 
     // ── Anime Quiz answers ───────────────────────────────────────────────
