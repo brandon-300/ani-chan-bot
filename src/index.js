@@ -18,6 +18,7 @@ import { instrumentHttpClients, wrapWithUsageTracking } from './utils/usageTrack
 import logger from './utils/logger.js';
 import geminiGate from './utils/geminiGate.js';
 import { tryHandleQuizAnswer } from './commands/games/quiz.js';
+import akinatorService from './services/akinatorService.js';
 import { createReactionHandler } from './utils/aiReactions.js';
 
 // Import WhatsApp adapter
@@ -59,6 +60,13 @@ async function connectMongo() {
     const AiConversation = (await import('./models/AiConversation.js')).default;
     AiConversation.syncIndexes().catch(err => {
       logger.error('background.ai_conversation_indexes.failed', err);
+    });
+
+    // Akinator games are one per (chat, player) and expire on their own: the unique
+    // and TTL indexes keep that true. Best effort, not fatal to startup.
+    const AkinatorSession = (await import('./models/AkinatorSession.js')).default;
+    AkinatorSession.createIndexes().catch(err => {
+      logger.error('background.akinator_indexes.failed', err);
     });
 
     // Migrate group activity log
@@ -293,7 +301,7 @@ const HEAVY_COMMANDS = new Set([
   'ig', 'ttk', 'yt', 'x', 'fb', 'play',
   'sticker', 'take', 'toimg', 'tovid', 'rotate', 'tomp3', 'tovn', 'flip', 'resize', 'tourl',
   'meme',
-  'copilot', 'gpt', 'voice', 'imagine', 'upscale', 'translate', 'transcribe', 'tts',
+  'copilot', 'gpt', 'voice', 'imagine', 'upscale', 'translate', 'transcribe', 'tts', 'akinator',
   'pinterest', 'sauce', 'wallpaper', 'lyrics',
   'backfillimages', 'bulkadd', 'autoexpand', 'repairlinks', 'purgeorphans',
   'stats',
@@ -457,6 +465,21 @@ async function initialize() {
             logger.write('INFO', 'route.ai_sticker_import', { messageType: baileysMsg.type, chatId: baileysMsg.from });
             return;
           }
+        }
+
+        // Handle Akinator answers. The service only takes a message that quotes the
+        // sender's CURRENT Akinator question; everything else falls through untouched.
+        try {
+          if (await akinatorService.handleIncomingAnswer(client, baileysMsg)) {
+            logger.write('INFO', 'route.akinator_answer', { chatId: baileysMsg.from, messageType: baileysMsg.type });
+            return;
+          }
+        } catch (err) {
+          logger.error('route.akinator_answer.failed', err, { chatId: baileysMsg.from });
+          try {
+            await baileysMsg.reply('⚠️ Akinator could not process that reply just now. Your progress is saved; please try again.');
+          } catch (_replyErr) { /* nothing more to do */ }
+          return;
         }
 
         // Handle quiz answers

@@ -317,6 +317,112 @@ async function transcribeAudio({ base64Audio, mimeType }) {
   }
 }
 
-export default { generateText, generateVision, generateImage, transcribeAudio };
+// ─── Structured JSON (small, stateful game decisions) ───────────────────────
+// Used by the Akinator game. The model is forced to answer with a JSON object that
+// matches `schema`, so the bot never has to parse free-form prose.
+//
+// useGoogleSearch adds Google Search grounding for fact checks. Search grounding
+// cannot be combined with a response schema on every model (Gemini 2.x rejects it),
+// so that call asks for JSON in the prompt instead and the reply is parsed leniently.
+// Everything goes through the same generateContent endpoint as the rest of the bot,
+// and nothing is stored on Google's side.
+const GEMINI_SCHEMA_TYPES = {
+  string: 'STRING', number: 'NUMBER', integer: 'INTEGER',
+  boolean: 'BOOLEAN', object: 'OBJECT', array: 'ARRAY',
+};
 
-export { generateText, generateVision, generateImage, transcribeAudio };
+function toGenerateContentSchema(schema) {
+  if (Array.isArray(schema)) return schema.map(toGenerateContentSchema);
+  if (!schema || typeof schema !== 'object') return schema;
+  const converted = { ...schema };
+  // generateContent's schema dialect has no additionalProperties.
+  delete converted.additionalProperties;
+  if (typeof converted.type === 'string') {
+    converted.type = GEMINI_SCHEMA_TYPES[converted.type.toLowerCase()] || converted.type;
+  }
+  if (converted.properties && typeof converted.properties === 'object') {
+    converted.properties = Object.fromEntries(
+      Object.entries(converted.properties).map(([key, value]) => [key, toGenerateContentSchema(value)])
+    );
+  }
+  if (converted.items) converted.items = toGenerateContentSchema(converted.items);
+  return converted;
+}
+
+// Pulls the first complete {...} object out of a reply that may be wrapped in
+// ``` fences or surrounded by prose (grounded replies are not schema constrained).
+function parseJsonObject(text) {
+  const cleaned = String(text || '').replace(/```(?:json)?/gi, '').trim();
+  try { return JSON.parse(cleaned); } catch { /* fall through to scanning */ }
+  const start = cleaned.indexOf('{');
+  if (start < 0) return null;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < cleaned.length; i++) {
+    const ch = cleaned[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') inString = true;
+    else if (ch === '{') depth++;
+    else if (ch === '}' && --depth === 0) {
+      try { return JSON.parse(cleaned.slice(start, i + 1)); } catch { return null; }
+    }
+  }
+  return null;
+}
+
+async function generateStructured({
+  systemPrompt,
+  prompt,
+  schema,
+  model = TEXT_MODEL,
+  maxOutputTokens = 1200,
+  timeoutMs = REQUEST_TIMEOUT_MS,
+  useGoogleSearch = false,
+}) {
+  geminiGate.assertAvailable();
+  assertKey();
+  if (typeof prompt !== 'string' || !prompt.trim()) throw new TypeError('generateStructured requires a non-empty prompt');
+  if (!schema || typeof schema !== 'object') throw new TypeError('generateStructured requires a JSON schema');
+
+  const generationConfig = buildGenerationConfig(maxOutputTokens);
+  const body = { contents: [{ role: 'user', parts: [{ text: prompt }] }], generationConfig };
+  if (useGoogleSearch) {
+    body.tools = [{ google_search: {} }];
+    body.contents[0].parts[0].text = `${prompt}\n\nReply with ONLY one JSON object (no markdown, no commentary) with exactly these fields: ${Object.keys(schema.properties || {}).join(', ')}.`;
+  } else {
+    generationConfig.responseMimeType = 'application/json';
+    generationConfig.responseSchema = toGenerateContentSchema(schema);
+  }
+  if (systemPrompt) body.systemInstruction = { parts: [{ text: systemPrompt }] };
+
+  try {
+    const res = await axios.post(`${BASE_URL}/${model}:generateContent`, body, {
+      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': GEMINI_API_KEY },
+      timeout: timeoutMs,
+    });
+    const parsed = parseJsonObject(extractTextOrThrow(res));
+    if (!parsed || typeof parsed !== 'object') {
+      const err = new Error('Gemini returned invalid JSON');
+      err.code = 'INVALID_STRUCTURED_JSON';
+      throw err;
+    }
+    return parsed;
+  } catch (err) {
+    if (['EMPTY_RESPONSE', 'INVALID_STRUCTURED_JSON'].includes(err.code)) throw err;
+    const wrapped = new Error(`Gemini structured generation failed: ${extractApiErrorMessage(err)}`);
+    wrapped.code = 'GEMINI_STRUCTURED_ERROR';
+    wrapped.status = err.response?.status || err.status;
+    wrapped.cause = err;
+    throw wrapped;
+  }
+}
+
+export default { generateText, generateVision, generateImage, transcribeAudio, generateStructured, _parseJsonObject: parseJsonObject };
+
+export { generateText, generateVision, generateImage, transcribeAudio, generateStructured };

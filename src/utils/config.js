@@ -269,6 +269,71 @@ const TOURL_PROVIDERS = (requestedProviderOrder.length ? requestedProviderOrder 
   .filter((id, index, all) => all.indexOf(id) === index)
   .map(id => TOURL_PROVIDER_CATALOG[id]);
 
+// ─── Akinator (Gemini reasoning + AniList/Jikan character check) ────────────
+// Every limit lives here so Termux deployments can tune request volume, the
+// confidence policy and network timeouts from .env without touching command logic.
+// The same variables are read by the whatsapp-web.js and Baileys versions.
+//
+// Reasoning model. Falls back to GEMINI_TEXT_MODEL, then the project default.
+const AKINATOR_GEMINI_MODEL = process.env.AKINATOR_GEMINI_MODEL || process.env.GEMINI_TEXT_MODEL || 'gemini-3.1-flash-lite';
+// When the bot may guess. The application decides, not the model: it needs at least
+// AKINATOR_MIN_QUESTIONS answers, then EITHER the model's confidence in ONE candidate is at
+// least AKINATOR_GUESS_CONFIDENCE, OR that same candidate has led for the last
+// AKINATOR_STABLE_TURNS questions each at AKINATOR_STABLE_CONFIDENCE or more (this stops the
+// bot asking forever about a character it already knows). On top of either, the candidate must
+// lead the runner-up by AKINATOR_MIN_CONFIDENCE_GAP, be backed by at least
+// AKINATOR_MIN_SUPPORTING_EVIDENCE of the player's answers, and have at most
+// AKINATOR_MAX_CONTRADICTIONS answers against it. The model's numbers are advisory, which is
+// why these independent checks exist. There is no fixed "20 questions" limit;
+// AKINATOR_MAX_QUESTIONS only stops a game that is going nowhere.
+// To make it guess sooner lower AKINATOR_GUESS_CONFIDENCE (0.9) or AKINATOR_MIN_QUESTIONS;
+// to make it more careful raise them.
+const AKINATOR_MIN_QUESTIONS = positiveEnvInt('AKINATOR_MIN_QUESTIONS', 15);
+const AKINATOR_MAX_QUESTIONS = Math.max(AKINATOR_MIN_QUESTIONS, positiveEnvInt('AKINATOR_MAX_QUESTIONS', 50));
+const AKINATOR_GUESS_CONFIDENCE = envFloat('AKINATOR_GUESS_CONFIDENCE', 0.95, 0.5, 1);
+const AKINATOR_STABLE_TURNS = positiveEnvInt('AKINATOR_STABLE_TURNS', 4);
+const AKINATOR_STABLE_CONFIDENCE = envFloat('AKINATOR_STABLE_CONFIDENCE', 0.9, 0.5, 1);
+const AKINATOR_MIN_CONFIDENCE_GAP = envFloat('AKINATOR_MIN_CONFIDENCE_GAP', 0.18, 0, 1);
+const AKINATOR_MIN_SUPPORTING_EVIDENCE = positiveEnvInt('AKINATOR_MIN_SUPPORTING_EVIDENCE', 5);
+const AKINATOR_MAX_CONTRADICTIONS = Math.max(0, envInt('AKINATOR_MAX_CONTRADICTIONS', 1));
+const AKINATOR_MAX_RUNNER_UP_CONFIDENCE_NO_CANDIDATE = envFloat('AKINATOR_MAX_RUNNER_UP_CONFIDENCE_NO_CANDIDATE', 0.02, 0, 0.5);
+// A question counts as a repeat when this share of its meaningful words was already asked.
+const AKINATOR_DUPLICATE_QUESTION_SIMILARITY = envFloat('AKINATOR_DUPLICATE_QUESTION_SIMILARITY', 0.84, 0.5, 1);
+// A guess must be matched to a real character (AniList, then Jikan/MyAnimeList, then a
+// Google-grounded check) so it can come with a real picture. If the character is very
+// well supported by the answers but cannot be matched anywhere, the bot asks this many
+// more questions and then names the character WITHOUT a picture instead of looping.
+const AKINATOR_UNVERIFIED_GUESS_AFTER = positiveEnvInt('AKINATOR_UNVERIFIED_GUESS_AFTER', 2);
+// Games are saved in MongoDB, so they survive restarts, and are dropped after this long idle.
+const AKINATOR_SESSION_TIMEOUT_HOURS = positiveEnvInt('AKINATOR_SESSION_TIMEOUT_HOURS', 24);
+const AKINATOR_COMPLETED_RETENTION_HOURS = positiveEnvInt('AKINATOR_COMPLETED_RETENTION_HOURS', 24);
+const AKINATOR_CANDIDATE_HISTORY_LIMIT = positiveEnvInt('AKINATOR_CANDIDATE_HISTORY_LIMIT', 20);
+// Question quality: the model keeps a notebook of what the answers settled (at most this many
+// entries) and no more than AKINATOR_TOPIC_STREAK_LIMIT questions in a row may circle the same
+// subject (hair, sports, weapons ...) without a yes.
+const AKINATOR_STATE_LIST_LIMIT = positiveEnvInt('AKINATOR_STATE_LIST_LIMIT', 30);
+const AKINATOR_TOPIC_STREAK_LIMIT = positiveEnvInt('AKINATOR_TOPIC_STREAK_LIMIT', 2);
+// Gemini
+const AKINATOR_REQUEST_TIMEOUT_MS = positiveEnvInt('AKINATOR_REQUEST_TIMEOUT_MS', 35000);
+const AKINATOR_GEMINI_MAX_OUTPUT_TOKENS = positiveEnvInt('AKINATOR_GEMINI_MAX_OUTPUT_TOKENS', 1400);
+const AKINATOR_GEMINI_QUESTION_OUTPUT_TOKENS = positiveEnvInt('AKINATOR_GEMINI_QUESTION_OUTPUT_TOKENS', 256);
+const AKINATOR_GEMINI_SEARCH_OUTPUT_TOKENS = positiveEnvInt('AKINATOR_GEMINI_SEARCH_OUTPUT_TOKENS', 600);
+const AKINATOR_SEARCH_GROUNDING_ENABLED = envBool('AKINATOR_SEARCH_GROUNDING_ENABLED', true);
+const AKINATOR_SEARCH_ANSWER_CONTEXT_COUNT = positiveEnvInt('AKINATOR_SEARCH_ANSWER_CONTEXT_COUNT', 8);
+// Character lookup. AniList is tried first (the card system already relies on it), then
+// Jikan (MyAnimeList). Jikan allows roughly one request per second.
+const AKINATOR_ANILIST_URL = process.env.AKINATOR_ANILIST_URL || 'https://graphql.anilist.co';
+const AKINATOR_ANILIST_ENABLED = envBool('AKINATOR_ANILIST_ENABLED', true);
+const AKINATOR_JIKAN_API_BASE = (process.env.AKINATOR_JIKAN_API_BASE || 'https://api.jikan.moe/v4').replace(/\/+$/, '');
+const AKINATOR_JIKAN_ENABLED = envBool('AKINATOR_JIKAN_ENABLED', true);
+const AKINATOR_LOOKUP_TIMEOUT_MS = positiveEnvInt('AKINATOR_LOOKUP_TIMEOUT_MS', 12000);
+const AKINATOR_JIKAN_MIN_INTERVAL_MS = positiveEnvInt('AKINATOR_JIKAN_MIN_INTERVAL_MS', 1100);
+const AKINATOR_LOOKUP_SEARCH_LIMIT = positiveEnvInt('AKINATOR_LOOKUP_SEARCH_LIMIT', 6);
+const AKINATOR_IMAGE_MAX_BYTES = positiveEnvInt('AKINATOR_IMAGE_MAX_BYTES', 5 * 1024 * 1024);
+// Only pictures from these hosts are downloaded (comma separated).
+const AKINATOR_IMAGE_HOSTS = (process.env.AKINATOR_IMAGE_HOSTS || 's4.anilist.co,cdn.myanimelist.net')
+  .split(',').map(host => host.trim().toLowerCase()).filter(Boolean);
+
 // ─── Baileys / pino log level ───────────────────────────────────────────────
 // The bot's own logger (utils/logger.js) takes LOG_LEVEL=ERROR|WARN|INFO|DEBUG.
 // pino, which Baileys uses internally, ONLY accepts lowercase names and throws
@@ -297,7 +362,7 @@ const GEMINI_PAUSE_DURING_STICKER_ANALYSIS = envBool('GEMINI_PAUSE_DURING_STICKE
 // .sauce is deliberately NOT here: it works through SauceNAO and only its
 // optional Gemini fallback is paused (see commands/search.js).
 const GEMINI_COMMANDS = process.env.GEMINI_COMMANDS === undefined
-  ? ['copilot', 'gpt', 'voice', 'imagine', 'translate', 'transcribe']
+  ? ['copilot', 'gpt', 'voice', 'imagine', 'translate', 'transcribe', 'akinator']
   : process.env.GEMINI_COMMANDS.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
 const GEMINI_BUSY_MESSAGE = (process.env.GEMINI_BUSY_MESSAGE || '').trim()
   || '⏳ This command is currently unavailable. Please try again later.';
@@ -339,6 +404,38 @@ export default {
   MESSAGE_CLAIM_TIMEOUT_MS,
   MESSAGE_CLAIM_COOLDOWN_MS,
   BOT_ENGINE,
+  AKINATOR_GEMINI_MODEL,
+  AKINATOR_MIN_QUESTIONS,
+  AKINATOR_MAX_QUESTIONS,
+  AKINATOR_GUESS_CONFIDENCE,
+  AKINATOR_STABLE_TURNS,
+  AKINATOR_STABLE_CONFIDENCE,
+  AKINATOR_MIN_CONFIDENCE_GAP,
+  AKINATOR_MIN_SUPPORTING_EVIDENCE,
+  AKINATOR_MAX_CONTRADICTIONS,
+  AKINATOR_MAX_RUNNER_UP_CONFIDENCE_NO_CANDIDATE,
+  AKINATOR_DUPLICATE_QUESTION_SIMILARITY,
+  AKINATOR_UNVERIFIED_GUESS_AFTER,
+  AKINATOR_SESSION_TIMEOUT_HOURS,
+  AKINATOR_COMPLETED_RETENTION_HOURS,
+  AKINATOR_CANDIDATE_HISTORY_LIMIT,
+  AKINATOR_STATE_LIST_LIMIT,
+  AKINATOR_TOPIC_STREAK_LIMIT,
+  AKINATOR_REQUEST_TIMEOUT_MS,
+  AKINATOR_GEMINI_MAX_OUTPUT_TOKENS,
+  AKINATOR_GEMINI_QUESTION_OUTPUT_TOKENS,
+  AKINATOR_GEMINI_SEARCH_OUTPUT_TOKENS,
+  AKINATOR_SEARCH_GROUNDING_ENABLED,
+  AKINATOR_SEARCH_ANSWER_CONTEXT_COUNT,
+  AKINATOR_ANILIST_URL,
+  AKINATOR_ANILIST_ENABLED,
+  AKINATOR_JIKAN_API_BASE,
+  AKINATOR_JIKAN_ENABLED,
+  AKINATOR_LOOKUP_TIMEOUT_MS,
+  AKINATOR_JIKAN_MIN_INTERVAL_MS,
+  AKINATOR_LOOKUP_SEARCH_LIMIT,
+  AKINATOR_IMAGE_MAX_BYTES,
+  AKINATOR_IMAGE_HOSTS,
   TOURL_TIMEOUT_MS,
   TOURL_USER_AGENT,
   TOURL_LITTERBOX_HOURS,
@@ -409,6 +506,38 @@ export {
   MESSAGE_CLAIM_TIMEOUT_MS,
   MESSAGE_CLAIM_COOLDOWN_MS,
   BOT_ENGINE,
+  AKINATOR_GEMINI_MODEL,
+  AKINATOR_MIN_QUESTIONS,
+  AKINATOR_MAX_QUESTIONS,
+  AKINATOR_GUESS_CONFIDENCE,
+  AKINATOR_STABLE_TURNS,
+  AKINATOR_STABLE_CONFIDENCE,
+  AKINATOR_MIN_CONFIDENCE_GAP,
+  AKINATOR_MIN_SUPPORTING_EVIDENCE,
+  AKINATOR_MAX_CONTRADICTIONS,
+  AKINATOR_MAX_RUNNER_UP_CONFIDENCE_NO_CANDIDATE,
+  AKINATOR_DUPLICATE_QUESTION_SIMILARITY,
+  AKINATOR_UNVERIFIED_GUESS_AFTER,
+  AKINATOR_SESSION_TIMEOUT_HOURS,
+  AKINATOR_COMPLETED_RETENTION_HOURS,
+  AKINATOR_CANDIDATE_HISTORY_LIMIT,
+  AKINATOR_STATE_LIST_LIMIT,
+  AKINATOR_TOPIC_STREAK_LIMIT,
+  AKINATOR_REQUEST_TIMEOUT_MS,
+  AKINATOR_GEMINI_MAX_OUTPUT_TOKENS,
+  AKINATOR_GEMINI_QUESTION_OUTPUT_TOKENS,
+  AKINATOR_GEMINI_SEARCH_OUTPUT_TOKENS,
+  AKINATOR_SEARCH_GROUNDING_ENABLED,
+  AKINATOR_SEARCH_ANSWER_CONTEXT_COUNT,
+  AKINATOR_ANILIST_URL,
+  AKINATOR_ANILIST_ENABLED,
+  AKINATOR_JIKAN_API_BASE,
+  AKINATOR_JIKAN_ENABLED,
+  AKINATOR_LOOKUP_TIMEOUT_MS,
+  AKINATOR_JIKAN_MIN_INTERVAL_MS,
+  AKINATOR_LOOKUP_SEARCH_LIMIT,
+  AKINATOR_IMAGE_MAX_BYTES,
+  AKINATOR_IMAGE_HOSTS,
   TOURL_TIMEOUT_MS,
   TOURL_USER_AGENT,
   TOURL_LITTERBOX_HOURS,
