@@ -84,6 +84,15 @@ function extractTextOrThrow(res) {
   return text;
 }
 
+// Google's thinking levels differ by model: gemini-3.8-flash and gemini-3.7-flash accept only
+// low / medium / high and reject "minimal" with "Thinking level MINIMAL is not supported for this
+// model"; gemini-3.6-flash, the lite models and older Flash models accept "minimal". "minimal" is
+// preferred where allowed (cheaper and faster), "low" is the closest level for 3.8 / 3.7.
+// Suffixes (-preview, -001, -lite ...) are covered; for an unknown suffix "low" is the safe choice.
+function thinkingLevelFor(model) {
+  return /^(?:models\/)?gemini-3\.(?:7|8)-flash(?:$|[-_.:@/])/i.test(String(model || '')) ? 'low' : 'minimal';
+}
+
 // Gemini 3.x models (gemini-3.1-flash-lite included) run an internal
 // "thinking" pass before writing the visible answer, and — per Google's
 // docs — thinking tokens and output tokens are BOTH drawn from the same
@@ -98,10 +107,11 @@ function extractTextOrThrow(res) {
 // restricting model access — see the TEXT_MODEL comment above), that
 // model's default thinking level is "medium", not "minimal", which would
 // eat noticeably more of the budget and make truncation worse, not better.
-function buildGenerationConfig(maxOutputTokens) {
+// `model` is the model id the request is being sent to, so the level always matches it.
+function buildGenerationConfig(maxOutputTokens, model) {
   return {
     maxOutputTokens,
-    thinkingConfig: { thinkingLevel: 'minimal' },
+    thinkingConfig: { thinkingLevel: thinkingLevelFor(model) },
   };
 }
 
@@ -134,7 +144,7 @@ async function generateText({ systemPrompt, history = [], prompt, maxOutputToken
 
   const body = {
     contents,
-    generationConfig: buildGenerationConfig(maxOutputTokens),
+    generationConfig: buildGenerationConfig(maxOutputTokens, model),
   };
   if (systemPrompt) {
     body.systemInstruction = { parts: [{ text: systemPrompt }] };
@@ -198,7 +208,7 @@ async function generateVision({ systemPrompt, history = [], prompt, base64Image,
 
   const body = {
     contents,
-    generationConfig: buildGenerationConfig(maxOutputTokens),
+    generationConfig: buildGenerationConfig(maxOutputTokens, TEXT_MODEL),
   };
   if (systemPrompt) {
     body.systemInstruction = { parts: [{ text: systemPrompt }] };
@@ -293,7 +303,7 @@ async function transcribeAudio({ base64Audio, mimeType }) {
         ],
       },
     ],
-    generationConfig: buildGenerationConfig(2048),
+    generationConfig: buildGenerationConfig(2048, TEXT_MODEL),
   };
 
   try {
@@ -390,7 +400,7 @@ async function generateStructured({
   if (typeof prompt !== 'string' || !prompt.trim()) throw new TypeError('generateStructured requires a non-empty prompt');
   if (!schema || typeof schema !== 'object') throw new TypeError('generateStructured requires a JSON schema');
 
-  const generationConfig = buildGenerationConfig(maxOutputTokens);
+  const generationConfig = buildGenerationConfig(maxOutputTokens, model);
   const body = { contents: [{ role: 'user', parts: [{ text: prompt }] }], generationConfig };
   if (useGoogleSearch) {
     body.tools = [{ google_search: {} }];
