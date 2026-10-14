@@ -113,20 +113,27 @@ async function getGifFromOtakuGifs(reaction, attempt = 1) {
   }
 }
 
-// Try nekos.best first, then OtakuGIFS when supported. Returns null if
+// Try nekos.best first, then OtakuGIFS when supported. An optional third
+// argument names a last-resort nekos.best endpoint that is tried only if
+// both of the above produced nothing (used by .spank, whose exact reaction
+// is not guaranteed to exist on either provider). Returns null if all
 // providers fail. GIF commands never use bundled/local media.
-async function getGif(nekosEndpoint, otakuReaction) {
+async function getGif(nekosEndpoint, otakuReaction, nekosFallbackEndpoint = null) {
   const primary = nekosEndpoint ? await getGifFromNekosBest(nekosEndpoint) : null;
   if (primary) return primary;
-  if (otakuReaction) return await getGifFromOtakuGifs(otakuReaction);
+  if (otakuReaction) {
+    const secondary = await getGifFromOtakuGifs(otakuReaction);
+    if (secondary) return secondary;
+  }
+  if (nekosFallbackEndpoint) return await getGifFromNekosBest(nekosFallbackEndpoint);
   return null;
 }
 
 // Fetch and convert a remote GIF, then send it using WhatsApp's looping-GIF
 // mode. On API/download/conversion failure, send the same caption as text;
 // never use local media.
-async function sendGif(msg, nekosEndpoint, otakuReaction, text, mentions = []) {
-  const url = await getGif(nekosEndpoint, otakuReaction);
+async function sendGif(msg, nekosEndpoint, otakuReaction, text, mentions = [], nekosFallbackEndpoint = null) {
+  const url = await getGif(nekosEndpoint, otakuReaction, nekosFallbackEndpoint);
   const textFallback = () => msg.reply(`No GIFs found.\n${text}`, undefined, { mentions });
   if (!url) return textFallback();
 
@@ -242,15 +249,24 @@ module.exports = {
   },
 
   async bonk(client, msg, args) {
-    const built = await buildAction(msg, { pair: (s, t) => `@${s} bonks @${t}` });
+    const built = await buildAction(msg, { pair: (s, t) => `@${s} bonked @${t}` });
     if (!built) return null;
     await sendGif(msg, 'slap', 'slap', built.text, built.mentions);
+  },
+
+  // nekos.best has no spank endpoint, so OtakuGIFS `smack` is tried first and
+  // nekos.best `slap` is the last-resort fallback so the command still sends
+  // a GIF if `smack` is unavailable. Same reply-only rules as the others.
+  async spank(client, msg, args) {
+    const built = await buildAction(msg, { pair: (s, t) => `@${s} spanked @${t}` });
+    if (!built) return null;
+    await sendGif(msg, null, 'smack', built.text, built.mentions, 'slap');
   },
 
   // API-only: use nekos.best's closest available death reaction.
   async die(client, msg, args) {
     const built = await buildAction(msg, {
-      pair: (sender, target) => `💀 @${sender} sent @${target} flying to their dramatic end.`,
+      pair: (sender, target) => `@${sender} died @${target}`,
     });
     if (!built) return null;
     return sendGif(msg, 'shoot', null, built.text, built.mentions);
@@ -265,7 +281,7 @@ module.exports = {
   // API-only: nekos.best's `baka` is the closest available insult reaction.
   async fuck(client, msg, args) {
     const built = await buildAction(msg, {
-      pair: (sender, target) => `😤 @${sender} flipped off @${target}.`,
+      pair: (sender, target) => `@${sender} fuck you @${target}`,
     });
     if (!built) return null;
     return sendGif(msg, 'baka', null, built.text, built.mentions);

@@ -372,6 +372,108 @@ const AKINATOR_IMAGE_MAX_BYTES = positiveEnvInt('AKINATOR_IMAGE_MAX_BYTES', 5 * 
 const AKINATOR_IMAGE_HOSTS = (process.env.AKINATOR_IMAGE_HOSTS || 's4.anilist.co,cdn.myanimelist.net')
   .split(',').map(host => host.trim().toLowerCase()).filter(Boolean);
 
+// ─── Anti-Bot (.antibot) ───────────────────────────────────────────────────
+// Used by commands/antibot.js. Every value is tunable from .env.
+//
+// ANTIBOT_WARN_LIMIT: how many deleted bot messages a bot account gets before
+//   it is removed from the group. Warnings 1..(limit-1) are plain warnings;
+//   the message that reaches the limit triggers the removal instead.
+//
+// ANTIBOT_ID_PATTERNS: comma-separated regular expressions tested against the
+//   WhatsApp message id (msg.id.id) of every group message. A match means
+//   "sent by a bot library". Default only covers the legacy Baileys id prefix
+//   (BAE5...). UNCERTAINTY FLAGGED: WhatsApp gives no official "this is a bot"
+//   flag, and bots that run on WhatsApp Web (including whatsapp-web.js bots)
+//   produce the same ids as a person using WhatsApp Web, so those cannot be
+//   told apart by id. Use `.antibot id` (reply to the other bot's message) to
+//   see the real id and add a pattern that fits it here.
+//
+// ANTIBOT_MESSAGE_TYPES: comma-separated whatsapp-web.js message types that
+//   people cannot send from a normal WhatsApp app (list / interactive /
+//   native-flow messages), so any message of these types counts as a bot.
+//
+// ANTIBOT_REMOVED_MEMORY_MS: after a bot is removed, messages of theirs that
+//   were already in flight are deleted silently for this long instead of
+//   starting a fresh warning count.
+function antibotEnvList(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === '') return fallback;
+  return raw.split(',').map(item => item.trim()).filter(Boolean);
+}
+const ANTIBOT_WARN_LIMIT = Math.max(1, envInt('ANTIBOT_WARN_LIMIT', 5));
+const ANTIBOT_ID_PATTERNS = antibotEnvList('ANTIBOT_ID_PATTERNS', ['^BAE5']);
+const ANTIBOT_MESSAGE_TYPES = antibotEnvList('ANTIBOT_MESSAGE_TYPES', ['list', 'interactive', 'native_flow']);
+const ANTIBOT_REMOVED_MEMORY_MS = positiveEnvInt('ANTIBOT_REMOVED_MEMORY_MS', 60000);
+
+// ─── Email verification + session lock (.setemail, commands/account.js) ────
+// Everything here is tunable from .env. Defaults match the agreed plan.
+//
+// HOW EMAILS ARE SENT — pick ONE with EMAIL_PROVIDER (default "resend"):
+//
+//   EMAIL_PROVIDER=resend  (Resend's web API; needs a domain you own)
+//     RESEND_API_KEY — API key from your Resend account.   [required]
+//     EMAIL_FROM     — sender address on a domain verified in Resend,
+//                      e.g. no-reply@yourdomain.com.        [required]
+//
+//   EMAIL_PROVIDER=smtp    (any SMTP mailbox — works with a free Gmail
+//                           account, no domain needed; needs the
+//                           "nodemailer" package: npm install nodemailer)
+//     SMTP_HOST      — e.g. your mail provider's SMTP server name. [required]
+//     SMTP_USER      — mailbox login (for Gmail: the full Gmail address).
+//                                                              [required]
+//     SMTP_PASS      — mailbox password (for Gmail: an App Password).
+//                                                              [required]
+//     SMTP_PORT      — optional, default 465.
+//     SMTP_SECURE    — optional "true"/"false": use TLS from the first byte.
+//                      Default: true on port 465, false otherwise.
+//     EMAIL_FROM     — optional; defaults to SMTP_USER. With Gmail it MUST be
+//                      that same address (Gmail rewrites anything else).
+//
+// While the chosen provider's required values are missing, .setemail replies
+// that email isn't set up AND the 30-day session lock is switched off
+// (nobody can be locked out with no way to unlock them).
+//
+// EMAIL_FROM_NAME: display name shown on the email (defaults to BOT_NAME).
+// EMAIL_OTP_TTL_MINUTES: how long a code stays valid.
+// EMAIL_OTP_MAX_ATTEMPTS: wrong codes allowed before verification is locked.
+// EMAIL_OTP_LOCK_MINUTES: how long that verification lock lasts.
+// EMAIL_OTP_RESEND_COOLDOWN_SECONDS: minimum gap between two code emails.
+// EMAIL_OTP_HOURLY_LIMIT: maximum code emails per account per rolling hour.
+// SESSION_LOCK_DAYS: days without activity before a session locks.
+// SESSION_ACTIVITY_DEBOUNCE_MS: the inactivity clock is written at most this
+//   often per account (keeps database writes low on a mobile connection).
+// EMAIL_REQUEST_TIMEOUT_MS: timeout for each Resend / image download request.
+// EMAIL_IMAGE_MAX_BYTES: largest image that will be attached to an email.
+// EMAIL_HEADER_IMAGE_PATH: banner image placed at the top of the email,
+//   relative to the project folder. If the file is missing the email falls
+//   back to a plain purple header.
+const EMAIL_PROVIDER = (process.env.EMAIL_PROVIDER || '').trim().toLowerCase() === 'smtp' ? 'smtp' : 'resend';
+const RESEND_API_KEY = (process.env.RESEND_API_KEY || '').trim();
+const SMTP_HOST = (process.env.SMTP_HOST || '').trim();
+const SMTP_PORT = positiveEnvInt('SMTP_PORT', 465);
+const SMTP_USER = (process.env.SMTP_USER || '').trim();
+// Passwords may contain spaces when pasted from a provider's page (Google
+// shows app passwords in groups of four); the real password has none.
+const SMTP_PASS = (process.env.SMTP_PASS || '').replace(/\s+/g, '');
+const SMTP_SECURE = (() => {
+  const raw = (process.env.SMTP_SECURE || '').trim().toLowerCase();
+  if (raw === 'true') return true;
+  if (raw === 'false') return false;
+  return SMTP_PORT === 465;
+})();
+const EMAIL_FROM = (process.env.EMAIL_FROM || '').trim() || (EMAIL_PROVIDER === 'smtp' ? SMTP_USER : '');
+const EMAIL_FROM_NAME = (process.env.EMAIL_FROM_NAME || '').trim() || BOT_NAME;
+const EMAIL_OTP_TTL_MINUTES = positiveEnvInt('EMAIL_OTP_TTL_MINUTES', 10);
+const EMAIL_OTP_MAX_ATTEMPTS = positiveEnvInt('EMAIL_OTP_MAX_ATTEMPTS', 3);
+const EMAIL_OTP_LOCK_MINUTES = positiveEnvInt('EMAIL_OTP_LOCK_MINUTES', 15);
+const EMAIL_OTP_RESEND_COOLDOWN_SECONDS = positiveEnvInt('EMAIL_OTP_RESEND_COOLDOWN_SECONDS', 60);
+const EMAIL_OTP_HOURLY_LIMIT = positiveEnvInt('EMAIL_OTP_HOURLY_LIMIT', 5);
+const SESSION_LOCK_DAYS = positiveEnvInt('SESSION_LOCK_DAYS', 30);
+const SESSION_ACTIVITY_DEBOUNCE_MS = positiveEnvInt('SESSION_ACTIVITY_DEBOUNCE_MS', 60 * 60 * 1000);
+const EMAIL_REQUEST_TIMEOUT_MS = positiveEnvInt('EMAIL_REQUEST_TIMEOUT_MS', 15000);
+const EMAIL_IMAGE_MAX_BYTES = positiveEnvInt('EMAIL_IMAGE_MAX_BYTES', 2 * 1024 * 1024);
+const EMAIL_HEADER_IMAGE_PATH = (process.env.EMAIL_HEADER_IMAGE_PATH || '').trim() || 'assets/email/header.jpg';
+
 module.exports = {
   BOT_NAME,
   BOT_PREFIX,
@@ -473,4 +575,27 @@ module.exports = {
   TOURL_USER_AGENT,
   TOURL_LITTERBOX_HOURS,
   TOURL_PROVIDERS,
+  ANTIBOT_WARN_LIMIT,
+  ANTIBOT_ID_PATTERNS,
+  ANTIBOT_MESSAGE_TYPES,
+  ANTIBOT_REMOVED_MEMORY_MS,
+  EMAIL_PROVIDER,
+  RESEND_API_KEY,
+  SMTP_HOST,
+  SMTP_PORT,
+  SMTP_SECURE,
+  SMTP_USER,
+  SMTP_PASS,
+  EMAIL_FROM,
+  EMAIL_FROM_NAME,
+  EMAIL_OTP_TTL_MINUTES,
+  EMAIL_OTP_MAX_ATTEMPTS,
+  EMAIL_OTP_LOCK_MINUTES,
+  EMAIL_OTP_RESEND_COOLDOWN_SECONDS,
+  EMAIL_OTP_HOURLY_LIMIT,
+  SESSION_LOCK_DAYS,
+  SESSION_ACTIVITY_DEBOUNCE_MS,
+  EMAIL_REQUEST_TIMEOUT_MS,
+  EMAIL_IMAGE_MAX_BYTES,
+  EMAIL_HEADER_IMAGE_PATH,
 };

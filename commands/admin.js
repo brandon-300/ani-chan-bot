@@ -1,7 +1,7 @@
 const Group = require('../models/Group');
 const GroupActivity = require('../models/GroupActivity');
 const User = require('../models/User');
-const { OwnedCard } = require('../models/Card');
+const { OwnedCard, CardCatalogue } = require('../models/Card');
 const BotState = require('../models/BotState');
 const { isAdmin, botIsAdmin, mentionName, mentionTag, isOwner, safeGetChat, safeGetQuotedMessage, resolveNameById, withRetry, formatNum } = require('../utils/helpers');
 const scheduler = require('../utils/scheduler');
@@ -25,6 +25,40 @@ async function requireBotAdmin(msg) {
 
 async function getOrCreateGroup(chatId) {
   return Group.findOneAndUpdate({ id: chatId }, {}, { upsert: true, new: true });
+}
+
+// ─── .groupstats helpers ──────────────────────────────────────────────────────
+// How many characters of the welcome/leave message the stats card previews
+// before cutting it off with "...".
+const GROUPSTATS_MSG_PREVIEW_CHARS = 25;
+
+function statsOnOff(value) {
+  return value ? 'on' : 'off';
+}
+
+// One-line preview of a stored welcome/leave message. Whitespace (including
+// newlines) is collapsed so the card's box lines stay intact, and the cut is
+// made on whole characters so an emoji is never split in half.
+function previewStatsMessage(text) {
+  const chars = Array.from(String(text || '').replace(/\s+/g, ' ').trim());
+  if (!chars.length) return 'not set';
+  if (chars.length <= GROUPSTATS_MSG_PREVIEW_CHARS) return chars.join('');
+  return `${chars.slice(0, GROUPSTATS_MSG_PREVIEW_CHARS).join('')}...`;
+}
+
+// "Can Spawn" = cards are on for the group AND at least one catalogue card is
+// still unclaimed (the same condition dropCard() in commands/cards.js needs
+// before it can drop anything). Returns null if the database lookup fails, so
+// the card can show "?" instead of a wrong Yes/No.
+async function cardsCanSpawn(group) {
+  if (!group?.cardsEnabled) return false;
+  try {
+    const claimedIds = await OwnedCard.distinct('catalogueId');
+    return Boolean(await CardCatalogue.exists({ cardId: { $nin: claimedIds } }));
+  } catch (err) {
+    console.error('groupstats: spawn check failed:', err.message);
+    return null;
+  }
 }
 
 // ─── Participant snapshot (fallback for empty join/leave recipients) ─────────
@@ -562,9 +596,44 @@ module.exports = {
     const totalMembers = chat.participants.length;
     const admins = chat.participants.filter(p => p.isAdmin || p.isSuperAdmin).length;
 
-    return msg.reply(
-      `📊 *Group Stats*\n\n👥 Members: ${totalMembers}\n👑 Admins: ${admins}\n🔗 Anti-link: ${group?.antilink ? '✅' : '❌'}\n🚫 Anti-spam: ${group?.antispam ? '✅' : '❌'}\n👋 Welcome: ${group?.welcome ? '✅' : '❌'}\n🔞 NSFW: ${group?.nsfw ? '✅' : '❌'}\n🎴 Cards: ${group?.cardsEnabled ? '✅' : '❌'}\n📨 Messages: ${group?.messageCount || 0}`
-    );
+    // "Chat" = can every member send messages. WhatsApp's own setting is the
+    // source of truth when this chat exposes it; otherwise fall back to the
+    // bot's .mute state.
+    const adminsOnly = chat.groupMetadata?.announce;
+    const chatOpen = typeof adminsOnly === 'boolean' ? !adminsOnly : !group?.isMuted;
+
+    const canSpawn = await cardsCanSpawn(group);
+    const canSpawnText = canSpawn === null ? '?' : canSpawn ? 'Yes' : 'No';
+    const blacklist = group?.blacklist?.length ? group.blacklist.join(', ') : 'none';
+
+    const lines = [
+      '╔❰ 📊 *GROUP STATS* 📊 ❱╗',
+      '║',
+      `║ 👥 *Participants:* ${totalMembers}`,
+      `║ 🛡️ *Admins:* ${admins}`,
+      `║ 📨 *Messages:* ${group?.messageCount || 0}`,
+      '║',
+      `║ 💬 *Chat:* ${chatOpen}`,
+      `║ 🔗 *Anti-Link:* ${statsOnOff(group?.antilink)}`,
+      `║ 🚫 *Anti-Link Action:* ${group?.antilinkAction || 'warn'}`,
+      `║ 🕵️ *Anti-Spam:* ${statsOnOff(group?.antispam)}`,
+      `║ 🕵️ *Anti-Bot:* ${statsOnOff(group?.antibot)}`,
+      `║ 🔞 *NSFW:* ${statsOnOff(group?.nsfw)}`,
+      '║',
+      `║ ✉️ *Welcome:* ${statsOnOff(group?.welcome)}`,
+      `║ 📥 *Msg:* ${previewStatsMessage(group?.welcomeMsg)}`,
+      '║',
+      `║ ✉️ *Leave:* ${statsOnOff(group?.leave)}`,
+      `║ 📥 *Msg:* ${previewStatsMessage(group?.leaveMsg)}`,
+      '║',
+      `║ 🎴 *Cards:* ${statsOnOff(group?.cardsEnabled)}`,
+      `║ 🎴 *Can Spawn:* ${canSpawnText}`,
+      '║',
+      `║ 🔒 *Blacklist:* ${blacklist}`,
+      '╚══════════════════╝',
+    ];
+
+    return msg.reply(lines.join('\n'));
   },
 
   // .welcome on/off

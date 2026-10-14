@@ -4,6 +4,7 @@ const GroupSchema = new mongoose.Schema({
   id: { type: String, required: true, unique: true },
   antilink: { type: Boolean, default: false },
   antilinkAction: { type: String, default: 'warn' },  // 'warn' | 'kick'
+  antibot: { type: Boolean, default: false },  // .antibot on/off — delete other bots' messages, warn, then remove (commands/antibot.js)
   antispam: { type: Boolean, default: false },
   welcome: { type: Boolean, default: false },
   welcomeMsg: { type: String, default: '👋 Welcome to the group, @user!' },

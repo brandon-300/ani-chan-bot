@@ -3,9 +3,13 @@ const ffmpeg = require('fluent-ffmpeg');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { pick, rand, mentionName, safeGetChat, safeGetQuotedMessage } = require('../utils/helpers');
+const { pick, rand, mentionName, mentionTag, safeGetChat, safeGetQuotedMessage } = require('../utils/helpers');
 const { BOT_NAME } = require('../utils/config');
 const { renderMemeImage, renderAnimatedMemeFrames } = require('../utils/memeRender');
+
+const PREFIX = process.env.BOT_PREFIX || '.';
+// Longest topic text .pick will echo back, so a huge message can't bloat the reply.
+const PICK_MAX_LENGTH = 100;
 
 // ─── Local media helpers for .meme (image/sticker in -> image/sticker out) ───
 // Same small helpers already used the same way in commands/converter.js —
@@ -340,46 +344,141 @@ const DUALITY_PAIRS = [
   ['The One Who Plans', 'The One Who Does Whatever'],
 ];
 
-module.exports = {
-  // .gay
-  async gay(client, msg, args) {
-    const contact = await msg.getContact();
+// ─── Meter cards (.gay / .lesbian / .simp) ────────────────────────────────────
+// Turns a WhatsApp id into the pieces a real, tappable @mention needs: the
+// serialized id for the `mentions` array and the bare user part for the
+// "@digits" text. Ids come straight off the message/participant, so this never
+// depends on getContact(), which can misresolve @lid senders.
+function idToTarget(id) {
+  const user = String(id).split('@')[0].split(':')[0];
+  return { id: String(id), user };
+}
+
+// Who a meter card analyses: an @mentioned user first, otherwise the author of
+// the message being replied to, otherwise the sender themselves.
+async function resolveMeterTarget(msg) {
+  try {
     const mentioned = await msg.getMentions();
-    const target = mentioned.length ? mentioned[0].pushname : contact.pushname;
-    const percent = rand(0, 100);
-    return msg.reply(`🏳️‍🌈 *Gay Meter*\n\n${target} is *${percent}%* gay!\n${'🟪'.repeat(Math.floor(percent / 10))}${'⬛'.repeat(10 - Math.floor(percent / 10))}`);
+    if (mentioned && mentioned[0]?.id?._serialized) {
+      return { id: mentioned[0].id._serialized, user: mentionTag(mentioned[0]) };
+    }
+  } catch (err) {
+    console.error('resolveMeterTarget: getMentions failed:', err.message);
+  }
+
+  if (msg.hasQuotedMsg) {
+    try {
+      const quoted = await safeGetQuotedMessage(msg);
+      const quotedId = quoted && (quoted.author || quoted.from);
+      if (quotedId) return idToTarget(quotedId);
+    } catch (err) {
+      console.error('resolveMeterTarget: quoted message fetch failed:', err.message);
+    }
+  }
+
+  return idToTarget(msg.author || msg.from);
+}
+
+// Ten-segment ■/□ bar. The percentage is rounded to the nearest tenth
+// (67% -> 7 filled, 42% -> 4 filled, 38% -> 4 filled). Shared by the meter
+// cards below and .ship.
+function meterBar(percent) {
+  const filled = Math.round(percent / 10);
+  return '■'.repeat(filled) + '□'.repeat(10 - filled);
+}
+
+// Boxed result card.
+function buildMeterCard({ headEmoji, title, analyzeEmoji, label, labelEmoji, tailEmoji, user, percent }) {
+  const bar = meterBar(percent);
+  return [
+    `╔❰ ${headEmoji} *${title}* ${headEmoji} ❱╗`,
+    '║',
+    `║ ${analyzeEmoji} *Analyzing:* @${user}`,
+    `║ ${labelEmoji} *${label}:* ${percent}%`,
+    `║ [${bar}] ${tailEmoji}`,
+    '║',
+    '╚══════════════════╝',
+  ].join('\n');
+}
+
+async function sendMeter(msg, card) {
+  const target = await resolveMeterTarget(msg);
+  const percent = rand(0, 100);
+  const text = buildMeterCard({ ...card, user: target.user, percent });
+  return msg.reply(text, undefined, { mentions: [target.id] });
+}
+
+module.exports = {
+  // .gay — reply to someone, @mention them, or use it alone for yourself
+  async gay(client, msg, args) {
+    return sendMeter(msg, {
+      headEmoji: '🌈', title: 'GAY ANALYSIS',
+      analyzeEmoji: '🏳️‍🌈', label: 'Gayness', labelEmoji: '❤️', tailEmoji: '💖',
+    });
   },
 
   // .lesbian
   async lesbian(client, msg, args) {
-    const contact = await msg.getContact();
-    const mentioned = await msg.getMentions();
-    const target = mentioned.length ? mentioned[0].pushname : contact.pushname;
-    const percent = rand(0, 100);
-    return msg.reply(`🏳️‍🌈 *Lesbian Meter*\n\n${target} is *${percent}%* lesbian!\n${'🌸'.repeat(Math.floor(percent / 10))}${'⬛'.repeat(10 - Math.floor(percent / 10))}`);
+    return sendMeter(msg, {
+      headEmoji: '🌸', title: 'LESBIAN CHECK',
+      analyzeEmoji: '💗', label: 'Lesbian Level', labelEmoji: '💖', tailEmoji: '💕',
+    });
   },
 
   // .simp
   async simp(client, msg, args) {
-    const contact = await msg.getContact();
-    const mentioned = await msg.getMentions();
-    const target = mentioned.length ? mentioned[0].pushname : contact.pushname;
-    const percent = rand(0, 100);
-    return msg.reply(`🥺 *Simp Meter*\n\n${target} is *${percent}%* a simp!\n${'💗'.repeat(Math.floor(percent / 10))}${'⬛'.repeat(10 - Math.floor(percent / 10))}`);
+    return sendMeter(msg, {
+      headEmoji: '🤤', title: 'SIMP CHECK',
+      analyzeEmoji: '💬', label: 'Simp Level', labelEmoji: '💦', tailEmoji: '💫',
+    });
   },
 
-  // .ship [@user1] [@user2]
-  async ship(client, msg, args) {
-    const mentioned = await msg.getMentions();
-    const contact = await msg.getContact();
+  // .pick [what] — tags a random group member for whatever the topic is
+  async pick(client, msg, args) {
+    const topic = args.join(' ').trim().slice(0, PICK_MAX_LENGTH);
+    if (!topic) {
+      return msg.reply(`Please specify what to pick a random person for. Example: \`${PREFIX}pick gay\``);
+    }
 
-    const p1 = mentioned[0] || contact;
-    const p2 = mentioned[1] || contact;
+    const chat = await safeGetChat(msg).catch(async err => {
+      console.error('getChat failed:', err.message);
+      await msg.reply('⚠️ WhatsApp connection hiccup — please try again in a moment.');
+      return null;
+    });
+    if (!chat) return;
+    if (!chat.isGroup) return msg.reply('❌ Group only.');
+
+    const botId = client.info.wid._serialized;
+    const candidates = chat.participants.filter(p => p.id._serialized !== botId);
+    if (!candidates.length) return msg.reply('❌ There is nobody here to pick from.');
+
+    const chosen = pick(candidates);
+    return msg.reply(
+      `The pick for ${topic} is:\n@${chosen.id.user}`,
+      undefined,
+      { mentions: [chosen.id._serialized] }
+    );
+  },
+
+  // .ship [@user1] [@user2] — one @mention = that person + you, none = you + you
+  async ship(client, msg, args) {
+    const mentioned = await msg.getMentions().catch(err => {
+      console.error('ship: getMentions failed:', err.message);
+      return [];
+    });
+    const asTarget = contact => ({ id: contact.id._serialized, user: mentionTag(contact) });
+    const sender = idToTarget(msg.author || msg.from);
+
+    const p1 = mentioned[0] ? asTarget(mentioned[0]) : sender;
+    const p2 = mentioned[1] ? asTarget(mentioned[1]) : sender;
     const percent = rand(0, 100);
-    const heart = percent >= 70 ? '❤️' : percent >= 40 ? '🧡' : '💔';
 
     return msg.reply(
-      `💘 *Shipping*\n\n${p1.pushname} + ${p2.pushname}\n\n${heart} Compatibility: *${percent}%*\n${'❤️'.repeat(Math.floor(percent / 10))}${'🖤'.repeat(10 - Math.floor(percent / 10))}`
+      `💘 Shipping @${p1.user} & @${p2.user} 💘\n` +
+      `❤️ *${percent}%* match!\n` +
+      `[${meterBar(percent)}] ${percent}%`,
+      undefined,
+      { mentions: [...new Set([p1.id, p2.id])] }
     );
   },
 

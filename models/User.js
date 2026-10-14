@@ -128,6 +128,25 @@ const UserSchema = new mongoose.Schema({
   // message across every group) keep reading that Map directly rather
   // than querying Mongo on every message. Automatic (non-explicit) AFK
   // detection has no persisted state at all — see afk.js's lastActive Map.
+  // ─── Account security: verified recovery email + session lock ──────────
+  // (commands/account.js — .setemail, the 30-day session gate and the
+  // reply-with-code verification all live there.)
+  //
+  // `email` is ONLY ever written after the address has been verified, so
+  // "email is set" always means "email is verified" — a half-finished
+  // verification lives in the EmailVerification collection, never here.
+  email: { type: String, default: null },
+  emailVerifiedAt: { type: Date, default: null },
+  // Persistent lock state. null = session active. Set (to the lock time)
+  // the first time the session gate sees lastActiveAt older than
+  // SESSION_LOCK_DAYS, and cleared only by a successful email verification.
+  // It is stored rather than re-derived from lastActiveAt each time so that
+  // merely looking at a locked account can never make it look active again
+  // (see findOrCreate below, which leaves lastActiveAt alone while locked).
+  sessionLockedAt: { type: Date, default: null },
+  // Set after too many wrong verification codes; blocks both guessing and
+  // requesting fresh codes until it passes.
+  otpLockedUntil: { type: Date, default: null },
   afk: {
     active: { type: Boolean, default: false },
     reason: { type: String, default: null },
@@ -238,9 +257,15 @@ UserSchema.statics.findOrCreate = async function (id, name) {
   // already far more than the 60-day cleanup sweep or .users' "inactive
   // Xd" display could ever need, so there's no reason to pay for an extra
   // write on every command invocation just to track activity.
+  //
+  // A locked session (see sessionLockedAt on the schema) never has its
+  // lastActiveAt refreshed here: locked accounts only come back through a
+  // verified email code (commands/account.js), and a command like
+  // `.profile @someone` that merely LOOKS UP a locked account must not make
+  // it look active again.
   const now = Date.now();
   const ACTIVITY_DEBOUNCE_MS = 60 * 60 * 1000;
-  if (!user.lastActiveAt || now - user.lastActiveAt > ACTIVITY_DEBOUNCE_MS) {
+  if (!user.sessionLockedAt && (!user.lastActiveAt || now - user.lastActiveAt > ACTIVITY_DEBOUNCE_MS)) {
     user.lastActiveAt = now;
     needsSave = true;
   }

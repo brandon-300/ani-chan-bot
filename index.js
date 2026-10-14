@@ -17,6 +17,8 @@ const { tryHandleQuizAnswer } = require('./commands/games/quiz');
 const AiConversation = require('./models/AiConversation');
 const aiConversations = require('./utils/aiConversations');
 const akinatorService = require('./services/akinatorService');
+const accountSecurity = require('./commands/account');
+const directAiMessages = require('./utils/directAiMessages');
 const AkinatorSession = require('./models/AkinatorSession');
 const GroupActivity = require('./models/GroupActivity');
 
@@ -783,7 +785,7 @@ const HEAVY_COMMANDS = new Set([
 const REGISTRATION_BYPASS_COMMANDS = new Set(['reg', 'setname', 'setdob', 'bio', 'setpic']);
 
 // Checks whether `command` should be allowed to run for whoever sent `msg`.
-// Returns { blocked, senderId, wasActive }:
+// Returns { blocked, senderId, wasActive, user }:
 //   - blocked: true if a registration message was sent and the caller
 //     should NOT run the resolved command handler.
 //   - senderId / wasActive: used after a REGISTRATION_BYPASS_COMMANDS
@@ -792,6 +794,9 @@ const REGISTRATION_BYPASS_COMMANDS = new Set(['reg', 'setname', 'setdob', 'bio',
 //     records whether the account was already fully registered BEFORE this
 //     command ran, so a person who's long since registered updating their
 //     name again doesn't get the menu blasted at them every time.
+//   - user: the account's lean document (registration + email/session
+//     fields) when one exists, so the session gate right after this one
+//     (commands/account.js) doesn't need a second database lookup.
 //
 // Deliberately fails OPEN on any unexpected error (Mongo hiccup, contact
 // lookup failure, etc.) rather than silently blocking every command bot-wide
@@ -816,7 +821,7 @@ async function checkRegistrationGate(msg, command) {
   let existingUser = null;
   try {
     const User = require('./models/User');
-    existingUser = await User.findOne({ id: senderId }, 'registration').lean();
+    existingUser = await User.findOne({ id: senderId }, 'registration email emailVerifiedAt sessionLockedAt lastActiveAt').lean();
   } catch (err) {
     console.error('Registration gate: user lookup failed, allowing command through:', err.message);
     return { blocked: false, senderId, wasActive: true };
@@ -831,7 +836,7 @@ async function checkRegistrationGate(msg, command) {
   const wasActive = status === 'active';
 
   if (REGISTRATION_BYPASS_COMMANDS.has(command)) {
-    return { blocked: false, senderId, wasActive };
+    return { blocked: false, senderId, wasActive, user: existingUser };
   }
 
   if (!existingUser) {
@@ -842,7 +847,7 @@ async function checkRegistrationGate(msg, command) {
   }
 
   if (status === 'active') {
-    return { blocked: false, senderId, wasActive: true };
+    return { blocked: false, senderId, wasActive: true, user: existingUser };
   }
 
   await msg.reply(buildRegistrationProgressText(existingUser)).catch(err => {
@@ -1029,8 +1034,24 @@ function enqueueCommand(chatId, task) {
   return next;
 }
 
-client.on('message', (msg) => {
-  (async () => {
+// Re-runs the command that a session lock interrupted, once the account has
+// been unlocked with the emailed code (see commands/account.js). The original
+// message is fetched again so mentions, quoted messages and attached media
+// behave exactly as they did the first time; if WhatsApp can't return it, the
+// caller tells the person to send the command again.
+async function resumeAfterUnlock({ msgId, command, args }) {
+  const original = await client.getMessageById(msgId);
+  if (!original) throw new Error('original message could not be found');
+  await handleIncomingMessage(original, { command, args });
+}
+
+// `resume` is null for every normal incoming message. When set, it carries
+// the already-resolved { command, args } of a command being re-run after an
+// unlock: the pre-routing steps (sticker import, Akinator/quiz answers, email
+// code replies) are skipped and the stored command goes straight to the same
+// gates and dispatcher as everything else.
+function handleIncomingMessage(msg, resume = null) {
+  return (async () => {
     // Never process messages the bot's own account sent — whether typed
     // manually in "Message Yourself" or sent by the bot itself. In current
     // whatsapp-web.js this event generally doesn't fire for self-sent
@@ -1043,7 +1064,7 @@ client.on('message', (msg) => {
 
     patchQuotedReply(msg);
 
-    if (msg.type === 'sticker') {
+    if (!resume && msg.type === 'sticker') {
       const imported = await aiStickers.handleIncomingSticker(client, msg).catch(err => {
         logger.error('route.ai_sticker_import.failed', err, { chatId: msg.from });
         return false;
@@ -1060,7 +1081,7 @@ client.on('message', (msg) => {
     // The service only takes a message that quotes the sender's CURRENT question;
     // everything else falls through untouched.
     try {
-      if (await akinatorService.handleIncomingAnswer(client, msg)) {
+      if (!resume && await akinatorService.handleIncomingAnswer(client, msg)) {
         logger.write('INFO', 'route.akinator_answer', { chatId: msg.from, messageType: msg.type });
         return;
       }
@@ -1091,12 +1112,31 @@ client.on('message', (msg) => {
     // directly off the raw message event, before anything is queued, means
     // an answer is only ever too late if the real clock says so.
     try {
-      if (await tryHandleQuizAnswer(client, msg)) {
+      if (!resume && await tryHandleQuizAnswer(client, msg)) {
         logger.write('INFO', 'route.quiz_answer', { chatId: msg.from, messageType: msg.type });
         return;
       }
     } catch (err) {
       logger.error('route.quiz_answer.failed', err, { chatId: msg.from });
+    }
+
+    // ── Email verification codes ─────────────────────────────────────────
+    // A 6-digit reply to one of the bot's "reply with your code" prompts
+    // (.setemail, or the session-unlock prompt). Like the quiz answer above it
+    // is a quoted reply to the bot, which the reply-to-bot router below would
+    // otherwise send to the AI — so it is claimed here, first. Anything that
+    // isn't a reply to one of OUR prompts falls through untouched.
+    try {
+      if (!resume && await accountSecurity._handleOtpReply(client, msg, resumeAfterUnlock)) {
+        logger.write('INFO', 'route.email_otp_reply', { chatId: msg.from });
+        return;
+      }
+    } catch (err) {
+      logger.error('route.email_otp_reply.failed', err, { chatId: msg.from });
+      try {
+        await msg.reply('⚠️ I could not check that code just now. Please try again in a moment.');
+      } catch (_replyErr) { /* nothing more to do */ }
+      return;
     }
 
     // Everything else still goes through the per-chat queue, so ordinary
@@ -1108,7 +1148,10 @@ client.on('message', (msg) => {
     let command;
     let args;
 
-    if (!body.startsWith(PREFIX)) {
+    if (resume) {
+      command = resume.command;
+      args = Array.isArray(resume.args) ? [...resume.args] : [];
+    } else if (!body.startsWith(PREFIX)) {
       // Explicit @mention of the bot always shows the menu — unchanged,
       // and takes priority even if the person is also replying to something.
       const mentionsBot = msg.mentionedIds &&
@@ -1130,6 +1173,20 @@ client.on('message', (msg) => {
       const quoted = msg.hasQuotedMsg ? await safeGetQuotedMessage(msg).catch(() => null) : null;
 
       if (quoted && quoted.fromMe) {
+        // A reply to something .gpt sent is refused: .gpt answers one question
+        // and keeps no conversation, so there is nothing to continue. The
+        // person is pointed to .copilot, which does hold a conversation.
+        // (Checked first so none of the AI routing below ever sees it.)
+        if (directAiMessages.has(quoted.id?._serialized)) {
+          logger.write('INFO', 'route.ai.rejected', { reason: 'reply_to_gpt', chatId: msg.from });
+          try {
+            await msg.reply(`❌ You cannot reply to this type of message.\nTo reply to the AI, use the *${PREFIX}copilot* command.`);
+          } catch (err) {
+            logger.error('route.ai.rejected.reply_failed', err, { chatId: msg.from });
+          }
+          return;
+        }
+
         // Existing reply-to-bot behavior stays ahead of the plain-DM router.
         const replyKind = classifyReplyKind(msg);
         if (replyKind === 'other') {
@@ -1230,6 +1287,21 @@ client.on('message', (msg) => {
     });
     if (registrationCheck.blocked) {
       logger.write('INFO', 'registration.blocked', { command, senderId: registrationCheck.senderId, reason: 'incomplete_registration' });
+      return;
+    }
+
+    // ── Session gate ───────────────────────────────────────────────────────
+    // Registration first, session lock second, command third. A registered
+    // account that has been inactive for SESSION_LOCK_DAYS is locked and gets
+    // an emailed unlock code instead of the command running (the command is
+    // re-run automatically after unlocking). Does nothing at all unless email
+    // is configured. Fails open on unexpected errors, like the gate above.
+    const sessionCheck = await accountSecurity._checkSession(client, msg, command, args, registrationCheck).catch(err => {
+      logger.error('session.gate.failed_open', err, { command });
+      return { blocked: false };
+    });
+    if (sessionCheck.blocked) {
+      logger.write('INFO', 'session.blocked', { command, senderId: registrationCheck.senderId, reason: 'session_locked' });
       return;
     }
 
@@ -1421,6 +1493,10 @@ client.on('message', (msg) => {
 }
     });
   })().catch(err => logger.error('message.handler.failed', err, { chatId: msg.from }));
+}
+
+client.on('message', (msg) => {
+  handleIncomingMessage(msg);
 });
 
 // ── AI reacts to reactions on its own messages ─────────────────────────────
@@ -1570,6 +1646,19 @@ client.on('message', async (msg) => {
     }
   } catch (err) {
     console.error('Antilink error:', err.stack || err.message || err);
+  }
+});
+
+// ── Anti-Bot ──────────────────────────────────────────────────────────────
+// Standalone listener, same pattern as antilink above: runs for every group
+// message, but _handleAntibot() returns after one cheap id/type check unless
+// the sender looks like another bot AND .antibot is on for that group.
+client.on('message', async (msg) => {
+  try {
+    const { _handleAntibot } = require('./commands/antibot');
+    await _handleAntibot(client, msg);
+  } catch (err) {
+    console.error('Antibot error:', err.stack || err.message || err);
   }
 });
 

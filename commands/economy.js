@@ -13,6 +13,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { uploadToCloud, deleteFromCloud, isCloudConfigured } = require('../utils/cloudinary');
+const { maskEmail, isPrivateChat } = require('../utils/emailService');
 
 // ─── Profile pictures (.setpic) ───────────────────────────────────────────────
 // Processed locally with ffmpeg (resize/recompress), then uploaded to
@@ -433,6 +434,18 @@ async lottery(client, msg, args) {
     const contact = mentioned.length ? mentioned[0] : await msg.getContact();
     const targetId = contact.id._serialized;
     const user = await User.findOrCreate(targetId, contact.pushname);
+
+    // Email/session lines are private account-security info, so they're
+    // shown only when BOTH are true: it's YOUR OWN profile (never someone
+    // else's), and this is a private chat with the bot — never in a group,
+    // where everyone could read them. With no mention the target is the
+    // sender; with a mention, compare against the sender's own id (a mention
+    // of yourself still counts as your profile). Everything else on the card
+    // is shown the same in groups and private chats.
+    const viewerContact = mentioned.length ? await msg.getContact().catch(() => null) : contact;
+    const viewingOwnProfile = Boolean(viewerContact) && viewerContact.id._serialized === targetId;
+    const showAccountDetails = viewingOwnProfile && isPrivateChat(msg);
+
     // Recheck in case the level changed since the title was last set (same
     // safety-net idea as .achievements re-checking on view). checkTitle
     // saves against its own fresh copy of the user, so if it changed
@@ -504,6 +517,16 @@ async lottery(client, msg, args) {
       line('Orbs', user.orbs),
       line('Cards', cardCount),
       line('Title', user.profile.title),
+      // Own profile in a private chat only — see showAccountDetails above.
+      // `email` is only ever stored once verified, so "set" always means
+      // "verified". In a group your own card just points you to a private
+      // chat; someone else's card shows nothing about this at all.
+      ...(showAccountDetails ? [
+        line('Email', user.email ? `✅ ${maskEmail(user.email)}` : '❌ Not set'),
+        line('Session', user.sessionLockedAt ? '🔒 Locked' : '✅ Active'),
+      ] : viewingOwnProfile ? [
+        line('Email & Session', '🔒 Shown in a private chat with me'),
+      ] : []),
     ].join('\n');
 
     // If they've set a profile picture (.setpic), send it as an actual

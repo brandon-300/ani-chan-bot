@@ -12,6 +12,7 @@ const aiMessageLedger = require('../utils/aiMessageLedger');
 const { getActivePersonaSafe } = require('../utils/persona');
 const aiStickers = require('../utils/aiStickers');
 const gemini = require('../utils/gemini');
+const directAiMessages = require('../utils/directAiMessages');
 const fishAudio = require('../utils/fishAudio');
 
 const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY;
@@ -373,6 +374,12 @@ function friendlyAiError(err, fallbackLabel) {
 //  - neither has usable media                     -> falls back to typed args
 //  - an image with NO typed args                  -> { error: '...usage...' }
 // Returns { error } OR { prompt, image } (image is null when there isn't one).
+//
+// `direct: true` is used by .gpt. It means "treat every attachment as plain
+// media for a plain question": a sticker is just an image (so a typed question
+// is required), and none of the persona/sticker-conversation handling below
+// (the "friend reading your sticker" prompt, the bot's own sticker context)
+// is applied.
 // What the model is told when the user sends a sticker. The old wording said
 // "interpret this sticker", which produced answers that DESCRIBED the picture
 // ("that frog is too real") instead of reacting to it the way a friend would.
@@ -383,7 +390,7 @@ const USER_STICKER_PROMPT = [
   'Never describe or name what is drawn on it (no frog, cartoon, character, picture, or "that sticker").',
 ].join(' ');
 
-async function resolveMultimodalInput(msg, args) {
+async function resolveMultimodalInput(msg, args, { direct = false } = {}) {
   const typed = args.join(' ').trim();
   let source = null;
   let quoted = null;
@@ -408,6 +415,11 @@ async function resolveMultimodalInput(msg, args) {
   const mimetype = media.mimetype || '';
 
   if (mimetype.includes('image') || msg.type === 'sticker' || source.type === 'sticker') {
+    if (direct) {
+      if (!typed) return { error: '❌ Reply to an image AND tell me what to do with it, e.g. *.gpt describe this image*' };
+      const directImage = { base64: media.data, mimeType: mimetype || 'image/webp' };
+      return { prompt: typed, image: directImage, images: [directImage], stickerReply: false };
+    }
     if (!typed && msg.type !== 'sticker') {
       return { error: '❌ Reply to an image AND tell me what to do with it, e.g. *.copilot describe this image*' };
     }
@@ -445,7 +457,36 @@ async function resolveMultimodalInput(msg, args) {
   return { prompt: typed, image: null, images: [], stickerReply: false };
 }
 
+// ─── .gpt: Gemini, directly ────────────────────────────────────────────────
+// .gpt is NOT a persona mode. Each call is one independent Gemini request:
+// no persona, no conversation memory (not per-user, not per-group), no
+// reactions, no stickers, and its replies are never recorded in the AI message
+// ledger, so reactions people put on them are ignored by utils/aiReactions.js.
+//
+// The only instruction it gets is about FORMATTING, because WhatsApp doesn't
+// render Markdown: it has no name, character or personality in it.
+const DIRECT_AI_SYSTEM_PROMPT = [
+  'You are a helpful AI assistant answering a question that was sent to you through WhatsApp.',
+  'Answer directly, accurately and completely, in the language the person writes in. Keep it as short as the question allows.',
+  'Format for WhatsApp: use *single asterisks* for bold and _underscores_ for italics, simple "-" lists and plain paragraphs.',
+  'Do not use Markdown headings, tables or **double-asterisk** bold. Put code in triple-backtick blocks.',
+].join(' ');
+
+// Gemini sometimes still answers in Markdown. WhatsApp's bold is *text*, so
+// **text** is turned into *text*. Code (``` blocks and `inline`) is left
+// exactly as written — e.g. Python's **kwargs must survive.
+function toWhatsAppFormatting(text) {
+  return String(text || '')
+    .split(/(```[\s\S]*?```|`[^`\r\n]*`)/)
+    .map((part, index) => (index % 2 === 1 ? part : part.replace(/\*\*([^*\r\n](?:[^*\r\n]|\*(?!\*))*?)\*\*/g, '*$1*')))
+    .join('')
+    .trim();
+}
+
 module.exports = {
+  _DIRECT_AI_SYSTEM_PROMPT: DIRECT_AI_SYSTEM_PROMPT,
+  _toWhatsAppFormatting: toWhatsAppFormatting,
+  _resolveMultimodalInput: resolveMultimodalInput,
   _parseAiControls: parseAiControls,
   _stripSpeechFormatting: stripSpeechFormatting,
   _buildPersonaSystemPrompt: buildPersonaSystemPrompt,
@@ -552,49 +593,60 @@ module.exports = {
     }
   },
 
-  // .gpt [prompt] — single-turn AI reply (Gemini, no history). Same quoted
-  // voice-note/image handling as .copilot, minus conversation memory.
+  // .gpt [prompt] — ask Gemini one question, directly. See the "Gemini,
+  // directly" comment above DIRECT_AI_SYSTEM_PROMPT: no persona, no memory, no
+  // reactions, no stickers — one request in, one plain text reply out.
+  // Accepts the same attachments as .copilot (reply to a voice note, or to an
+  // image together with what to do with it).
   async gpt(client, msg, args) {
-    const resolved = await resolveMultimodalInput(msg, args);
-    if (resolved.error) return msg.reply(resolved.error);
+    // Every message .gpt sends is recorded in utils/directAiMessages.js so a
+    // reply to it can be refused (index.js) — .gpt has no conversation to
+    // continue; people are pointed to .copilot instead. These are plain
+    // replies and are deliberately NOT put in the AI message ledger.
+    const send = async (text) => {
+      const sent = await msg.reply(text);
+      directAiMessages.remember(sent);
+      return sent;
+    };
+
+    const resolved = await resolveMultimodalInput(msg, args, { direct: true });
+    if (resolved.error) return send(resolved.error);
     if (!resolved.prompt) {
-      return msg.reply('❌ Usage: .gpt [your question]\nOr reply to a voice note with .gpt, or reply to an image with .gpt [what to do with it]');
+      return send('❌ Usage: .gpt [your question]\nOr reply to a voice note with .gpt, or reply to an image with .gpt [what to do with it]');
     }
 
-    await msg.reply('💭 Processing...');
+    await send('💭 Processing...');
     try {
-      const senderName = await resolveSenderName(msg, client);
-      const chat = await safeGetChat(msg);
-      const allowBotActions = !!chat && !chat.isGroup;
-      const catalogue = await aiStickers.buildStickerCatalogue(msg.from || msg.to, getActivePersonaSafe());
-      const systemPrompt = buildPersonaSystemPrompt(senderName, 'text', allowBotActions, { catalogue });
       logger.write('INFO', 'ai.input', {
         command: 'gpt',
-        sender: senderName,
-        chat: chat?.isGroup ? 'group' : 'DM',
-        kind: resolved.stickerReply ? 'sticker' : (resolved.images?.length ? 'image' : 'text'),
-        stickerReply: Boolean(resolved.stickerReply),
+        mode: 'direct',
+        chat: String(msg.from || '').endsWith('@g.us') ? 'group' : 'DM',
+        kind: resolved.images?.length ? 'image' : 'text',
         promptChars: resolved.prompt.length,
-        promptPreview: resolved.stickerReply ? '(user sticker)' : resolved.prompt.slice(0, 120),
-        stickersOffered: catalogue.offered,
+        promptPreview: resolved.prompt.slice(0, 120),
       });
 
-      const reply = resolved.images?.length
+      const rawReply = resolved.images?.length
         ? await gemini.generateVision({
-            systemPrompt,
+            systemPrompt: DIRECT_AI_SYSTEM_PROMPT,
             prompt: resolved.prompt,
             images: resolved.images,
             maxOutputTokens: 2048,
           })
         : await gemini.generateText({
-            systemPrompt,
+            systemPrompt: DIRECT_AI_SYSTEM_PROMPT,
             prompt: resolved.prompt,
             maxOutputTokens: 2048,
           });
 
-      return await deliverTextResponse(client, msg, reply, allowBotActions, { stickerReply: resolved.stickerReply, catalogue });
+      const text = toWhatsAppFormatting(rawReply);
+      if (!text) return send('❌ I could not generate a response. Please try again.');
+
+      // A plain reply on purpose: NOT replyTracked(), so the message is never
+      // put in the AI message ledger and reactions to it are not reacted to.
+      return await send(text);
     } catch (err) {
-      return msg.reply(friendlyAiError(err, 'GPT'));
+      return send(friendlyAiError(err, 'GPT'));
     }
   },
 
