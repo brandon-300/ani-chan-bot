@@ -14,7 +14,8 @@
 - A Google AI Studio (Gemini) API key: https://aistudio.google.com
 - A Fish Audio API key + a voice reference id: https://fish.audio
 - A Cloudinary account (free tier works): https://cloudinary.com
-- A RapidAPI account: https://rapidapi.com
+- An Apify account for Pinterest: https://apify.com
+- A RapidAPI account for other downloaders/upscaling: https://rapidapi.com
 - A SauceNAO API key (free): https://saucenao.com
 
 ### 2. Install Dependencies
@@ -39,7 +40,9 @@ Edit `.env` and fill in the values — every variable the bot actually reads is 
 | `GEMINI_API_KEY` (+ optional `GEMINI_TEXT_MODEL` / `GEMINI_IMAGE_MODEL`) | `.copilot`, `.gpt`, `.voice`, `.imagine`, `.translate`, `.transcribe` |
 | `FISH_API_KEY` / `FISH_VOICE_ID` (+ optional `FISH_MODEL`) | `.voice` and `.tts` spoken voice-note replies |
 | `CLOUDINARY_CLOUD_NAME` / `CLOUDINARY_API_KEY` / `CLOUDINARY_API_SECRET` (or `CLOUDINARY_URL`) | `.setpic` profile pictures |
-| `RAPIDAPI_KEY` | Downloaders (`.ig`, `.ttk`, `.yt`, `.x`, `.fb`, `.play`) and `.pinterest` |
+| `RAPIDAPI_KEY` | Downloaders (`.ig`, `.ttk`, `.yt`, `.x`, `.fb`, `.play`) and `.upscale` |
+| `APIFY_TOKEN` | `.pinterest` / `.pint`, using `accountable_eel/pinterest-search-lookup`; set privately with `node scripts/configure-apify.js` |
+| `APIFY_PINTEREST_MAX_PINS` / `APIFY_PINTEREST_CACHE_MINUTES` | Optional — pins per paid run (1–50, default 25) and recent-search cache duration (0–1440 minutes, default 30) |
 | `SAUCENAO_KEY` | `.sauce` / `.reverseimg` |
 | `PUPPETEER_EXECUTABLE_PATH` | Termux only — path to Chromium (a sensible default is already set) |
 | `MIN_REGISTRATION_AGE` / `AGE_VERIFICATION_LOCKOUT_DAYS` | Optional — registration's minimum age (default 18) and the `.setdob` retry lockout in days after an under-age denial (default 30) |
@@ -81,8 +84,26 @@ Subscribe to these APIs on RapidAPI (most have free tiers):
 - `youtube-mp36` — for `.yt` and `.play`
 - `twitter241` — for `.x`
 - `social-media-video-downloader` — for `.fb`
-- `pinterest-scraper` — for `.pinterest`
 - `ai-image-upscaler` — for `.upscale`
+
+Pinterest uses [accountable_eel/pinterest-search-lookup on Apify](https://apify.com/accountable_eel/pinterest-search-lookup).
+Run `node scripts/configure-apify.js` on the device to enter your API token with
+hidden input. It updates only `APIFY_TOKEN` in the existing `.env`, then restart
+PM2 with `--update-env`. Never put tokens in chat or commit your `.env`.
+
+Each command sends one image and retains per-chat pin deduplication. Recent
+results are reused for 30 minutes across chats (at most 50 cached queries),
+so repeating a term can select another unseen pin without paying for another
+actor run. This memory cache resets on restart. An exhausted result batch asks
+for a different term; it does not automatically start another paid run.
+
+The actor bills per returned pin. The default requests at most 25 pins per run;
+`maxResults` is also set to that cap. The published base price checked on
+26 October 2026 was $0.003 per pin, about $0.075 for 25 pins, plus applicable
+actor-start charges. Check Apify for current pricing and account limits.
+No automatic POST retries are made. The run timeout is 60 seconds and the HTTP
+timeout is 90 seconds; after a lost connection, check the run in Apify before
+repeating a search because the run may have started.
 
 ---
 
@@ -397,6 +418,7 @@ Chess, Tic Tac Toe, and Connect 4 share the same flow: `.<game> start` opens a l
 - **Anime images**: nekos.best (primary) with an otakugifs.xyz fallback, since nekos.best is Cloudflare-blocked on some connections
 - **Anime/manga news**: Google News RSS, parsed with a small hand-rolled regex parser rather than an XML library — see `commands/news.js`
 - **Media processing**: `fluent-ffmpeg` + system `ffmpeg` (stickers, video/audio/voice-note conversion)
+- **Pinterest search**: Apify (keyword-search actor over REST)
 - **Downloaders**: RapidAPI
 - **Process management**: PM2
 

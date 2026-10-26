@@ -5,7 +5,7 @@ const SentPin = require('../models/SentPin');
 const { safeGetChat, safeGetQuotedMessage } = require('../utils/helpers');
 const gemini = require('../utils/gemini');
 
-const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY;
+const { searchPinterest, pinterestErrorMessage } = require('../utils/pinterest');
 
 async function sendImage(msg, url, caption) {
   try {
@@ -29,19 +29,13 @@ function stripLrcTimestamps(syncedLyrics) {
 }
 
 module.exports = {
-  // .pinterest [query]
-  // .pinterest [query]
-  // Uses "Pinterest Pin Search" (pinterest-pin-search.p.rapidapi.com) — a
-  // real keyword-search endpoint, confirmed working via RapidAPI's test
-  // console (response shape verified 2026-08-13, replaces the previous
-  // arraybobo/pinterest-scraper listing which was returning empty bodies).
-  // Sends 1 result per call, skipping any pin already sent to this chat
-  // before — same seen/unseen tracking pattern as .wallpaper, using
-  // Pinterest's own pin id (globally unique, so dedup works across
-  // different search terms too, exactly like .wallpaper's behavior).
+  // .pinterest [query] — Apify keyword search; one unseen image per call.
+  // Recent search results are reused to avoid starting another paid actor run.
   async pinterest(client, msg, args) {
-    const query = args.join(' ');
+    const query = args.join(' ').trim();
     if (!query) return msg.reply('❌ Usage: .pinterest [search term]');
+    if (query.length > 300) return msg.reply('❌ Pinterest search terms must be at most 300 characters.');
+    if (!String(process.env.APIFY_TOKEN || '').trim()) return msg.reply(pinterestErrorMessage({ code: 'APIFY_TOKEN_MISSING' }));
 
     await msg.reply(`🔍 Searching Pinterest for "${query}"...`);
     try {
@@ -49,21 +43,8 @@ module.exports = {
       if (!chat) return;
       const chatId = chat.id._serialized;
 
-      const res = await axios.get('https://pinterest-pin-search.p.rapidapi.com/rapidapi/search', {
-        params: { offset: '0', keyword: query, r: 'search/pinterest' },
-        headers: {
-          'X-RapidAPI-Key': RAPIDAPI_KEY,
-          'X-RapidAPI-Host': 'pinterest-pin-search.p.rapidapi.com',
-        },
-        timeout: 20000,
-      });
-
-      const pins = res.data?.result?.results || [];
-
-      if (!pins.length) {
-        console.error('[pinterest] 200 OK but no pins in response:', JSON.stringify(res.data)?.slice(0, 1500));
-        return msg.reply('❌ No results found.');
-      }
+      const pins = await searchPinterest(query);
+      if (!pins.length) return msg.reply('❌ No results found.');
 
       const seenDocs = await SentPin.find({
         chatId,
@@ -85,7 +66,7 @@ module.exports = {
       };
 
       const fresh = pins.filter(
-        p => p.id && !seenIds.has(p.id) && (p.image_link || p.image_url) && looksRelevant(p)
+        p => p.id && !seenIds.has(p.id) && p.image_url && looksRelevant(p)
       );
 
       if (!fresh.length) {
@@ -93,23 +74,14 @@ module.exports = {
       }
 
       const pin = fresh[Math.floor(Math.random() * fresh.length)];
-      const imgUrl = pin.image_link || pin.image_url;
+      const imgUrl = pin.image_url;
 
-      await SentPin.create({ chatId, pinId: pin.id }).catch(() => {});
       await sendImage(msg, imgUrl, `📌 Pinterest: ${query}`);
+      await SentPin.create({ chatId, pinId: pin.id }).catch(() => {});
     } catch (err) {
-      const status = err.response?.status;
-      console.error('[pinterest] request failed. status:', status, 'body:', JSON.stringify(err.response?.data)?.slice(0, 1500) || err.message);
-
-      if (status === 401 || status === 403) {
-        return msg.reply('❌ Pinterest search failed: RapidAPI rejected the key (401/403).\n💡 This usually means either the key is wrong, or this RapidAPI account isn\'t subscribed to "Pinterest Pin Search" specifically. Check both in your RapidAPI dashboard.');
-      } else if (status === 429) {
-        return msg.reply('❌ Pinterest search failed: RapidAPI rate/quota limit hit (429).\n💡 Check your remaining quota for "Pinterest Pin Search" on RapidAPI.');
-      } else if (err.code === 'ECONNABORTED') {
-        return msg.reply('❌ Pinterest search timed out (slow connection). Try again.');
-      } else {
-        return msg.reply('❌ Pinterest search failed. Check `pm2 logs ani-chan-bot` for the exact error.');
-      }
+      // Never log Axios request objects, tokens, or full provider responses.
+      console.error('[pinterest] Apify search failed:', err.code || 'UNKNOWN', 'status:', err.response?.status || 'none');
+      return msg.reply(pinterestErrorMessage(err));
     }
   },
 

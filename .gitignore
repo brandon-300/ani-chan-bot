@@ -1,5 +1,6 @@
 node_modules/
 .env
+.env.*.tmp
 .wwebjs_auth/
 .wwebjs_cache/
 backups/
