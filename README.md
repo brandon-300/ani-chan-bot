@@ -97,9 +97,6 @@ The bot's owner-only admin tools (card catalogue management, testing commands, e
 | `.rules` | View this group's saved rules |
 | `.setrules [text]` | Set this group's rules (admin only) |
 | `.ping / .test` | Check the bot is online and its response latency |
-| `.stats` | Full bot + per-group usage stats, incl. daily 8AM WAT digest (owner only, DM only) |
-| `.users [page]` | List every registered user by group, with activity status (owner only, DM only) |
-| `.deluser [number] [confirm]` | Delete a user's profile by phone number (from .users) — cards untouched; auto-cleanup also runs after 60 days idle (owner only, DM only) |
 | `.mods` | List the bot's owner and moderators |
 | `.owner` | Send the bot owner's contact card |
 | `.url` | Get this group's invite link (admin only) |
@@ -296,8 +293,6 @@ Chess, Tic Tac Toe, and Connect 4 share the same flow: `.<game> start` opens a l
 | `.copilot [msg]` | AI chat as the active persona (Gemini), shared group history and private DM history — text, emojis, and optional stickers |
 | `.gpt [msg]` | Ask Gemini one question directly — no persona, no memory, no reactions or stickers, text reply only |
 | `.voice [msg]` | Same AI chat as .copilot, replied as a spoken voice note (Fish Audio TTS) |
-| `.stickeranalyze [new\|redo confirm\|stop]` | Analyze the shared sticker library for AI personas (owner only, private DM) |
-| `.stickerimport [on\|off]` | Owner only, private DM: add WebP stickers once to the shared Cloudinary/Mongo AI library used by every persona |
 | `.imagine [prompt]` | AI image generation (Gemini 2.5 Flash Image) |
 | `.upscale` | Upscale a replied image |
 | `.translate [lang] [text] / .tt` | Translate text |
@@ -348,7 +343,7 @@ Chess, Tic Tac Toe, and Connect 4 share the same flow: `.<game> start` opens a l
 | `.antism on/off` | Auto-remove status/channel forward spam |
 | `.warn @user [reason]` | Issue a warning to a user |
 | `.resetwarn @user` | Clear a user's warnings |
-| `.groupstats / .gs` | Per-group stats (see .stats for bot-wide numbers) |
+| `.groupstats / .gs` | View group settings and member statistics |
 | `.welcome on/off` | Toggle welcome messages for new members |
 | `.setwelcome [message]` | Set the welcome message (use @user as a placeholder) |
 | `.leave on/off` | Toggle goodbye messages when members leave |

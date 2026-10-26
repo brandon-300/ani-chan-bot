@@ -240,78 +240,10 @@ const aliases = {
 // for why: editing a copy here that could drift from the README (or vice
 // versa) is exactly the kind of staleness this project has hit before
 // (e.g. the pinned ani-chan-bot-commands.txt reference file going stale).
-const { COMMAND_REFERENCE } = require('./utils/commandReference');
-
-// Reduces one COMMAND_REFERENCE `cmd` field down to just its bare, invocable
-// ".command" form(s) for the in-chat menu — no descriptions, no argument
-// placeholders. " / " (with spaces) separates genuinely distinct commands or
-// aliases (".mute / .unmute", ".balance / .bal") and each becomes its own
-// line; a bare "/" with no surrounding spaces is an argument placeholder
-// (".loan request/repay/status", "[warn/kick]") and is dropped instead. A
-// second word is kept only when it reads as part of the command itself
-// (".guild info", ".pet adopt") — stripped as soon as a token looks like an
-// argument: bracketed, an "@mention", contains a slash, or is ALL-CAPS.
-function extractMenuCommands(cmdField) {
-  return cmdField.split(' / ').map(variant => {
-    const tokens = variant.trim().split(/\s+/);
-    const kept = [tokens[0]];
-    for (let i = 1; i < tokens.length; i++) {
-      const t = tokens[i];
-      if (t.startsWith('[') || t.startsWith('@') || t.startsWith('(') || t.startsWith('<') || t.includes('/') || /^[A-Z0-9_-]+$/.test(t)) break;
-      kept.push(t);
-    }
-    return kept.join(' ');
-  });
-}
+const { buildCommandMenu } = require('./utils/commandMenu');
 
 async function sendQuickMenu(msg) {
-  const header =
-`╭━━★彡 *${BOT_NAME}* 彡★━━╮
-┃  𖤓 Prefix: ${PREFIX}
-┃  𖤓 Commands: ${Object.keys(commands).length}
-╰━━━━━━━━━━━━━╯`;
-
-  const body = COMMAND_REFERENCE.map(section => {
-    // Several items document more than one usage of the same command
-    // (".chess @user" / ".chess [easy|medium|hard]" / ...) — once reduced
-    // to bare commands those collapse to the same line, so dedupe per
-    // section rather than showing ".chess" three times in a row.
-    const seen = new Set();
-    const cmds = [];
-    for (const item of section.items) {
-      const variants = extractMenuCommands(item.cmd);
-
-      // Group variants that are TRUE aliases of each other (registered in
-      // the `aliases` map above — e.g. inv -> inventory) onto one line, so
-      // ".inventory" and ".inv" show as a single "┣ ✦ .inventory / .inv"
-      // instead of two separate bullets that look like different things to
-      // try when they're the exact same command under the hood. Variants
-      // that AREN'T aliases of one another (".mute"/".unmute",
-      // ".hug"/".kiss"/...) are genuinely different commands and still get
-      // their own line each — unchanged from before.
-      const bareNameOf = v => v.split(/\s+/)[0].slice(1).toLowerCase();
-      const areAliasPair = (a, b) => aliases[bareNameOf(a)] === bareNameOf(b) || aliases[bareNameOf(b)] === bareNameOf(a);
-
-      const groups = [];
-      for (const variant of variants) {
-        const existingGroup = groups.find(g => g.some(v => areAliasPair(v, variant)));
-        if (existingGroup) existingGroup.push(variant);
-        else groups.push([variant]);
-      }
-
-      for (const group of groups) {
-        const cmd = group.join(' / ');
-        if (!seen.has(cmd)) {
-          seen.add(cmd);
-          cmds.push(cmd);
-        }
-      }
-    }
-    const lines = cmds.map(cmd => `┣ ✦ ${cmd}`).join('\n');
-    return `*${section.emoji} ${section.title} ${section.emoji}*\n${lines}\n┗━━━━━━━━━━━`;
-  }).join('\n\n');
-
-  const menu = `${header}\n\n${body}\n\nType *${PREFIX}<command>* to use one.`;
+  const menu = buildCommandMenu(msg, { botName: BOT_NAME, prefix: PREFIX, aliases });
 
   // One message: image with the full menu as its caption, matching the
   // reference bot. WhatsApp's ~1,024-char image-caption cap that's widely
