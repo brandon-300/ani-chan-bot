@@ -538,7 +538,7 @@ module.exports = {
     try {
       // msg.author is the actual sender inside a group; it's undefined in a
       // DM, where msg.from IS the sender (and already unique per person)
-      // — see models/AiConversation.js's comment for why this matters.
+      // — the memory helper maps group senders to a shared group key.
       const senderId = msg.author || msg.from;
       const history = await getHistory(chat.id._serialized, senderId);
       const senderName = await resolveSenderName(msg, client);
@@ -584,7 +584,7 @@ module.exports = {
         delivered = await deliverTextResponse(client, msg, rawReply, allowBotActions, { stickerReply: resolved.stickerReply, catalogue });
         return delivered;
       } finally {
-        await addTurnToHistory(chat.id._serialized, senderId, historyUser, historyAssistantText(controls, delivered));
+        await addTurnToHistory(chat.id._serialized, senderId, chat.isGroup ? `${senderName}: ${historyUser}` : historyUser, historyAssistantText(controls, delivered));
       }
     } catch (err) {
       return msg.reply(friendlyAiError(err, 'Copilot'));
@@ -705,7 +705,7 @@ module.exports = {
 
       // History keeps the plain spoken words; the optional expression cue is
       // added only to the text sent to Fish Audio (config FISH_EXPRESSION_TAGS).
-      await addTurnToHistory(chat.id._serialized, senderId, resolved.prompt, reply);
+      await addTurnToHistory(chat.id._serialized, senderId, chat.isGroup ? `${senderName}: ${resolved.prompt}` : resolved.prompt, reply);
 
       const mp3Buffer = await fishAudio.synthesizeSpeech(FISH_EXPRESSION_TAGS ? speechText.applyExpressionCue(reply) : reply);
 

@@ -1,3 +1,4 @@
+const { donateCoins, openCardPack, EconomyError } = require('../utils/economyTransactions');
 const User = require('../models/User');
 const Guild = require('../models/Guild');
 const AgeVerification = require('../models/AgeVerification');
@@ -354,13 +355,18 @@ module.exports = {
     const amount = parseAmount(args[1]);
     if (!amount || amount < 1) return msg.reply('❌ Usage: .donate [@user] [amount]\n\nAmount supports shorthand: 5k, 1.2m, etc.');
 
-    const sender = await User.findOrCreate(contact.id._serialized);
-    const receiver = await User.findOrCreate(mentioned[0].id._serialized);
-
-    if (sender.coins < amount) return msg.reply('❌ Not enough coins.');
-    sender.coins -= amount;
-    receiver.coins += amount;
-    await Promise.all([sender.save(), receiver.save()]);
+    const senderId = contact.id._serialized;
+    const receiverId = mentioned[0].id._serialized;
+    if (senderId === receiverId) return msg.reply('❌ You cannot donate to yourself.');
+    await User.findOrCreate(senderId);
+    await User.findOrCreate(receiverId);
+    try {
+      await donateCoins({ senderId, receiverId, amount, messageId: msg.id?._serialized });
+    } catch (err) {
+      if (err instanceof EconomyError) return msg.reply(err.message);
+      console.error('donate: transaction failed:', err.message);
+      return msg.reply('⚠️ Transfer could not be confirmed. No partial transfer is allowed. Retry this message after checking your balance.');
+    }
     msg.reply(`💝 *${contact.pushname}* donated 💰 ${formatNum(amount)} coins to *${mentioned[0].pushname}*!`);
   },
 
@@ -799,6 +805,16 @@ async lottery(client, msg, args) {
     if (!itemName) return msg.reply('❌ Usage: .use [item name]');
 
     const user = await User.findOrCreate(contact.id._serialized);
+    if (itemName.toLowerCase() === 'card pack') {
+      try {
+        const gained = await openCardPack(contact.id._serialized);
+        return msg.reply(`🎴 *Card Pack opened!*\n\n${gained.map(c => `${tierEmoji(c.tier)} ${c.name} [${c.tier}] — ${c.code}`).join('\n')}`);
+      } catch (err) {
+        if (err instanceof EconomyError) return msg.reply(err.message);
+        console.error('use Card Pack: transaction failed:', err.message);
+        return msg.reply('⚠️ Card Pack could not be opened. The pack and card grants are kept together; check your inventory before trying again.');
+      }
+    }
     const idx = user.inventory.findIndex(i => i.toLowerCase() === itemName.toLowerCase());
     if (idx === -1) return msg.reply('❌ Item not in inventory.');
 
@@ -830,30 +846,6 @@ async lottery(client, msg, args) {
       effect = '🔮 Got 3 orbs!';
     } else if (matchedName === 'Lucky Charm') {
       effect = '🍀 Drop rates boosted for 1 hour!';
-    } else if (matchedName === 'Card Pack') {
-      const picks = await CardCatalogue.aggregate([{ $sample: { size: 3 } }]);
-      if (!picks.length) {
-        effect = '❌ No cards available in the catalogue right now.';
-        refund = true;
-      } else {
-        const gained = [];
-        for (const c of picks) {
-          await OwnedCard.create({
-            ownerId: contact.id._serialized,
-            // catalogueId must be the 6-char CardCatalogue.cardId, not the
-            // Mongo _id — every join (.col, .ci, .deck) looks cards up via
-            // `CardCatalogue.findOne({ cardId: owned.catalogueId })`, so
-            // storing c._id here silently broke images/series lookups for
-            // anything pulled from a Card Pack specifically.
-            catalogueId: c.cardId,
-            name: c.name,
-            series: c.series,
-            tier: c.tier,
-          });
-          gained.push(`${tierEmoji(c.tier)} ${c.name} [${c.tier}]`);
-        }
-        effect = `🎴 *Card Pack opened!*\n\n${gained.join('\n')}`;
-      }
     } else if (matchedName === 'Star Fragment') {
       user.stardust += 50;
       effect = '⭐ Got 50 stardust!';

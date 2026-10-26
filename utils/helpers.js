@@ -77,13 +77,18 @@ function formatNum(n) {
 function parseAmount(input) {
   if (input === undefined || input === null) return null;
   const str = String(input).trim().toLowerCase().replace(/,/g, '');
+  if (str.length > 100) return null;
   const match = str.match(/^(\d+(?:\.\d+)?)([kmb])?$/);
   if (!match) return null;
-  const base = parseFloat(match[1]);
-  if (!Number.isFinite(base)) return null;
-  const multipliers = { k: 1_000, m: 1_000_000, b: 1_000_000_000 };
-  const value = Math.round(base * (multipliers[match[2]] || 1));
-  return value > 0 ? value : null;
+  // Calculate decimal shorthand exactly, so float rounding cannot turn an
+  // overflowing input into an apparently safe integer near the wallet limit.
+  const [whole, fraction = ''] = match[1].split('.');
+  const scale = 10n ** BigInt(fraction.length);
+  const multipliers = { k: 1000n, m: 1000000n, b: 1000000000n };
+  const numerator = BigInt(whole + fraction) * (multipliers[match[2]] || 1n);
+  if (numerator > BigInt(Number.MAX_SAFE_INTEGER) * scale) return null;
+  const value = (numerator + scale / 2n) / scale;
+  return value > 0n ? Number(value) : null;
 }
 
 // ─── Cooldown Helper ──────────────────────────────────────────────────────────

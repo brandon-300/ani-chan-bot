@@ -17,6 +17,7 @@ function install() {
     if (expected && typeof expected === 'object' && !(expected instanceof Date) && '$exists' in expected) {
       return (doc[key] !== undefined) === Boolean(expected.$exists);
     }
+    if (expected && typeof expected === 'object' && expected.$not instanceof RegExp) return !expected.$not.test(doc[key]);
     if (expected && typeof expected === 'object' && !(expected instanceof Date) && '$ne' in expected) return doc[key] !== expected.$ne;
     return doc[key] === expected;
   });

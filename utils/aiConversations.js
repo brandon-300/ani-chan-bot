@@ -1,17 +1,17 @@
 'use strict';
 
 // ─── AI conversation memory ─────────────────────────────────────────────────
-// Reading and writing the per-(chat, sender, persona) conversation stored in
+// Reading and writing per-DM-user/persona and shared per-group/persona memory in
 // Mongo (models/AiConversation.js). Rules:
 //
-//   • Each persona has its own conversation with each user. Switching persona
-//     starts a new one; switching back continues the old one.
+//   • Each persona has its own conversation per DM user or group. Groups use
+//     a stable synthetic sender key; previous member-specific rows stay untouched.
 //   • A conversation expires AI_HISTORY_EXPIRY_DAYS (7) after the last message.
 //     Every exchange moves the expiry forward, so an active conversation never
 //     expires on its original date. AI_HISTORY_EXPIRY_SCOPE decides whether
 //     that counts activity with any persona ('user', the default) or only with
 //     the same persona ('persona').
-//   • The bot owner is exempt: no expiry, and a much larger history.
+//   • The bot owner is exempt in DMs: no expiry, and a much larger history.
 //
 // Expiry itself is MongoDB's native TTL index on `expiresAt`: no timers and no
 // scheduler here. Documents without `expiresAt` (the owner's) are never touched.
@@ -34,11 +34,18 @@ function expiryDate() {
   return new Date(clock() + AI_HISTORY_EXPIRY_DAYS * DAY_MS);
 }
 
+// Keep the existing unique index, using a distinct namespace for shared groups.
+// No old per-member history is read, merged, rewritten or explicitly deleted.
+function conversationSender(chatId, senderId) {
+  return String(chatId).endsWith('@g.us') ? `group:${chatId}` : senderId;
+}
+
 // Returns this (chat, sender, persona) conversation as { role, content }[] for
 // gemini.js: empty for a new conversation, or one that has expired. Reading
 // never extends the expiry; only a new exchange does.
 async function getConversationHistory({ chatId, senderId, personaId }) {
-  const owner = isOwner(senderId);
+  senderId = conversationSender(chatId, senderId);
+  const owner = !String(chatId).endsWith('@g.us') && isOwner(senderId);
   let convo;
   try {
     convo = await AiConversation.findOne({ chatId, senderId, personaId });
@@ -68,7 +75,8 @@ async function getConversationHistory({ chatId, senderId, personaId }) {
 // history limit, and moves the expiry to "now + 7 days" (or removes it for the
 // owner). Never throws: a failed save must not break the reply.
 async function appendConversationTurn({ chatId, senderId, personaId, userContent, assistantContent }) {
-  const owner = isOwner(senderId);
+  senderId = conversationSender(chatId, senderId);
+  const owner = !String(chatId).endsWith('@g.us') && isOwner(senderId);
   const update = {
     $push: {
       messages: {
@@ -97,7 +105,7 @@ async function appendConversationTurn({ chatId, senderId, personaId, userContent
   let refreshed = 0;
   if (!owner && AI_HISTORY_EXPIRY_SCOPE === 'user') {
     try {
-      const result = await AiConversation.updateMany({ senderId }, { $set: { expiresAt } });
+      const result = await AiConversation.updateMany({ senderId, ...(String(chatId).endsWith('@g.us') ? {} : { chatId: { $not: /@g\.us$/ } }) }, { $set: { expiresAt } });
       refreshed = Number(result?.modifiedCount ?? result?.nModified ?? 0);
     } catch (err) {
       logger.error('ai.history.refresh.failed', err, { personaId });
@@ -125,6 +133,7 @@ async function migrateLegacyConversations(personaId) {
   const legacy = await AiConversation.find({ personaId: { $exists: false } }).lean();
   let moved = 0;
   for (const doc of legacy) {
+    if (String(doc.chatId).endsWith('@g.us')) continue;
     const update = { $set: { personaId } };
     if (isOwner(doc.senderId)) update.$unset = { expiresAt: '' };
     else update.$set.expiresAt = expiryDate();

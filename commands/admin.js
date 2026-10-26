@@ -1053,7 +1053,7 @@ async tagall(client, msg, args) {
 };
 
 // ─── Blacklist listener (passive, called from index.js or separate listener) ──
-module.exports.handleBlacklist = async (msg) => {
+module.exports._handleBlacklist = async (msg) => {
   try {
     const chat = await safeGetChat(msg).catch(async err => { console.error("getChat failed:", err.message); await msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
     if (!chat) return;

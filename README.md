@@ -148,7 +148,7 @@ The bot's owner-only admin tools (card catalogue management, testing commands, e
 | `.resell [index]` | Instantly sell a card to the bot for 50% of tier value |
 
 ### 💰 ECONOMY
-New accounts must complete registration before using any other command — set your name, date of birth, bio, and profile picture via `.setname` / `.setdob` / `.bio` / `.setpic`, in any order (`.edit` shows what's left). You must be 18+ to register — an under-18 `.setdob` is denied and locks that number out of retrying `.setdob` for 30 days.
+New accounts must start registration with `.reg`, then complete their name, date of birth, bio, and profile picture via `.setname` / `.setdob` / `.bio` / `.setpic`, in any order (`.edit` shows what's left). You must be 18+ to register — an under-18 `.setdob` is denied and locks that number out of retrying `.setdob` for 30 days.
 
 | Command | Description |
 |---|---|
@@ -162,8 +162,10 @@ New accounts must complete registration before using any other command — set y
 | `.lottery` | Buy a 100-coin lottery ticket for a chance to win big |
 | `.rich` | Top 10 richest users bot-wide |
 | `.richg` | Richest users in this group |
-| `.profile / .p` | View your profile card |
+| `.profile / .p` | View your profile card (your email and session status are only shown in a private chat with me) |
+| `.setemail [email]` | Private chat only — add or change your verified recovery email, used to unlock your account after 30 days of inactivity (reply to my message with the emailed 6-digit code) |
 | `.edit` | Profile dashboard — your current name/bio/DOB/age/picture status (DOB shown in DM only), and the commands to update each |
+| `.reg` | Start or resume private profile registration; account activates after all required steps are complete |
 | `.setname [name]` | Set your display name on your profile |
 | `.setdob [DD/MM/YYYY]` | Set your date of birth — age is calculated automatically; 18+ required |
 | `.bio [text] / .setbio` | Set your profile bio |
@@ -249,16 +251,19 @@ Chess, Tic Tac Toe, and Connect 4 share the same flow: `.<game> start` opens a l
 ### 🎭 INTERACTION
 | Command | Description |
 |---|---|
-| `.hug / .kiss / .slap / .wave / .pat` | React toward someone — mention them or reply to their message (anime GIF) |
-| `.lick / .punch / .bonk / .tickle / .kill` | More reaction GIFs toward someone — mention or reply required |
-| `.fuck / .kidnap` | Meme reaction GIFs toward someone — mention or reply required |
-| `.dance / .sad / .smile / .laugh` | Solo reaction GIFs — no target needed |
-| `.jihad / .crusade / .shrug / .wank` | Solo meme/text reactions — no target needed |
+| `.hug / .kiss / .slap / .wave / .pat` | Reply to another user — caption mentions you and the quoted user (anime GIF) |
+| `.lick / .punch / .bonk / .spank / .tickle / .kill` | Reply to another user — GIF caption mentions both users |
+| `.fuck` | API-backed insult reaction GIF — reply to another user |
+| `.kidnap` | Anime carry GIF — reply to another user |
+| `.die` | API-backed death reaction GIF — reply to another user |
+| `.dance / .sad / .smile / .laugh / .angry` | Reply to another user — API GIF caption mentions both users |
 
 ### 😂 FUN
 | Command | Description |
 |---|---|
-| `.gay / .lesbian / .simp / .skill / .duality` | Random silly percentage/label generators |
+| `.gay / .lesbian / .simp` | Percentage meter card — reply to or @mention someone, or use it alone for yourself |
+| `.pick [what]` | Group only — picks a random member for anything (e.g. .pick gay) |
+| `.skill / .duality` | Random silly label generators |
 | `.ship [@user1] [@user2]` | Ship two people together with a compatibility score |
 | `.gen / .pov / .social / .relation / .pp` | More random silly generators |
 | `.wouldyourather / .wyr` | Would You Rather prompt |
@@ -288,14 +293,16 @@ Chess, Tic Tac Toe, and Connect 4 share the same flow: `.<game> start` opens a l
 ### 🤖 AI
 | Command | Description |
 |---|---|
-| `.copilot [msg]` | Full context-aware AI chat as Marin (Gemini) — text reply |
-| `.gpt [msg]` | Single-turn AI question (Gemini) — text reply |
+| `.copilot [msg]` | AI chat as the active persona (Gemini), shared group history and private DM history — text, emojis, and optional stickers |
+| `.gpt [msg]` | Ask Gemini one question directly — no persona, no memory, no reactions or stickers, text reply only |
 | `.voice [msg]` | Same AI chat as .copilot, replied as a spoken voice note (Fish Audio TTS) |
+| `.stickeranalyze [new\|redo confirm\|stop]` | Analyze the shared sticker library for AI personas (owner only, private DM) |
+| `.stickerimport [on\|off]` | Owner only, private DM: add WebP stickers once to the shared Cloudinary/Mongo AI library used by every persona |
 | `.imagine [prompt]` | AI image generation (Gemini 2.5 Flash Image) |
 | `.upscale` | Upscale a replied image |
 | `.translate [lang] [text] / .tt` | Translate text |
 | `.transcribe / .tb` | Transcribe a replied voice note to text |
-| `.tts [text]` | Turn text into a spoken voice note (reply to a message to use its text) |
+| `.tts [text]` | Turn text into a voice note; only the reaction and final audio are sent (reply to a message to use its text) |
 
 ### 🔄 CONVERTER
 | Command | Description |
@@ -315,14 +322,14 @@ Chess, Tic Tac Toe, and Connect 4 share the same flow: `.<game> start` opens a l
 | Command | Description |
 |---|---|
 | `.waifu / .neko / .maid` | Random SFW anime character images |
-| `.oppai / .selfies / .uniform` | More SFW anime image categories |
+| `.selfies / .uniform` | More SFW anime image categories |
 | `.mori-calliope / .raiden-shogun / .kamisato-ayaka` | Character-themed SFW anime images |
 
 ### 🔞 ANIME NSFW
 | Command | Description |
 |---|---|
 | `.nsfw on/off` | Enable/disable NSFW commands in this group (admin only) |
-| `.milf / .ass / .hentai / .oral / .ecchi` | NSFW anime image categories (requires .nsfw on) |
+| `.oppai / .milf / .ass / .hentai / .oral / .ecchi` | NSFW anime image categories (requires .nsfw on) |
 | `.paizuri / .ero` | More NSFW anime image categories (requires .nsfw on) |
 | `.ehentai [tag]` | Link to an e-hentai search for a tag |
 | `.nhentai [code or tag]` | Link to an nhentai search or gallery |
@@ -336,6 +343,8 @@ Chess, Tic Tac Toe, and Connect 4 share the same flow: `.<game> start` opens a l
 | `.unpin` | Unpin a replied message — admin only, groups only |
 | `.antilink [on/off]` | Auto-remove messages containing links |
 | `.antilink action [warn/kick]` | Set what happens when antilink triggers |
+| `.antibot [on/off]` | Delete messages from other bots, warn them, and remove them at the warning limit — admin only |
+| `.antibot id` | Reply to a message to see how Anti-Bot detects it (admin only) |
 | `.antism on/off` | Auto-remove status/channel forward spam |
 | `.warn @user [reason]` | Issue a warning to a user |
 | `.resetwarn @user` | Clear a user's warnings |
@@ -354,7 +363,7 @@ Chess, Tic Tac Toe, and Connect 4 share the same flow: `.<game> start` opens a l
 | `.activity` | Show member activity stats |
 | `.active / .inactive` | List the most/least active members |
 | `.open / .close` | Open/close the group to everyone's messages |
-| `.news` | Fetch the latest anime/manga/manhwa/donghua news from Google News (admin only) — also auto-posts once daily at 8AM WAT to every group the bot is in |
+| `.news` | Fetch the latest anime/manga/manhwa/donghua news from Google News (admin only) — also auto-posts hourly to every group the bot is in |
 
 ### 🐾 PETS
 | Command | Description |

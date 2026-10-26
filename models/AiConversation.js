@@ -3,16 +3,12 @@ const mongoose = require('mongoose');
 // Persists .copilot/.voice conversation memory in Mongo (it survives PM2
 // restarts). All reads and writes go through utils/aiConversations.js.
 //
-// One document per (chat, sender, PERSONA): a user who talks to Marin, then to
-// Karane, then to Marin again has two separate threads, and the Marin one picks
-// up exactly where it stopped. (Before this, the persona was not part of the
-// key, so every character shared one thread and answered as if the previous
-// character's conversation was their own.)
+// One document per DM user/persona or shared group/persona. Group rows use
+// senderId="group:<chatId>"; the compound index is retained, so old member rows
+// can coexist without any migration or merging. Their existing TTL still applies.
 const AiConversationSchema = new mongoose.Schema({
   chatId: { type: String, required: true },
-  // Who this conversation belongs to. In a DM chatId alone is unique per person,
-  // but in a GROUP chatId is the same for every member, so senderId
-  // (msg.author in a group, msg.from in a DM) keeps each person's thread apart.
+  // A real user ID in DMs, or the stable group key for shared histories.
   senderId: { type: String, required: true },
   // Which character the user was talking to (the persona id, e.g. "marin").
   personaId: { type: String, required: true },

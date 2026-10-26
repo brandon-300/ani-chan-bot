@@ -1,3 +1,4 @@
+const { parseWager, settleWager } = require('../utils/wager');
 const User = require('../models/User');
 const { rand, pick, formatNum } = require('../utils/helpers');
 
@@ -47,18 +48,17 @@ module.exports = {
   // .slots [amount]
   async slots(client, msg, args) {
     const contact = await msg.getContact();
-    const amount = parseInt(args[0]) || 50;
-    if (amount < 10) return msg.reply('❌ Minimum bet is 10 coins.');
+    const amount = parseWager(args[0], 50, 10, 50);
+    if (amount === null) return msg.reply('❌ Minimum bet is 10 coins.');
 
-    const user = await User.findOrCreate(contact.id._serialized);
+    let user = await User.findOrCreate(contact.id._serialized);
     if (user.coins < amount) return msg.reply(`❌ Not enough coins. You have 💰 ${user.coins}.`);
 
-    user.coins -= amount;
     const reels = spinSlots();
     const mult = slotsMultiplier(reels);
     const winnings = Math.floor(amount * mult);
-    user.coins += winnings;
-    await user.save();
+    user = await settleWager(contact.id._serialized, amount, winnings - amount);
+    if (!user) return msg.reply('❌ Balance changed or payout exceeds the wallet limit. No bet was charged.');
 
     const display = `[ ${reels.join(' | ')} ]`;
     if (mult === 0) {
@@ -73,15 +73,15 @@ module.exports = {
   // .cf [amount] — coin flip
   async cf(client, msg, args) {
     const contact = await msg.getContact();
-    const amount = parseInt(args[0]);
+    const amount = parseWager(args[0]);
     if (!amount || amount < 1) return msg.reply('❌ Usage: .cf [amount]');
 
-    const user = await User.findOrCreate(contact.id._serialized);
+    let user = await User.findOrCreate(contact.id._serialized);
     if (user.coins < amount) return msg.reply('❌ Not enough coins.');
 
     const heads = Math.random() > 0.5;
-    user.coins += heads ? amount : -amount;
-    await user.save();
+    user = await settleWager(contact.id._serialized, amount, heads ? amount : -amount);
+    if (!user) return msg.reply('❌ Balance changed or payout exceeds the wallet limit. No bet was charged.');
 
     return msg.reply(
       `🪙 *Coin Flip*\n\n${heads ? '🟡 HEADS — You win!' : '⚫ TAILS — You lose!'}\n${heads ? `+💰 ${amount}` : `-💰 ${amount}`}\nBalance: ${formatNum(user.coins)}`
@@ -91,8 +91,9 @@ module.exports = {
   // .dice [amount]
   async dice(client, msg, args) {
     const contact = await msg.getContact();
-    const amount = parseInt(args[0]) || 100;
-    const user = await User.findOrCreate(contact.id._serialized);
+    const amount = parseWager(args[0], 100);
+    if (amount === null) return msg.reply('❌ Usage: .dice [positive whole amount]');
+    let user = await User.findOrCreate(contact.id._serialized);
     if (user.coins < amount) return msg.reply('❌ Not enough coins.');
 
     const myRoll = rand(1, 6);
@@ -100,8 +101,8 @@ module.exports = {
     const win = myRoll > botRoll;
     const draw = myRoll === botRoll;
 
-    if (!draw) user.coins += win ? amount : -amount;
-    await user.save();
+    user = await settleWager(contact.id._serialized, amount, draw ? 0 : win ? amount : -amount);
+    if (!user) return msg.reply('❌ Balance changed or payout exceeds the wallet limit. No bet was charged.');
 
     return msg.reply(
       `🎲 *Dice*\n\nYou rolled: *${myRoll}*\nBot rolled: *${botRoll}*\n\n${draw ? '🤝 Draw! No coins lost.' : win ? `🏆 You win! +💰 ${amount}` : `😢 You lose! -💰 ${amount}`}\nBalance: ${formatNum(user.coins)}`
@@ -111,15 +112,15 @@ module.exports = {
   // .db [amount] — double or bust
   async db(client, msg, args) {
     const contact = await msg.getContact();
-    const amount = parseInt(args[0]);
+    const amount = parseWager(args[0], undefined, 1, 2);
     if (!amount || amount < 1) return msg.reply('❌ Usage: .db [amount]');
 
-    const user = await User.findOrCreate(contact.id._serialized);
+    let user = await User.findOrCreate(contact.id._serialized);
     if (user.coins < amount) return msg.reply('❌ Not enough coins.');
 
     const win = Math.random() > 0.5;
-    user.coins += win ? amount * 2 : -amount;
-    await user.save();
+    user = await settleWager(contact.id._serialized, amount, win ? amount * 2 : -amount);
+    if (!user) return msg.reply('❌ Balance changed or payout exceeds the wallet limit. No bet was charged.');
 
     return msg.reply(
       win
@@ -131,10 +132,10 @@ module.exports = {
   // .dp [amount] — double or pass (lower risk, lower reward)
   async dp(client, msg, args) {
     const contact = await msg.getContact();
-    const amount = parseInt(args[0]);
+    const amount = parseWager(args[0]);
     if (!amount || amount < 1) return msg.reply('❌ Usage: .dp [amount]');
 
-    const user = await User.findOrCreate(contact.id._serialized);
+    let user = await User.findOrCreate(contact.id._serialized);
     if (user.coins < amount) return msg.reply('❌ Not enough coins.');
 
     const r = Math.random();
@@ -143,21 +144,25 @@ module.exports = {
     else if (r < 0.75) result = { label: '➡️ Pass', gain: Math.floor(amount * 0.5) };
     else result = { label: '❌ Bust', gain: -amount };
 
-    user.coins += result.gain;
-    await user.save();
+    user = await settleWager(contact.id._serialized, amount, result.gain);
+    if (!user) return msg.reply('❌ Balance changed or payout exceeds the wallet limit. No bet was charged.');
     return msg.reply(`🎯 *Double or Pass*\n\n${result.label}\n${result.gain >= 0 ? '+' : ''}💰 ${result.gain}\nBalance: ${formatNum(user.coins)}`);
   },
 
   // .roulette [amount] [bet_type]
   async roulette(client, msg, args) {
     const contact = await msg.getContact();
-    const amount = parseInt(args[0]);
+    const amount = parseWager(args[0], undefined, 1, 35);
     const betType = args[1]?.toLowerCase() || 'red';
 
     if (!amount || amount < 1) return msg.reply('❌ Usage: .roulette [amount] [red/black/even/odd/number]');
 
-    const user = await User.findOrCreate(contact.id._serialized);
+    let user = await User.findOrCreate(contact.id._serialized);
     if (user.coins < amount) return msg.reply('❌ Not enough coins.');
+
+    if (!['red', 'black', 'even', 'odd'].includes(betType) && !/^(?:[0-9]|[12][0-9]|3[0-6])$/.test(betType)) {
+      return msg.reply('❌ Bet on red, black, even, odd, or a number from 0 to 36.');
+    }
 
     const spinNum = pick(ROULETTE_NUMS);
     const isRed = RED_NUMS.includes(spinNum);
@@ -167,17 +172,17 @@ module.exports = {
     const color = spinNum === 0 ? '🟩' : isRed ? '🔴' : '⚫';
 
     let win = false;
-    let mult = 2;
+    let mult = 1;
 
     if (betType === 'red' && isRed) win = true;
     else if (betType === 'black' && isBlack) win = true;
     else if (betType === 'even' && isEven) win = true;
     else if (betType === 'odd' && isOdd) win = true;
-    else if (!isNaN(parseInt(betType)) && parseInt(betType) === spinNum) { win = true; mult = 35; }
+    else if (Number(betType) === spinNum) { win = true; mult = 35; }
 
     const gain = win ? amount * mult : -amount;
-    user.coins += gain;
-    await user.save();
+    user = await settleWager(contact.id._serialized, amount, gain);
+    if (!user) return msg.reply('❌ Balance changed or payout exceeds the wallet limit. No bet was charged.');
 
     return msg.reply(
       `🎡 *Roulette*\n\nBall landed on: ${color} *${spinNum}*\nYour bet: ${betType} — ${win ? '✅ WIN' : '❌ LOSE'}\n${gain >= 0 ? '+' : ''}💰 ${gain}\nBalance: ${formatNum(user.coins)}`
@@ -187,8 +192,9 @@ module.exports = {
   // .horse [horse_number] [amount]
   async horse(client, msg, args) {
     const contact = await msg.getContact();
-    const pick_num = parseInt(args[0]);
-    const amount = parseInt(args[1]) || 100;
+    const pick_num = /^\d+$/.test(args[0] || '') ? Number(args[0]) : null;
+    const amount = parseWager(args[1], 100, 1, 15);
+    if (amount === null) return msg.reply('❌ Usage: .horse [1-5] [positive whole amount]');
 
     if (!pick_num || pick_num < 1 || pick_num > HORSES.length) {
       let text = `🏇 *Horse Racing*\n\nChoose a horse:\n\n`;
@@ -197,10 +203,8 @@ module.exports = {
       return msg.reply(text);
     }
 
-    const user = await User.findOrCreate(contact.id._serialized);
+    let user = await User.findOrCreate(contact.id._serialized);
     if (user.coins < amount) return msg.reply('❌ Not enough coins.');
-
-    user.coins -= amount;
 
     // Weight: lower odds = more likely to win
     const winnerIdx = HORSES.reduce((best, horse, i) => {
@@ -212,11 +216,8 @@ module.exports = {
     const chosen = HORSES[pick_num - 1];
     const win = winnerIdx === pick_num - 1;
 
-    if (win) {
-      const prize = amount * chosen.odds;
-      user.coins += prize;
-    }
-    await user.save();
+    user = await settleWager(contact.id._serialized, amount, win ? amount * chosen.odds - amount : -amount);
+    if (!user) return msg.reply('❌ Balance changed or payout exceeds the wallet limit. No bet was charged.');
 
     return msg.reply(
       `🏇 *Horse Race!*\n\n${HORSES.map((h, i) => `${h.emoji} ${h.name}${i === winnerIdx ? ' 🏆' : ''}`).join('\n')}\n\n${win ? `🎉 Your horse *${chosen.name}* won!\n+💰 ${amount * chosen.odds}` : `😢 *${winner.name}* won. You lost 💰 ${amount}`}\nBalance: ${formatNum(user.coins)}`

@@ -59,7 +59,6 @@ module.exports = {
     const timestamp = new Date().toLocaleString();
 
     console.log(`📝 Feedback received from ${senderName} (${senderId}) via ${chatLabel} at ${timestamp}`);
-    console.log(`📝 Feedback content: ${feedbackText}`);
 
     const forwardText = box('NEW FEEDBACK', [
       line('From', `${senderName} (${senderId.split('@')[0]})`),

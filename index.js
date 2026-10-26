@@ -798,10 +798,7 @@ const REGISTRATION_BYPASS_COMMANDS = new Set(['reg', 'setname', 'setdob', 'bio',
 //     fields) when one exists, so the session gate right after this one
 //     (commands/account.js) doesn't need a second database lookup.
 //
-// Deliberately fails OPEN on any unexpected error (Mongo hiccup, contact
-// lookup failure, etc.) rather than silently blocking every command bot-wide
-// if this new gate itself has a bug — a bug here should degrade back to the
-// bot's old (pre-registration) behavior, not take the whole bot down.
+// Account gates fail closed when account state cannot be verified.
 async function checkRegistrationGate(msg, command) {
   let senderId = null;
   try {
@@ -823,8 +820,7 @@ async function checkRegistrationGate(msg, command) {
     const User = require('./models/User');
     existingUser = await User.findOne({ id: senderId }, 'registration email emailVerifiedAt sessionLockedAt lastActiveAt').lean();
   } catch (err) {
-    console.error('Registration gate: user lookup failed, allowing command through:', err.message);
-    return { blocked: false, senderId, wasActive: true };
+    throw err;
   }
 
   // .lean() skips Mongoose document hydration, which is what would normally
@@ -1253,7 +1249,7 @@ function handleIncomingMessage(msg, resume = null) {
     logger.debug('command.received', {
       taskId: `attempt-${nextTaskId()}`,
       command,
-      argsPreview: args.map(arg => String(arg).slice(0, 160)),
+      argsPreview: [],
       messageType: msg.type,
       from: msg.from,
       author: msg.author || msg.from,
@@ -1280,10 +1276,11 @@ function handleIncomingMessage(msg, resume = null) {
     // stops commands like .balance/.cards/.daily from implicitly creating a
     // full account via User.findOrCreate() before someone has registered.
     // See checkRegistrationGate()'s own comment above for the bypass list
-    // and fail-open behavior.
-    const registrationCheck = await checkRegistrationGate(msg, command).catch(err => {
-      logger.error('registration.gate.failed_open', err, { command });
-      return { blocked: false, senderId: null, wasActive: true };
+    // and failure behavior.
+    const registrationCheck = await checkRegistrationGate(msg, command).catch(async err => {
+      logger.error('registration.gate.failed_closed', err, { command });
+      await msg.reply('⚠️ Account verification is temporarily unavailable. Please try again later.').catch(() => {});
+      return { blocked: true, senderId: null, wasActive: false };
     });
     if (registrationCheck.blocked) {
       logger.write('INFO', 'registration.blocked', { command, senderId: registrationCheck.senderId, reason: 'incomplete_registration' });
@@ -1295,10 +1292,11 @@ function handleIncomingMessage(msg, resume = null) {
     // account that has been inactive for SESSION_LOCK_DAYS is locked and gets
     // an emailed unlock code instead of the command running (the command is
     // re-run automatically after unlocking). Does nothing at all unless email
-    // is configured. Fails open on unexpected errors, like the gate above.
-    const sessionCheck = await accountSecurity._checkSession(client, msg, command, args, registrationCheck).catch(err => {
-      logger.error('session.gate.failed_open', err, { command });
-      return { blocked: false };
+    // is configured. Stops execution on unexpected verification errors.
+    const sessionCheck = await accountSecurity._checkSession(client, msg, command, args, registrationCheck).catch(async err => {
+      logger.error('session.gate.failed_closed', err, { command });
+      await msg.reply('⚠️ Session verification is temporarily unavailable. Please try again later.').catch(() => {});
+      return { blocked: true };
     });
     if (sessionCheck.blocked) {
       logger.write('INFO', 'session.blocked', { command, senderId: registrationCheck.senderId, reason: 'session_locked' });
@@ -1335,7 +1333,7 @@ function handleIncomingMessage(msg, resume = null) {
     inFlightCount++;
 
     logger.write('INFO', 'command.accepted', {
-      taskId, command, argsPreview: args.map(arg => String(arg).slice(0, 160)), senderName, chatLabel, receivedAt,
+      taskId, command, argsPreview: [], senderName, chatLabel, receivedAt,
       queuePosition, queue: isHeavy ? 'heavy' : 'normal', from: msg.from,
     });
 
@@ -1414,7 +1412,7 @@ function handleIncomingMessage(msg, resume = null) {
         let heavyStatus = 'success';
         logger.write('INFO', 'queue.heavy.job.start', { taskId, command, queuePosition: heavyPosition });
         try {
-          await logger.run(`command.${command}`, { taskId, command, argsPreview: args.map(arg => String(arg).slice(0, 160)), senderName, chatLabel, queue: 'heavy', queuePosition: heavyPosition }, () => trackedHandlerFn());
+          await logger.run(`command.${command}`, { taskId, command, argsPreview: [], senderName, chatLabel, queue: 'heavy', queuePosition: heavyPosition }, () => trackedHandlerFn());
         } catch (err) {
           heavyStatus = 'failed';
           logger.error('command.heavy.failed', err, { taskId, command, queuePosition: heavyPosition });
@@ -1443,7 +1441,7 @@ function handleIncomingMessage(msg, resume = null) {
       try {
         if (command === 'play') {
           await msg.react('▶️');
-        } else if (command !== 'news' && command !== 'copilot' && command !== 'voice') {
+        } else if (command !== 'gpt' && command !== 'news' && command !== 'copilot' && command !== 'voice') {
           // copilot/voice put their own ⏳ on the message and remove it again when
           // the reply is done (commands/ai.js), so the dispatcher must not add a
           // second one that nothing would ever clear.
@@ -1458,7 +1456,7 @@ function handleIncomingMessage(msg, resume = null) {
 
     // Normal commands: run immediately, same as before.
     try {
-      await logger.run(`command.${command}`, { taskId, command, argsPreview: args.map(arg => String(arg).slice(0, 160)), senderName, chatLabel, queue: 'normal' }, () => trackedHandlerFn());
+      await logger.run(`command.${command}`, { taskId, command, argsPreview: [], senderName, chatLabel, queue: 'normal' }, () => trackedHandlerFn());
 
       // ── Post-registration menu send ────────────────────────────────────
       // Only relevant right after one of the four registration commands

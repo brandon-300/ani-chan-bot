@@ -5,7 +5,7 @@ const axios = require('axios');
 const { MessageMedia } = require('whatsapp-web.js');
 const { fetchRandomImage } = require('../utils/danbooru');
 
-// Build tag-set variants: for each tag combo, try general first, then sensitive.
+// SFW commands request only general-rated images.
 // Anonymous Danbooru searches allow max 2 tags, so each combo must be ONE tag
 // (plus the rating: meta-tag). Animated/comic filtering happens client-side
 // in utils/danbooru.js after the response comes back.
@@ -13,7 +13,6 @@ function sfwSets(...tagCombos) {
   const sets = [];
   for (const tags of tagCombos.filter(Boolean)) {
     sets.push(`rating:general ${tags}`);
-    sets.push(`rating:sensitive ${tags}`);
   }
   return sets;
 }
@@ -51,7 +50,7 @@ async function sendAnimeImg(msg, url, caption) {
 }
 
 async function handleSfwImage(msg, tagSets, caption) {
-  const post = await fetchRandomImage(tagSets).catch(() => null);
+  const post = await fetchRandomImage(tagSets, { ratingLetters: ['g', 'general'], safeOnly: true }).catch(() => null);
   if (!post) return msg.reply('❌ API unavailable.');
   await sendAnimeImg(msg, post.url, caption);
 }

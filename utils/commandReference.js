@@ -243,9 +243,10 @@ const COMMAND_REFERENCE = [
     emoji: '🤖',
     title: 'AI',
     items: [
-      { cmd: '.copilot [msg]', desc: 'Full context-aware AI chat as the active persona (Gemini) — text reply without emojis' },
+      { cmd: '.copilot [msg]', desc: 'AI chat as the active persona (Gemini), shared group history and private DM history — text, emojis, and optional stickers' },
       { cmd: '.gpt [msg]', desc: 'Ask Gemini one question directly — no persona, no memory, no reactions or stickers, text reply only' },
       { cmd: '.voice [msg]', desc: 'Same AI chat as .copilot, replied as a spoken voice note (Fish Audio TTS)' },
+      { cmd: '.stickeranalyze [new|redo confirm|stop]', desc: 'Analyze the shared sticker library for AI personas (owner only, private DM)' },
       { cmd: '.stickerimport [on|off]', desc: 'Owner only, private DM: add WebP stickers once to the shared Cloudinary/Mongo AI library used by every persona' },
       { cmd: '.imagine [prompt]', desc: 'AI image generation (Gemini 2.5 Flash Image)' },
       { cmd: '.upscale', desc: 'Upscale a replied image' },
@@ -275,7 +276,7 @@ const COMMAND_REFERENCE = [
     title: 'ANIME SFW',
     items: [
       { cmd: '.waifu / .neko / .maid', desc: 'Random SFW anime character images' },
-      { cmd: '.oppai / .selfies / .uniform', desc: 'More SFW anime image categories' },
+      { cmd: '.selfies / .uniform', desc: 'More SFW anime image categories' },
       { cmd: '.mori-calliope / .raiden-shogun / .kamisato-ayaka', desc: 'Character-themed SFW anime images' },
     ],
   },
@@ -284,7 +285,7 @@ const COMMAND_REFERENCE = [
     title: 'ANIME NSFW',
     items: [
       { cmd: '.nsfw on/off', desc: 'Enable/disable NSFW commands in this group (admin only)' },
-      { cmd: '.milf / .ass / .hentai / .oral / .ecchi', desc: 'NSFW anime image categories (requires .nsfw on)' },
+      { cmd: '.oppai / .milf / .ass / .hentai / .oral / .ecchi', desc: 'NSFW anime image categories (requires .nsfw on)' },
       { cmd: '.paizuri / .ero', desc: 'More NSFW anime image categories (requires .nsfw on)' },
       { cmd: '.ehentai [tag]', desc: 'Link to an e-hentai search for a tag' },
       { cmd: '.nhentai [code or tag]', desc: 'Link to an nhentai search or gallery' },
@@ -320,7 +321,7 @@ const COMMAND_REFERENCE = [
       { cmd: '.activity', desc: 'Show member activity stats' },
       { cmd: '.active / .inactive', desc: 'List the most/least active members' },
       { cmd: '.open / .close', desc: "Open/close the group to everyone's messages" },
-      { cmd: '.news', desc: 'Fetch the latest anime/manga/manhwa/donghua news from Google News (admin only) — also auto-posts once daily at 8AM WAT to every group the bot is in' },
+      { cmd: '.news', desc: 'Fetch the latest anime/manga/manhwa/donghua news from Google News (admin only) — also auto-posts hourly to every group the bot is in' },
     ],
   },
   {

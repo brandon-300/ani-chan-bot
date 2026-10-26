@@ -67,13 +67,29 @@ test('each persona has its own conversation; switching away and back continues t
   assert.deepEqual(store.docs.map(d => d.personaId).sort(), ['karane', 'marin']);
 }));
 
-test('conversations are still separate per chat and per sender', withStore(async (store) => {
+test('groups share one conversation per persona while groups and DMs remain separate', withStore(async (store) => {
   await turn('group@g.us', 'a@c.us', 'marin', 'from A', 'to A');
   await turn('group@g.us', 'b@c.us', 'marin', 'from B', 'to B');
-  await turn('b@c.us', 'b@c.us', 'marin', 'B in DM', 'to B in DM');
-  assert.deepEqual((await history('group@g.us', 'a@c.us', 'marin')).map(m => m.content), ['from A', 'to A']);
-  assert.deepEqual((await history('group@g.us', 'b@c.us', 'marin')).map(m => m.content), ['from B', 'to B']);
+  await turn('b@c.us', 'b@c.us', 'marin', 'B in DM', 'DM reply');
+  await turn('other@g.us', 'a@c.us', 'marin', 'other group', 'ok');
+  for (const sender of ['a@c.us', 'b@c.us']) {
+    assert.deepEqual((await history('group@g.us', sender, 'marin')).map(m => m.content), ['from A', 'to A', 'from B', 'to B']);
+  }
+  assert.deepEqual(await history('group@g.us', 'a@c.us', 'karane'), []);
+  assert.deepEqual((await history('b@c.us', 'b@c.us', 'marin')).map(m => m.content), ['B in DM', 'DM reply']);
   assert.equal(store.docs.length, 3);
+}));
+
+test('fresh shared histories leave old group records unchanged, including legacy migration and DM expiry refresh', withStore(async (store) => {
+  store.insertLegacy({ chatId: 'group@g.us', senderId: 'a@c.us', personaId: 'marin', messages: [{ role: 'user', content: 'old member history' }], expiresAt: new Date(T0 + DAY) });
+  store.insertLegacy({ chatId: 'group@g.us', senderId: 'b@c.us', messages: [{ role: 'user', content: 'legacy group history' }] });
+  const before = structuredClone(store.docs);
+  assert.deepEqual(await history('group@g.us', 'a@c.us', 'marin'), []);
+  await conversations.migrateLegacyConversations('marin');
+  await turn('a@c.us', 'a@c.us', 'marin', 'DM', 'ok');
+  await turn('group@g.us', 'b@c.us', 'marin', 'new shared thread', 'hello');
+  assert.deepEqual(store.docs.slice(0, 2), before);
+  assert.deepEqual((await history('group@g.us', 'a@c.us', 'marin')).map(m => m.content), ['new shared thread', 'hello']);
 }));
 
 test('the command wrappers use the active persona unless told otherwise', withStore(async (store) => {
@@ -165,13 +181,15 @@ test('the owner\'s conversations never expire, even when the sweep runs 1000 day
   assert.deepEqual((await history('owner@c.us', 'owner@c.us', 'marin')).map(m => m.content), ['hello', 'hi boss']);
 }));
 
-test('the owner is recognised by OWNER_NUMBER and by OWNER_IDS, in a DM and in a group', withStore(async (store) => {
+test('owner exemptions apply to private histories; shared groups use consistent limits for every member', withStore(async (store) => {
   await turn('owner@c.us', 'owner@c.us', 'marin', 'dm', 'ok');
+  await turn('owner-lid@lid', 'owner-lid@lid', 'marin', 'dm', 'ok');
   await turn('group@g.us', 'owner-lid@lid', 'marin', 'group', 'ok');
   await turn('group@g.us', 'someone@c.us', 'marin', 'group', 'ok');
   assert.equal('expiresAt' in store.find('owner@c.us', 'owner@c.us', 'marin'), false);
-  assert.equal('expiresAt' in store.find('group@g.us', 'owner-lid@lid', 'marin'), false);
-  assert.ok(store.find('group@g.us', 'someone@c.us', 'marin').expiresAt instanceof Date, 'a normal member of the same group still expires');
+  assert.equal('expiresAt' in store.find('owner-lid@lid', 'owner-lid@lid', 'marin'), false);
+  assert.ok(store.find('group@g.us', 'group:group@g.us', 'marin').expiresAt instanceof Date);
+  assert.equal(store.docs.length, 3);
 }));
 
 test('the owner\'s history is not trimmed to 20, and Gemini sees a bounded recent window', withStore(async (store) => {

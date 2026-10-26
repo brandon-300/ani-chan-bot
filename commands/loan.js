@@ -276,7 +276,7 @@ module.exports = {
             User.findOne({ id: userId }).session(session),
           ]);
 
-          if (!freshCard || freshCard.isStaked || freshCard.isLent || freshCard.isForSale) {
+          if (!freshCard || freshCard.ownerId !== userId || freshCard.isStaked || freshCard.isLent || freshCard.isForSale) {
             throw new TransactionAbort('❌ That card is no longer available to stake — check *.col* and try again.');
           }
           if (freshUser?.loan?.active) {
@@ -296,10 +296,14 @@ module.exports = {
             dueAt,
           };
 
-          await Promise.all([
-            OwnedCard.updateOne({ _id: freshCard._id }, { $set: { isStaked: true } }, { session }),
-            User.updateOne({ _id: freshUser._id }, { $set: { loan: newLoan }, $inc: { bank: amount } }, { session }),
-          ]);
+          const staked = await OwnedCard.updateOne({
+            _id: freshCard._id, ownerId: userId,
+            isStaked: { $ne: true }, isLent: { $ne: true }, isForSale: { $ne: true },
+          }, { $set: { isStaked: true } }, { session });
+          if (staked.matchedCount !== 1 || !freshUser) {
+            throw new TransactionAbort('❌ Card ownership or availability changed. Nothing was staked.');
+          }
+          await User.updateOne({ _id: freshUser._id }, { $set: { loan: newLoan }, $inc: { bank: amount } }, { session });
         });
       } catch (err) {
         if (err instanceof TransactionAbort) return msg.reply(err.message);

@@ -492,7 +492,7 @@ const RANDOM_HARD_EXCLUDE = '-animated -animated_gif -video -webm -comic -4koma'
 const RANDOM_ALLOWED_EXT = new Set(['jpg', 'jpeg', 'png', 'webp']);
 const RANDOM_MAX_BYTES = 20 * 1024 * 1024; // WhatsApp-safe
 
-async function fetchRandomImage(tagSets, { ratingLetters = null } = {}) {
+async function fetchRandomImage(tagSets, { ratingLetters = null, safeOnly = false } = {}) {
   const sets = Array.isArray(tagSets) ? tagSets : [tagSets];
 
   for (const rawTags of sets) {
@@ -523,6 +523,10 @@ async function fetchRandomImage(tagSets, { ratingLetters = null } = {}) {
           const r = String(p.rating || '').toLowerCase();
           if (!ratingLetters.includes(r)) return false;
         }
+        if (safeOnly && (!['g', 'general'].includes(String(p.rating || '').toLowerCase())
+          || !String(p.tag_string || p.tag_string_general || '').trim()
+          || isUnsafeContent(p, p.tag_string || p.tag_string_general)
+          || isStyleMismatch({ tag_string: p.tag_string || p.tag_string_general }))) return false;
         const ext = String(p.file_url.split('.').pop() || '').toLowerCase();
         if (!RANDOM_ALLOWED_EXT.has(ext)) return false; // drops webm/mp4/gif etc.
         if ((p.file_size || 0) > RANDOM_MAX_BYTES) return false;

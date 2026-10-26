@@ -648,7 +648,8 @@ module.exports = {
       const tier = args[args.length - 1]?.toUpperCase();
       const hasTier = tier && ['C','B','A','S','SS','SSS'].includes(tier) && args.length > 1;
       const name = hasTier ? args.slice(0, -1).join(' ') : args.join(' ');
-      const nameRegex = new RegExp(name, 'i');
+      if (name.length > 100) return msg.reply('❌ Search text must be at most 100 characters.');
+      const nameRegex = new RegExp(name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
 
       // BUGFIX (Aug 2026): after renameCardsWithGemini.js corrected a bunch
       // of cards from a nickname to a full/formal name (e.g. "Kirito" ->
@@ -714,8 +715,9 @@ Use *.claim* when this card drops!`;
   // .si [name] — series info
   async si(client, msg, args) {
     const name = args.join(' ');
+    if (name.length > 100) return msg.reply('❌ Search text must be at most 100 characters.');
 if (!name) return msg.reply('❌ Usage: .si [series]');
-    const cards = await CardCatalogue.find({ series: new RegExp(name, 'i') }).sort({ tier: -1 });
+    const cards = await CardCatalogue.find({ series: new RegExp(name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') }).sort({ tier: -1 });
     if (!cards.length) return msg.reply('❌ Series not found.');
 
     let text = `📚 *${cards[0].series}* (${cards.length} cards)\n\n`;
@@ -727,11 +729,12 @@ if (!name) return msg.reply('❌ Usage: .si [series]');
   async ss(client, msg, args) {
     const contact = await msg.getContact();
     const series = args.join(' ');
+    if (series.length > 100) return msg.reply('❌ Search text must be at most 100 characters.');
     if (!series) return msg.reply('❌ Usage: .ss [series]');
 
 const cards = await OwnedCard.find({
   ownerId: contact.id._serialized,
-  series: new RegExp(series, 'i')
+  series: new RegExp(series.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i')
 });
     if (!cards.length) return msg.reply('❌ You have no cards from that series.');
 
@@ -743,10 +746,11 @@ const cards = await OwnedCard.find({
   // .slb [series] — series leaderboard (who has most)
   async slb(client, msg, args) {
     const series = args.join(' ');
+    if (series.length > 100) return msg.reply('❌ Search text must be at most 100 characters.');
     if (!series) return msg.reply('❌ Usage: .slb [series]');
 
     const results = await OwnedCard.aggregate([
-      { $match: { series: new RegExp(series, 'i') } },
+      { $match: { series: new RegExp(series.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') } },
       { $group: { _id: '$ownerId', count: { $sum: 1 } } },
       { $sort: { count: -1 } },
       { $limit: 10 }
@@ -1201,9 +1205,11 @@ const cards = await OwnedCard.find({
     if (!card) return msg.reply('❌ Card not found.');
     if (card.isStaked) return msg.reply('❌ This card is staked as loan collateral — repay your loan first (.loan status).');
 
-    card.isForSale = true;
-    card.price = price;
-    await card.save();
+    if (card.isLent) return msg.reply('❌ This card is currently lent. Take it back before selling it.');
+    const listed = await OwnedCard.updateOne({
+      _id: card._id, ownerId: contact.id._serialized, isStaked: { $ne: true }, isLent: { $ne: true },
+    }, { $set: { isForSale: true, price } });
+    if (listed.matchedCount !== 1) return msg.reply('❌ Card ownership or availability changed. Please check your collection.');
     return msg.reply(`✅ *${card.name}* listed for 💰 ${price} coins!`);
   },
 
@@ -1269,7 +1275,7 @@ const cards = await OwnedCard.find({
             User.findOne({ id: contact.id._serialized }).session(session),
           ]);
 
-          if (!freshCard || !freshCard.isForSale) {
+          if (!freshCard || !freshCard.isForSale || freshCard.isLent || freshCard.isStaked || freshCard.ownerId !== sellerId) {
             throw new TransactionAbort('❌ That listing is no longer available — someone may have already bought it, or the seller removed it.');
           }
           if (freshCard.price !== price) {
@@ -1322,30 +1328,14 @@ const cards = await OwnedCard.find({
 
     // Drop claim
     const group = await Group.findOne({ id: chat.id._serialized });
-    let catalogue = null;
-
-    if (/^[A-Z0-9]{6}$/i.test(id)) {
-      catalogue = await CardCatalogue.findOne({
-        cardId: id.toUpperCase()
-      }).catch(() => null);
+    const claimCode = id.toUpperCase();
+    if (!group?.cardsEnabled || !group.activeCardId || !group.activeCardCode
+      || claimCode !== group.activeCardCode
+      || !group.activeCardExpiresAt || new Date(group.activeCardExpiresAt).getTime() <= Date.now()) {
+      return msg.reply('❌ Invalid or expired claim code. Use the code from the current active drop.');
     }
-
-    if (
-      group?.activeCardCode &&
-      id.toUpperCase() === group.activeCardCode
-    ) {
-      catalogue = await CardCatalogue.findOne({
-        cardId: group.activeCardId
-      }).catch(() => null);
-    }
-
-    if (!group) {
-      return msg.reply('❌ This card has already been claimed or the claim code expired.');
-    }
-
-    if (!catalogue) {
-      return msg.reply('❌ Invalid or expired claim code.');
-    }
+    const catalogue = await CardCatalogue.findOne({ cardId: group.activeCardId });
+    if (!catalogue) return msg.reply('❌ Invalid or expired claim code.');
 
     const existing = await OwnedCard.findOne({
       ownerId: contact.id._serialized,
@@ -1368,6 +1358,19 @@ const cards = await OwnedCard.find({
     const dropSession = await mongoose.startSession();
     try {
       await dropSession.withTransaction(async () => {
+        // Consume exactly this enabled, unexpired drop in the same transaction
+        // as the card grant. A newer drop must never be cleared by this claim.
+        const consumed = await Group.updateOne({
+          id: chat.id._serialized,
+          cardsEnabled: true,
+          activeCardCode: claimCode,
+          activeCardId: catalogue.cardId,
+          activeCardExpiresAt: { $gt: new Date() },
+        }, { $unset: { activeCardId: '', activeCardCode: '', activeCardExpiresAt: '' } }, { session: dropSession });
+        if (consumed.matchedCount !== 1) {
+          throw new TransactionAbort('❌ This drop was claimed, disabled, replaced, or expired.');
+        }
+
         const stillUnclaimed = await OwnedCard.findOne({ catalogueId: catalogue.cardId }).session(dropSession);
         if (stillUnclaimed) {
           throw new TransactionAbort('❌ Someone else already claimed that card just now — better luck on the next drop!');
@@ -1383,12 +1386,6 @@ const cards = await OwnedCard.find({
           firstOwner: contact.id._serialized,
         }], { session: dropSession });
         owned = created[0];
-
-        await Group.findOneAndUpdate(
-          { id: chat.id._serialized },
-          { $unset: { activeCardId: '', activeCardCode: '', activeCardExpiresAt: '' } },
-          { session: dropSession }
-        );
       });
     } catch (err) {
       if (err instanceof TransactionAbort) return msg.reply(err.message);

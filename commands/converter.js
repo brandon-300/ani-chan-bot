@@ -6,6 +6,8 @@ const os = require('os');
 const { safeGetQuotedMessage } = require('../utils/helpers');
 const { BOT_NAME, TOURL_PROVIDERS, TOURL_TIMEOUT_MS, TOURL_USER_AGENT, TOURL_LITTERBOX_HOURS } = require('../utils/config');
 
+const { getActivePersona } = require('../utils/persona');
+
 const TMP = os.tmpdir();
 
 function tmpFile(ext) {
@@ -224,7 +226,7 @@ module.exports = {
       await msg.reply(stickerMedia, undefined, {
         sendMediaAsSticker: true,
         stickerName: BOT_NAME,
-        stickerAuthor: 'Brandon',
+        stickerAuthor: getActivePersona().stickerAuthor,
       });
     } catch (err) {
       return msg.reply('❌ Sticker creation failed: ' + err.message);
@@ -236,7 +238,7 @@ module.exports = {
   // .take — save sticker metadata (pack name, author)
   async take(client, msg, args) {
     const packName = args[0] || BOT_NAME;
-    const authorName = args[1] || 'Brandon';
+    const authorName = args[1] || getActivePersona().stickerAuthor;
 
     const targetMsg = await getTargetMessage(msg);
     if (targetMsg === 'ERROR') return msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment.");
