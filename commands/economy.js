@@ -1,11 +1,12 @@
+const { useSpecialItem, healBattle } = require('../utils/itemEffects');
+const { BusinessError } = require('../utils/transaction');
 const { donateCoins, openCardPack, EconomyError } = require('../utils/economyTransactions');
 const User = require('../models/User');
 const Guild = require('../models/Guild');
 const AgeVerification = require('../models/AgeVerification');
 const { CardCatalogue, OwnedCard } = require('../models/Card');
-const { formatNum, formatCooldown, rand, pick, tierEmoji, mentionName, mentionTag, safeGetChat, safeGetQuotedMessage, isOwner, isMod, addXP, XP_REWARDS, xpNeededForLevel, boldSans, doubleStruck, encodeIdKey, parseAmount, parseDobInput, calculateAge, isRegistrationComplete, buildRegistrationProgressText, registrationSteps } = require('../utils/helpers');
+const { formatNum, formatCooldown, rand, pick, tierEmoji, mentionName, mentionTag, safeGetChat, safeGetQuotedMessage, isOwner, isMod, addXP, XP_REWARDS, xpNeededForLevel, boldSans, doubleStruck, parseAmount, parseDobInput, calculateAge, isRegistrationComplete, buildRegistrationProgressText, registrationSteps } = require('../utils/helpers');
 const { BOT_NAME, MIN_REGISTRATION_AGE, AGE_VERIFICATION_LOCKOUT_DAYS } = require('../utils/config');
-const { battleGames } = require('./games');
 const { checkAchievements, formatUnlockNotice, ACHIEVEMENTS } = require('../utils/achievements');
 const { checkTitle, formatTitleUnlockNotice, titleLabel, TITLES } = require('../utils/titles');
 const { MessageMedia } = require('whatsapp-web.js');
@@ -13,7 +14,7 @@ const ffmpeg = require('fluent-ffmpeg');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { uploadToCloud, deleteFromCloud, isCloudConfigured } = require('../utils/cloudinary');
+const { isCloudConfigured } = require('../utils/cloudinary');
 const { maskEmail, isPrivateChat } = require('../utils/emailService');
 
 // ─── Profile pictures (.setpic) ───────────────────────────────────────────────
@@ -30,7 +31,7 @@ function tmpFile(ext) {
 
 function runFfmpeg(inputPath, outputPath, outputOptions = []) {
   return new Promise((resolve, reject) => {
-    ffmpeg(inputPath)
+    ffmpeg(inputPath, { timeout: 120 })
       .outputOptions(outputOptions)
       .output(outputPath)
       .on('end', resolve)
@@ -151,7 +152,7 @@ const SHOP_ITEMS = [
   { name: 'Pet Food', price: 100, emoji: '🍖', effect: "Feed your pet (-25% hunger) via .pet feed" },
   { name: 'Health Potion', price: 200, emoji: '🧪', effect: 'Restore HP in battles' },
   { name: 'Orb Pack', price: 500, emoji: '🔮', effect: 'Get 3 orbs' },
-  { name: 'Lucky Charm', price: 800, emoji: '🍀', effect: 'Boost drop rates for 1 hour' },
+  { name: 'Lucky Charm', price: 800, emoji: '🍀', effect: 'Halve group card-drop intervals for 1 hour (nonstackable)' },
   { name: 'Card Pack', price: 1000, emoji: '🎴', effect: 'Summon 3 random cards' },
   { name: 'Star Fragment', price: 1500, emoji: '⭐', effect: 'Convert to 50 stardust' },
   { name: 'VIP Badge', price: 5000, emoji: '👑', effect: 'Profile VIP badge' },
@@ -508,6 +509,7 @@ async lottery(client, msg, args) {
       `╭━━━★彡 ${doubleStruck('PROFILE')} 彡★━━━╮`,
       '',
       line('Name', user.name),
+      ...(user.profile.badge ? [line('Badge', user.profile.badge)] : []),
       // Once a DOB is verified, it's the only thing allowed to say how old
       // someone is — recalculated live (not read from user.age) so this
       // can't be stale from years-old registration OR overridden after
@@ -815,6 +817,19 @@ async lottery(client, msg, args) {
         return msg.reply('⚠️ Card Pack could not be opened. The pack and card grants are kept together; check your inventory before trying again.');
       }
     }
+    if (['lucky charm', 'vip badge'].includes(itemName.toLowerCase())) {
+      const canonical = itemName.toLowerCase() === 'lucky charm' ? 'Lucky Charm' : 'VIP Badge';
+      try {
+        await useSpecialItem(contact.id._serialized, canonical, msg.from);
+        return msg.reply(canonical === 'VIP Badge' ? '👑 Your VIP profile badge is now active!' : '🍀 Group card-drop intervals are halved for one hour. Charms do not stack.');
+      } catch (err) { if (err instanceof BusinessError) return msg.reply(err.message); throw err; }
+    }
+    if (itemName.toLowerCase() === 'health potion') {
+      try {
+        const outcome = await healBattle(contact.id._serialized, msg.from);
+        return msg.reply(`💊 Healed +${outcome.healed} HP! (${outcome.hp}/100 HP)`);
+      } catch (err) { if (err instanceof BusinessError) return msg.reply(err.message); throw err; }
+    }
     const idx = user.inventory.findIndex(i => i.toLowerCase() === itemName.toLowerCase());
     if (idx === -1) return msg.reply('❌ Item not in inventory.');
 
@@ -826,26 +841,10 @@ async lottery(client, msg, args) {
     let effect = '';
     let refund = false;
 
-    if (matchedName === 'Health Potion') {
-      const chat = await safeGetChat(msg).catch(err => { console.error("getChat failed:", err.message); msg.reply("⚠️ WhatsApp connection hiccup — please try again in a moment."); return null; });
-      if (!chat) return;
-      const game = battleGames.get(chat.id._serialized);
-      const inBattle = game && (game.p1.id === contact.id._serialized || game.p2.id === contact.id._serialized);
-      if (!inBattle) {
-        effect = '💊 No active battle here for you. Health Potion only works during a .startbattle fight!';
-        refund = true;
-      } else {
-        const player = game.p1.id === contact.id._serialized ? game.p1 : game.p2;
-        const healed = Math.min(30, 100 - player.hp);
-        player.hp += healed;
-        battleGames.set(chat.id._serialized, game);
-        effect = `💊 Healed +${healed} HP! (${player.hp}/100 HP)`;
-      }
-    } else if (matchedName === 'Orb Pack') {
+    if (matchedName === 'Orb Pack') {
       user.orbs += 3;
       effect = '🔮 Got 3 orbs!';
-    } else if (matchedName === 'Lucky Charm') {
-      effect = '🍀 Drop rates boosted for 1 hour!';
+
     } else if (matchedName === 'Star Fragment') {
       user.stardust += 50;
       effect = '⭐ Got 50 stardust!';
@@ -1129,8 +1128,8 @@ async lottery(client, msg, args) {
   // (already a project dependency via .sticker) to a fixed 512x512 JPEG —
   // keeps it small and consistent regardless of what format/size came in,
   // without needing sharp/jimp/canvas, none of which build on this Termux
-  // setup. Saved to disk under data/profile_pics/, overwriting any previous
-  // picture; only the file path is stored in Mongo.
+  // setup. Unique Cloudinary assets are committed with the profile; replaced
+  // and uncommitted uploads are queued for durable cleanup.
   async setpic(client, msg, args) {
     if (!isCloudConfigured()) {
       return msg.reply('⚠️ Profile pictures aren\'t set up yet — Cloudinary credentials are missing from .env. Ask the bot owner to finish setup.');
@@ -1150,7 +1149,7 @@ async lottery(client, msg, args) {
 
     const contact = await msg.getContact();
     const userId = contact.id._serialized;
-    await User.findOrCreate(userId, contact.pushname);
+    const user = await User.findOrCreate(userId, contact.pushname);
 
     // In-chat acknowledgment is a reaction instead of text, same pattern as
     // the heavy-command queue reactions in index.js — a reply is only sent
@@ -1173,17 +1172,7 @@ async lottery(client, msg, args) {
         '-q:v', '4',      // JPEG quality, roughly equivalent to ~80%
       ]);
 
-      const { url, publicId } = await uploadToCloud(outputPath, {
-        folder: 'anichan/profile_pics',
-        publicId: encodeIdKey(userId), // same id every time -> overwrites their old picture instead of piling up
-        resourceType: 'image',
-      });
-
-      const updatedUser = await User.findOneAndUpdate(
-        { id: userId },
-        { $set: { 'profile.picUrl': url, 'profile.picPublicId': publicId, 'registration.picSet': true } },
-        { new: true }
-      );
+      const updatedUser = await require('../utils/profileImages').replace(user, outputPath);
       await msg.reply('✅ Profile picture updated! Check it with .profile.');
       await announceRegistrationProgress(updatedUser, msg);
     } catch (err) {
@@ -1202,8 +1191,7 @@ async lottery(client, msg, args) {
 
     if (!user.profile.picUrl) return msg.reply('❌ You don\'t have a profile picture set.');
 
-    await deleteFromCloud(user.profile.picPublicId);
-    await User.updateOne({ id: userId }, { $set: { 'profile.picUrl': '', 'profile.picPublicId': '' } });
+    await require('../utils/profileImages').remove(userId);
 
     msg.reply('🗑 Profile picture removed.');
   },

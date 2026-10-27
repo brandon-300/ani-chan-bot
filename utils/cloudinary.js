@@ -42,6 +42,7 @@ async function uploadToCloud(filePath, { folder, publicId, resourceType = 'image
       folder,
       public_id: publicId,
       overwrite: true,
+      timeout: 30000,
       resource_type: resourceType,
     });
     operation.finish('success', { status: 'ok', publicId: result.public_id, version: result.version });
@@ -55,16 +56,22 @@ async function uploadToCloud(filePath, { folder, publicId, resourceType = 'image
 // Deletes a previously-uploaded file by its full publicId (as returned from
 // uploadToCloud — already includes the folder). Never throws; a failed
 // cleanup shouldn't block whatever the caller is doing.
-async function deleteFromCloud(publicId, resourceType = 'image') {
-  if (!configured || !publicId) return;
+async function deleteFromCloud(publicId, resourceType = 'image', { strict = false } = {}) {
+  if (!publicId) return;
+  if (!configured) {
+    if (strict) throw new Error('Cloudinary cleanup requires configuration');
+    return;
+  }
   const operation = logger.start('api.cloudinary.delete', { publicId, resourceType });
   try {
-    await cloudinary.uploader.destroy(publicId, { resource_type: resourceType });
+    const result = await cloudinary.uploader.destroy(publicId, { resource_type: resourceType, timeout: 30000 });
+    if (strict && !['ok', 'not found'].includes(result.result)) throw new Error('Cloudinary cleanup was not confirmed');
     operation.finish('success', { status: 'ok' });
   } catch (err) {
     operation.finish('failed', { error: err });
     logger.error('api.cloudinary.delete.failed', err, { publicId, resourceType });
     console.error('Cloudinary delete failed:', err.message);
+    if (strict) throw err;
   }
 }
 
@@ -81,7 +88,7 @@ async function uploadBufferToCloud(buffer, { folder, publicId, resourceType = 'i
     operation.finish('failed', { error: new Error('Cloudinary is not configured') });
     throw new Error('Cloudinary is not configured — set CLOUDINARY_URL (or CLOUDINARY_CLOUD_NAME/API_KEY/API_SECRET) in .env');
   }
-  const uploadOptions = { folder, public_id: publicId, overwrite: true, resource_type: resourceType };
+  const uploadOptions = { folder, public_id: publicId, overwrite: true, resource_type: resourceType, timeout: 30000 };
   if (format) uploadOptions.format = format;
   return new Promise((resolve, reject) => {
     const stream = cloudinary.uploader.upload_stream(

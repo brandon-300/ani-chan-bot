@@ -13,9 +13,8 @@ const User = require('../models/User');
 const SentNsfwLink = require('../models/SentNsfwLink');
 const { safeGetChat, isAdmin, isOwner, isMod, isVerifiedAdult } = require('../utils/helpers');
 const { fetchRandomImage } = require('../utils/danbooru');
-const { MIN_REGISTRATION_AGE } = require('../utils/config');
+const { MIN_REGISTRATION_AGE, BOT_PREFIX: PREFIX } = require('../utils/config');
 
-const PREFIX = process.env.BOT_PREFIX || '.';
 
 const CATEGORIES = {
   milf:    { tags: 'milf',           rating: 'rating:explicit',  ratingLetters: ['e'],      label: 'Milf' },

@@ -1,0 +1,10 @@
+# git archive exports reviewed tracked source, excluding credentials/runtime data.
+.env* export-ignore
+.env.example -export-ignore
+.wwebjs_auth export-ignore
+.wwebjs_cache export-ignore
+node_modules export-ignore
+backups export-ignore
+*.log export-ignore
+*.bak export-ignore
+voice-tests export-ignore

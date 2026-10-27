@@ -46,7 +46,9 @@ function instrumentHttpClients() {
   instrumented = true;
 
   const axios = require('axios');
+  axios.defaults.timeout = 30000;
   axios.interceptors.request.use(config => {
+    if (!config.timeout) config.timeout = 30000;
     const startedAt = Date.now();
     config.__loggerStartedAt = startedAt;
     const url = `${config.baseURL || ''}${config.url || ''}`;
@@ -85,6 +87,13 @@ function instrumentHttpClients() {
     return Promise.reject(err);
   });
 
+  const { MessageMedia } = require('whatsapp-web.js');
+  const originalFromUrl = MessageMedia.fromUrl;
+  MessageMedia.fromUrl = function (url, options = {}) {
+    const reqOptions = { timeout: 30000, ...options.reqOptions };
+    return originalFromUrl.call(this, url, { ...options, reqOptions });
+  };
+
   const originalFetch = global.fetch;
   if (typeof originalFetch === 'function') {
     global.fetch = function patchedFetch(input, init = {}) {
@@ -94,7 +103,10 @@ function instrumentHttpClients() {
       const ctx = getCurrentContext();
       logger.write('INFO', 'api.request.start', requestContext('fetch', method, url, { command: ctx?.command || null }));
       recordApiCall();
-      return originalFetch.apply(this, arguments).then(response => {
+      const existingSignal = init.signal || input?.signal;
+      const timeoutSignal = AbortSignal.timeout(30000);
+      const signal = existingSignal || timeoutSignal;
+      return originalFetch.call(this, input, { ...init, signal }).then(response => {
         logger.write('INFO', 'api.request.end', requestContext('fetch', method, url, {
           command: ctx?.command || null,
           status: response.status,

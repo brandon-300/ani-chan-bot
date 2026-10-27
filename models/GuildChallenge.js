@@ -7,6 +7,7 @@ const mongoose = require('mongoose');
 // it on one guild would mean keeping a second, easily-out-of-sync copy on
 // the other.
 const GuildChallengeSchema = new mongoose.Schema({
+  participantGuildIds: { type: [String], default: undefined },
   challengerGuildId: { type: String, required: true },
   challengedGuildId: { type: String, required: true },
   // 'resolving' is a brief, atomically-claimed transit state between
@@ -29,4 +30,12 @@ const GuildChallengeSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now },
 });
 
+GuildChallengeSchema.pre('validate', function () {
+  this.participantGuildIds = [this.challengerGuildId, this.challengedGuildId];
+});
+// Sparse legacy rows are excluded; all newly created active proposals reserve
+// each participant so concurrent proposals cannot put a guild in two races.
+GuildChallengeSchema.index({ participantGuildIds: 1 }, { unique: true, partialFilterExpression: {
+  participantGuildIds: { $type: 'array' }, status: { $in: ['pending', 'active', 'resolving'] },
+} });
 module.exports = mongoose.model('GuildChallenge', GuildChallengeSchema);

@@ -1,59 +1,70 @@
 # Audit repair status
 
-Scope: `main`, whatsapp-web.js only. Finding IDs refer to the supplied
-`anichan_full_codebase_audit_v2.md`. This is the first repair batch; the full
-audit is not yet resolved.
+Scope: `main`, whatsapp-web.js only. Numbered findings below refer to the latest
+uploaded **full static scan** (`Pasted text.txt`, 42 sections). Earlier audit IDs
+are a separate list and are not interchangeable with these section numbers.
 
-## Implemented
+## Current repair batch
 
-| Findings | Changes |
+| Sections | Result |
 | --- | --- |
-| A01, A02, A04, A42 | Strict, bounded integer wagers; guarded atomic settlement of commands in `commands/gamble.js`; correct roulette net payouts; exact, safe shorthand amount parsing. |
-| A05 | Fresh shared group/persona AI histories. DMs stay per user/persona. Old group records are neither imported nor rewritten; their pre-existing TTL rules still apply. |
-| A06 | Generic queued reactions exclude `.gpt`. |
-| A07 | Hourly news retained as requested; command reference and README corrected. |
-| A08 | SFW requests use general ratings only; returned ratings, age/style tags, and missing safety metadata are checked. |
-| A13, A14 | Owner/DM sticker-analysis help added; stale AI wording corrected; `.oppai` moved to NSFW help; README regenerated. |
-| A16, A17 | Converter sticker author follows persona metadata; explicit `.take` overrides retained. Internal blacklist listener is excluded from command routing. |
-| A20 | Dispatcher argument previews and feedback-content logs removed. This does not erase historical logs. |
-| A26, A27 | Free claims require the current enabled, unexpired drop and conditionally consume it inside the card-grant transaction. |
-| A33 | Self-donations rejected; donation debit, credit, and persistent message receipt commit together. Replays of the same donation message do not repeat payment. |
-| A38 | Card Packs select three unowned catalogue cards, grant codes and first-owner fields, and consume one pack in a transaction. Shortage or failed grant rolls back the operation. |
-| A39, A40 | Sale listing checks lending/ownership state atomically; shop purchases recheck state; loans recheck ownership and conditionally stake collateral inside the transaction. |
-| A41 | User card/series searches escape regex operators and reject text over 100 characters. |
+| 1 | Real recent-message purge with role/capability checks and partial results; multiplayer UNO with private hands; persisted 30-second WCG votes; complete bank-escrow auction lifecycle. |
+| 2 | Scheduler keeps polling after lookup errors, fences attempts by token, refreshes leases, prevents concurrent handlers for the same key, recovers interrupted attempts, and retries exhausted essential batches after a cooldown. |
+| 3–5, 33 | Existing donation receipts and wager validation retained. Account reads update interest/activity with compare-and-set. Atomic changes and document saves share revisions, including safe handling of older documents without revisions. Currency bounds reject unsafe balances. Single-document shop, banking, lottery and pet saves reject stale writes. |
+| 6–8 | Fusion and resell run in transactions with fresh ownership, tier/value and availability checks. Existing transactional Card Packs retained. Failed reward/payment writes roll back consumption. |
+| 9 | Lucky Charm halves enabled group drop intervals for one hour without stacking; VIP updates the profile; Health Potion consumption and persisted battle HP change together. |
+| 10 | Loan request, repayment and overdue seizure check ownership/staking and matched writes. Missing or changed collateral keeps the debt for review instead of clearing it or charging another owner's card. |
+| 11–13, 39 | New challenge/season payout and completion commit together. Guild treasury and membership changes commit with account changes. Maintenance refreshes stale reads. Challenge proposals reserve guild participants with a unique partial index. Old interrupted payouts still need the policy decision described below. |
+| 14–16, 18–19 | Previously working read hooks, optional menu image, expiring offers, atomic activity tracking and connection routing retained. |
+| 17 | The approved shared group/persona AI history and private DM histories are preserved. Old member histories are not merged. |
+| 20–22, 41 | Game saves/deletes are awaited; actions/timers serialize by chat. Lobbies and absolute turn/question deadlines persist. Restore isolates malformed rows, pauses on persistence failure, and can recover after a failed startup lookup. Quiz questions are persisted before delivery and unsent saved questions can be republished. |
+| 23–24 | Permanent guarded manual/automatic cleanup removes account-linked rows, releases owned cards, cancels uncommitted offers and clears live game/AFK state. Profile assets use a durable cleanup queue; replacements use unique IDs and register potential orphan uploads before contacting Cloudinary. Automatic inactivity threshold is **120 days**. |
+| 25–26 | Existing fail-closed registration dispatch and shared adult-eligibility helper retained. |
+| 27 | Chromium, bot identity and command-prefix consumers use the central configuration. Provider credentials remain in environment-backed provider boundaries; dynamic owner identity checks remain intact. |
+| 28 | No real `.env` is tracked. Git export exclusions and a tracked-source ZIP utility omit credentials, authentication sessions, caches, logs and backups. This does not change earlier filesystem ZIPs or rotate credentials. |
+| 29–30 | whatsapp-web.js is pinned to the patch's exact 1.34.7 version. Default Axios, fetch and media-download timeouts cover requests without an existing limit; explicit provider limits remain. Profile uploads and ffmpeg conversions also have timeouts. |
+| 31–32, 35, 38 | Existing converters, AI/stickers, card core and interaction functionality retained; an undefined-variable failure in AniList's terminal error path was also removed. |
+| 34 | Per-group hourly claims prevent competing broadcasts, successful groups keep their slots, failed groups retry on later minute ticks, and manual sends serialize with broadcasts. |
+| 36 | Card drops select unowned candidates inside Mongo with indexed catalogue tiers instead of loading the full catalogue into phone RAM. Drop/lending task reconciliation repairs missing scheduling writes; stored drop timing prevents resending after a reschedule failure. |
+| 37 | AFK state is persisted before acknowledgement and serialized per user; return clears use the recorded AFK timestamp. |
+| 40 | Leadership can transfer to an existing member; the former leader becomes an officer. |
+| 42 | Regression coverage now includes real local replica-set rollback/concurrency tests plus UNO, purge, scheduler polling, deadlines, exports and deleted-account claims. |
 
-## Partially addressed
+## Pending policy decision
 
-| Findings | Remaining work |
-| --- | --- |
-| A18 | Registration/session verification now stops command dispatch on unexpected errors. Shared cross-engine message deduplication behavior is unchanged. |
-| A19 | User donations now use transactions and message receipts. Guild treasury transfers and guild locking still need repair. |
-| A22 | Regression coverage added for economy, drops, ownership races, routing, and SFW filtering. Live integration and broader category coverage remain outstanding. |
+A challenge or season left in `resolving` by the old nontransactional code may
+already have paid its winner without recording completion. The database does
+not reliably distinguish that case from an unpaid winner. No automatic replay
+or destructive closure of those old records is authorized yet. New payouts use
+transactions. The user has been asked whether old records should be preserved
+for owner review or closed without another payout.
 
-## Pending
+## Boundaries
 
-| Findings | Status |
-| --- | --- |
-| A03 | No real `.env` is tracked in the current repository. Archive/export protection and any credential rotation remain outstanding. No credentials were read, changed, or rotated in this batch. |
-| A09, A10 | Playable multiplayer games requested. Proposed UNO/WCG rules await clarification. |
-| A11, A12 | YouTube DASH merging and social albums are not included in this batch. |
-| A15 | Durable recognition of `.gpt` replies after restart is not yet implemented. |
-| A21 | Dependency cleanup deferred; no dependency or lockfile changes in this batch. |
-| A23, A24 | Upload/media/AI providers still require live validation. |
-| A25 | Lottery, `.db`, and `.dp` payout balancing awaits an explicit preserve/rebalance choice. Existing payouts remain. |
-| A28–A32 | Complete auction lifecycle and financial safeguards await auction rule clarification. Existing auction handlers are not certified safe. |
-| A34–A37 | Lucky Charm, orb redemption, stardust upgrades, and anticamp behavior await effect, price, and decay rules. |
+- WhatsApp sends and MongoDB commits cannot be atomic together. A crash after a
+  send but before its acknowledgement is stored can duplicate a notice. Auction
+  money/card settlement remains idempotent; failed notices do not repeat it.
+- Purge counts revocation requests and eligibility failures. Actual deletion is
+  enforced by WhatsApp, including its time/role rules.
+- Shared group AI messages lack individual author keys, so deleting one account
+  removes its DM/legacy member histories and retains shared group threads.
+- Corrupt legacy loan collateral or balances at the safe integer limit require
+  review; the bot retains obligations instead of inventing money or forgiving debt.
+- Akinator was excluded from the supplied unfinished-feature assessment and was
+  not rewritten. Other previously documented roadmap items, such as DASH video
+  merging, social albums, orb redemption, stardust upgrades and anticamp policy,
+  are not claimed to be completed by this batch.
+- No phone, WhatsApp account, production database or paid provider was used for
+  these checks. No credentials were read, changed or rotated.
 
-## Validation and deployment limits
+## Validation
 
-Tests use isolated models/adapters and injected failures, without pairing a
-WhatsApp account or accessing production MongoDB. They cover application logic
-and rollback handling; they do not certify live database indexes, transaction
-support, or provider availability. Transactions require a MongoDB replica set
-or sharded deployment, as already required by existing card/loan transactions.
+Unit tests: `node --test tests/*.test.js` (local Mongo integration test is skipped
+without its explicit local test URI). Integration tests use a separate MongoDB 7
+replica-set container and refuse remote/production URIs. They verify rollback,
+concurrent transfers/bids, repeat settlement, activity/deletion guards, game
+restoration, image cleanup, hourly claims and stale-write protection. All project
+JavaScript also receives syntax checks and core source receives undefined-name,
+unreachable-code and duplicate-key checks.
 
-Phone validation should include: an invalid negative wager, an invalid/expired
-drop claim, a small donation between two different test users, and two group
-members continuing the same persona conversation after a PM2 restart. Compare
-private DM histories separately. Test Card Packs only with an available pack
-and at least three unowned catalogue cards.
+Latest validation: **186 unit tests and 27 real MongoDB regression scenarios passed**, including the 119/121-day cleanup boundary. All 165 JavaScript files passed syntax checks; core source passed the configured static checks.

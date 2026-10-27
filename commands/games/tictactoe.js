@@ -1,3 +1,5 @@
+const lobbyStore = require('../../utils/gameLobbies');
+const runtime = require('../../utils/gameRuntime');
 const { MessageMedia } = require('whatsapp-web.js');
 const logger = require('../../utils/logger');
 const { safeGetChat, resolveNameById } = require('../../utils/helpers');
@@ -9,23 +11,24 @@ const Guild = require('../../models/Guild');
 const { _formatQuestCompletionNote } = require('../guilds');
 const GameSession = require('../../models/GameSession');
 
-// Persists this game's current state to Mongo — fire-and-forget, since the
+// Persists each completed state change before command execution continues; the
 // in-memory tttGames Map (below) stays authoritative while the bot is
 // running; this is purely so _initTTT can restore it after a restart.
 // turnTimer is a live setTimeout handle, not data, so it's deliberately
 // excluded — a restored game always gets a freshly-armed timer instead of
 // trying to resurrect the old handle (see _initTTT).
-function saveTTTSession(chatId, game) {
+async function saveTTTSession(chatId, game) {
+  runtime.deadline(game, game.turn);
   const { turnTimer, ...state } = game;
-  GameSession.findOneAndUpdate(
+  await GameSession.findOneAndUpdate(
     { chatId },
     { chatId, type: 'ttt', players: game.players.filter(id => id !== 'BOT'), state },
     { upsert: true }
-  ).catch(err => console.error('saveTTTSession: persist failed:', err.message));
+  );
 }
 
-function deleteTTTSession(chatId) {
-  GameSession.deleteOne({ chatId, type: 'ttt' }).catch(err => console.error('deleteTTTSession: delete failed:', err.message));
+async function deleteTTTSession(chatId) {
+  await GameSession.deleteOne({ chatId, type: 'ttt' });
 }
 
 // ─── Active Game Sessions ─────────────────────────────────────────────────────
@@ -37,7 +40,7 @@ function deleteTTTSession(chatId) {
 // `names` is resolved once at game start and cached here — see the comment
 // in the .ttt command below for why we don't just re-derive it from
 // WhatsApp Contact objects every time we need to display it. `turnTimer`
-// (PvP only — see scheduleTurnTimeout()) holds the pending setTimeout
+// (PvP only — see await scheduleTurnTimeout()) holds the pending setTimeout
 // handle for the current player's 30-second move window — same mechanism
 // as connect4.js's Connect 4 redesign.
 const tttGames = new Map();
@@ -156,19 +159,23 @@ async function announceBoard(chat, game, caption, mentions) {
 // skipping and messaging the chat every 30s forever; nothing here
 // auto-forfeits. .quitgame is still the only way out of a truly abandoned
 // game. Flag if you want a cap on consecutive skips added later.
-function scheduleTurnTimeout(chat, chatId, game) {
+async function scheduleTurnTimeout(chat, chatId, game) {
   if (game.mode !== 'pvp') return;
   if (game.turnTimer) clearTimeout(game.turnTimer);
+  const previousDeadline = game.turnExpiresAt;
+  runtime.deadline(game, game.turn);
+  if (game.turnExpiresAt !== previousDeadline) await saveTTTSession(chatId, game);
 
   const skippedIdx = game.turn;
   const skippedId = game.players[skippedIdx];
   logger.write('INFO', 'background.game_turn_timeout.armed', { game: __filename.split('/').pop(), chatId, timeoutMs: 30000 });
-  game.turnTimer = setTimeout(async () => {
+  game.turnTimer = runtime.timer('ttt', chatId, async () => {
     logger.write('INFO', 'background.game_turn_timeout.fired', { game: __filename.split('/').pop(), chatId });
     if (tttGames.get(chatId) !== game) return;
     if (game.turn !== skippedIdx) return;
 
     game.turn = game.turn === 0 ? 1 : 0;
+    await saveTTTSession(chatId, game);
     const nextIdx = game.turn;
     const nextId = game.players[nextIdx];
 
@@ -178,8 +185,8 @@ function scheduleTurnTimeout(chat, chatId, game) {
       [skippedId, nextId]
     ).catch(err => console.error('Tic Tac Toe turn-timeout message failed:', err.message));
 
-    scheduleTurnTimeout(chat, chatId, game);
-  }, TURN_TIMEOUT_MS);
+    await scheduleTurnTimeout(chat, chatId, game);
+  }, game.turnExpiresAt - Date.now());
 }
 
 // Builds the board + starts a PvP game for two already-resolved lobby
@@ -208,7 +215,7 @@ async function startTTTGame(chat, chatId, players) {
     lastMove: null,
   };
   tttGames.set(chatId, game);
-  saveTTTSession(chatId, game);
+  await saveTTTSession(chatId, game);
   // Lobby already held the activeGame.js claim from .ttt start — the game
   // reuses it, no re-claim needed here.
 
@@ -219,43 +226,38 @@ async function startTTTGame(chat, chatId, players) {
 
   const firstId = game.players[turn];
   await announceBoard(chat, game, turnPrompt(symbols[turn], firstId), [firstId]);
-  scheduleTurnTimeout(chat, chatId, game);
+  await scheduleTurnTimeout(chat, chatId, game);
 }
 
-// Called once from index.js on bot startup — same pattern as
-// _initCardDrops/_initAfk. Restores in-progress Tic Tac Toe games from
-// Mongo and re-claims each restored chat's activeGame.js lock so a new
-// game can't be started on top of it. Deliberately does NOT restore open
-// lobbies (.ttt start with nobody having joined yet) — those aren't
-// persisted at all (see saveTTTSession's comment); losing one just means
-// opening a new one, a minor inconvenience next to losing an actual game
-// partway through. Each restored PvP game's turn timer starts a fresh
-// full 30s window rather than resuming a partial one — the original
-// elapsed time isn't tracked anywhere, and a slightly more generous
-// window right after a restart is a harmless tradeoff.
+// Restore each saved lobby/match independently, retaining deadlines.
 async function _initTTT(client) {
-  const sessions = await GameSession.find({ type: 'ttt' }).catch(err => {
-    console.error('_initTTT: lookup failed:', err.message);
-    return [];
-  });
+  await lobbyStore.restore('ttt', tttLobbies, (chatId) =>
+    lobbyStore.close('ttt', chatId, tttLobbies, () => client.sendMessage(chatId, '❌ Tic Tac Toe lobby closed — not enough players joined.')));
+
+  const sessions = await GameSession.find({ type: 'ttt' });
 
   let restored = 0;
   for (const session of sessions) {
-    const chatId = session.chatId;
-    const game = session.state;
-    tttGames.set(chatId, game);
-    claim(chatId, 'ttt');
+    if (tttGames.has(session.chatId)) continue;
+    let validated = false;
+    try {
+      const chatId = session.chatId;
+      const game = session.state;
+      if (!Array.isArray(game.board) || game.board.length !== 3 || !Array.isArray(game.players) || game.players.length !== 2) throw new Error('Invalid TTT state');
+      validated = true;
+      tttGames.set(chatId, game);
+      claim(chatId, 'ttt');
 
-    if (game.mode === 'pvp') {
-      try {
-        const chat = await client.getChatById(chatId);
-        scheduleTurnTimeout(chat, chatId, game);
-      } catch {
-        // Group no longer reachable — leave the restored game without a
-        // running timer rather than failing startup over it.
+      if (game.mode === 'pvp') {
+        const chat = { sendMessage: (message, options) => client.sendMessage(chatId, message, options) };
+        await scheduleTurnTimeout(chat, chatId, game);
       }
+      restored++;
+    } catch (err) {
+      if (validated) runtime.pause('ttt', session.chatId, err, true);
+      else { tttGames.delete(session.chatId); release(session.chatId, 'ttt'); }
+      console.error('Skipped invalid ttt session:', session.chatId, err.message);
     }
-    restored++;
   }
   if (restored) {
     console.log(`🎮 Restored ${restored} Tic Tac Toe game(s)`);
@@ -319,7 +321,7 @@ module.exports = {
       if (result) {
         if (game.turnTimer) clearTimeout(game.turnTimer);
         tttGames.delete(chatId);
-        deleteTTTSession(chatId);
+        await deleteTTTSession(chatId);
         release(chatId, 'ttt');
         const outcome = result === 'draw' ? "🤝 *It's a draw!*" : `🏆 *${moverName} wins!*`;
         // game.players[game.turn] is whoever just moved (the turn index isn't
@@ -343,7 +345,7 @@ module.exports = {
         if (botIndex === null) {
           // Shouldn't happen — checkTTTWin() above already ruled out "board full".
           tttGames.delete(chatId);
-          deleteTTTSession(chatId);
+          await deleteTTTSession(chatId);
           release(chatId, 'ttt');
           return sendBoard(msg, game, `❌ ${BOT_NAME} couldn't find a move — ending the game.`);
         }
@@ -356,7 +358,7 @@ module.exports = {
         result = checkTTTWin(game.board);
         if (result) {
           tttGames.delete(chatId);
-          deleteTTTSession(chatId);
+          await deleteTTTSession(chatId);
           release(chatId, 'ttt');
           const outcome = result === 'draw' ? "🤝 *It's a draw!*" : `🏆 *${game.names[1]} wins!*`;
           return sendBoard(
@@ -366,7 +368,7 @@ module.exports = {
         }
 
         tttGames.set(chatId, game); // game.turn stays 0 — it's the human's turn again
-        saveTTTSession(chatId, game);
+        await saveTTTSession(chatId, game);
         return sendBoard(
           msg, game,
           `${moverName} played position ${movePos}\n🤖 ${BOT_NAME} played position ${botIndex + 1}\n\nYour turn! Type *.ttt [1-9]* to play.`
@@ -376,10 +378,10 @@ module.exports = {
       // ── vs person ─────────────────────────────────────────────────────────
       game.turn = game.turn === 0 ? 1 : 0;
       tttGames.set(chatId, game);
-      saveTTTSession(chatId, game);
+      await saveTTTSession(chatId, game);
       const nextId = game.players[game.turn];
       await sendBoard(msg, game, turnPrompt(game.symbols[game.turn], nextId), [nextId]);
-      scheduleTurnTimeout(chat, chatId, game);
+      await scheduleTurnTimeout(chat, chatId, game);
       return;
     }
 
@@ -397,17 +399,10 @@ module.exports = {
       claim(chatId, 'ttt');
       const lobby = { players: [], timer: null };
       tttLobbies.set(chatId, lobby);
-      logger.write('INFO', 'background.game_lobby_timeout.armed', { game: __filename.split('/').pop(), chatId, timeoutMs: LOBBY_WINDOW_MS });
-    lobby.timer = setTimeout(() => {
-        // Still here means it never filled — see connect4.js's identical
-        // comment on its own lobby timeout for why this check is enough.
-        if (!tttLobbies.has(chatId)) return;
-        tttLobbies.delete(chatId);
-        release(chatId, 'ttt');
-        chat.sendMessage('❌ Tic Tac Toe lobby closed — not enough players joined.').catch(err => {
-          console.error('Tic Tac Toe lobby-timeout message failed:', err.message);
-        });
-      }, LOBBY_WINDOW_MS);
+      lobby.expiresAt = Date.now() + LOBBY_WINDOW_MS;
+      await lobbyStore.save('ttt', chatId, lobby);
+      await lobbyStore.arm('ttt', chatId, lobby, tttLobbies, () =>
+        lobbyStore.close('ttt', chatId, tttLobbies, () => chat.sendMessage('❌ Tic Tac Toe lobby closed — not enough players joined.')));
 
       return msg.reply(`🎮 *Tic Tac Toe* lobby opened. Use *.ttt join* (${LOBBY_WINDOW_MS / 1000}s).`);
     }
@@ -431,7 +426,7 @@ module.exports = {
         lastMove: null,
       };
       tttGames.set(chatId, newGame);
-      saveTTTSession(chatId, newGame);
+      await saveTTTSession(chatId, newGame);
       claim(chatId, 'ttt');
 
       return sendBoard(
@@ -459,6 +454,7 @@ module.exports = {
 
       lobby.players[slotIndex].name = await resolveNameById(client, playerId);
 
+      await lobbyStore.save('ttt', chatId, lobby);
       await msg.reply(`Joined as Player ${slotIndex + 1}!`);
 
       if (lobby.players.length >= 2) {
@@ -480,7 +476,7 @@ module.exports = {
   // NOTE: this only covers an already-STARTED game, not an open lobby — an
   // open lobby with fewer than 2 joiners already resolves itself via
   // LOBBY_WINDOW_MS, so there was no forfeit-style exit to wire up here.
-  quitTTT(chatId, playerId) {
+  async quitTTT(chatId, playerId) {
     const game = tttGames.get(chatId);
     if (!game || !game.players.includes(playerId)) return null;
 
@@ -488,8 +484,10 @@ module.exports = {
     const idx = game.players.indexOf(playerId);
     const winnerIdx = idx === 0 ? 1 : 0;
     tttGames.delete(chatId);
-    deleteTTTSession(chatId);
+    await deleteTTTSession(chatId);
     release(chatId, 'ttt');
     return { quitterName: game.names[idx], winnerName: game.names[winnerIdx] };
   },
 };
+
+runtime.register('ttt', tttGames, tttLobbies, _initTTT, module.exports, ['ttt'], ['quitTTT']);

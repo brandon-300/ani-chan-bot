@@ -1,3 +1,5 @@
+const lobbyStore = require('../../utils/gameLobbies');
+const runtime = require('../../utils/gameRuntime');
 const { MessageMedia } = require('whatsapp-web.js');
 const logger = require('../../utils/logger');
 const { CardCatalogue } = require('../../models/Card');
@@ -23,7 +25,7 @@ const GameSession = require('../../models/GameSession');
 //     reason as every other migrated game's turnTimer.
 // fullPool/questions/options are already plain lean() objects (see
 // startQuizMatch's CardCatalogue query), so those need no conversion.
-function saveQuizSession(session) {
+async function saveQuizSession(session) {
   const { client, current, scores, eliminated, ...rest } = session;
   let savedCurrent = null;
   if (current) {
@@ -36,15 +38,15 @@ function saveQuizSession(session) {
     scores: [...scores.entries()],
     eliminated: [...eliminated],
   };
-  GameSession.findOneAndUpdate(
+  await GameSession.findOneAndUpdate(
     { chatId: session.chatId },
     { chatId: session.chatId, type: 'quiz', players: session.players.map(p => p.id), state },
     { upsert: true }
-  ).catch(err => console.error('saveQuizSession: persist failed:', err.message));
+  );
 }
 
-function deleteQuizSession(chatId) {
-  GameSession.deleteOne({ chatId, type: 'quiz' }).catch(err => console.error('deleteQuizSession: delete failed:', err.message));
+async function deleteQuizSession(chatId) {
+  await GameSession.deleteOne({ chatId, type: 'quiz' });
 }
 
 // ─── Active Quiz Sessions ───────────────────────────────────────────────────
@@ -237,10 +239,10 @@ function formatScoreboard(scores) {
 // `.quitgame` — clears the pending question timer (if any) so it can never
 // fire after the session is gone, deletes the session, and releases the
 // shared cross-game lock.
-function teardown(session) {
+async function teardown(session) {
   if (session.current?.timer) clearTimeout(session.current.timer);
   quizGames.delete(session.chatId);
-  deleteQuizSession(session.chatId);
+  await deleteQuizSession(session.chatId);
   release(session.chatId, 'quiz');
 }
 
@@ -273,6 +275,12 @@ async function advanceQuestion(session) {
     startedAt: Date.now(),
   };
 
+  await saveQuizSession(session);
+  await publishCurrentQuestion(session);
+}
+
+async function publishCurrentQuestion(session) {
+  const { correct, options } = session.current;
   // Each option shows its anime as a sub-line (matches the reference bot,
   // which is also what makes hard mode's same-series decoys legible instead
   // of just four bare names with no way to reason about them).
@@ -294,29 +302,25 @@ async function advanceQuestion(session) {
     console.error('Quiz: character image fetch failed, sending text-only question:', err.message);
   }
 
-  let sentMsg;
-  try {
-    sentMsg = await (media
-      ? session.client.sendMessage(session.chatId, media, { caption })
-      : session.client.sendMessage(session.chatId, caption));
-  } catch (err) {
-    console.error('Quiz: failed to send question, ending quiz early:', err.message);
-    return teardown(session);
-  }
+  await saveQuizSession(session);
+  const sentMsg = await (media
+    ? session.client.sendMessage(session.chatId, media, { caption })
+    : session.client.sendMessage(session.chatId, caption));
   // Used in tryHandleQuizAnswer to recognize a reply that's quoting an
   // OLDER question message specifically (as opposed to one that just
   // happens to be processed late) — see the comment there.
   session.current.messageId = sentMsg?.id?._serialized || null;
+  await saveQuizSession(session);
 
   logger.write('INFO', 'background.quiz_question_timeout.armed', { chatId: session.chatId, timeoutMs: session.timeSeconds * 1000 });
-  session.current.timer = setTimeout(() => { logger.write('INFO', 'background.quiz_question_timeout.fired', { chatId: session.chatId }); handleTimeout(session); }, session.timeSeconds * 1000);
-  saveQuizSession(session);
+  session.current.timer = runtime.timer('quiz', session.chatId, async () => { logger.write('INFO', 'background.quiz_question_timeout.fired', { chatId: session.chatId }); await handleTimeout(session); }, Math.max(0, (session.current.startedAt + session.timeSeconds * 1000) - Date.now()));
 }
 
 async function handleTimeout(session) {
   if (!session.current || session.current.resolved) return;
   session.current.resolved = true;
-  saveQuizSession(session);
+  session.nextQuestionAt = Date.now() + NEXT_QUESTION_DELAY_MS;
+  await saveQuizSession(session);
 
   const { name, series } = session.current.correct;
   try {
@@ -328,11 +332,11 @@ async function handleTimeout(session) {
     console.error('Quiz: timeout announcement failed:', err.message);
   }
 
-  setTimeout(() => advanceQuestion(session), NEXT_QUESTION_DELAY_MS);
+  runtime.timer('quiz', session.chatId, () => advanceQuestion(session), NEXT_QUESTION_DELAY_MS);
 }
 
 async function finishQuiz(session) {
-  teardown(session);
+  await teardown(session);
   const board = formatScoreboard(session.scores);
 
   // Award a guild "games" win to the outright top scorer, if there is one —
@@ -393,24 +397,20 @@ async function openQuizLobby(client, msg, difficultyArg) {
     difficulty,
   };
   quizLobbies.set(chatId, lobby);
-  logger.write('INFO', 'background.quiz_lobby_timeout.armed', { chatId, timeoutMs: LOBBY_WINDOW_MS });
-    lobby.timer = setTimeout(() => { logger.write('INFO', 'background.quiz_lobby_timeout.fired', { chatId });
-    // Still here means .quiz end never cancelled it first — see
-    // connect4.js's identical comment on its own lobby timeout for why
-    // this presence check is enough. Unlike Connect4 (and unlike this
-    // quiz's own earlier design), there's no minimum roster size to reach
-    // here — the starter alone is always a valid roster of 1, so this
-    // unconditionally starts the match rather than ever cancelling for
-    // "not enough players."
-    if (!quizLobbies.has(chatId)) return;
-    quizLobbies.delete(chatId);
-    startQuizMatch(client, chat, chatId, lobby.players, lobby.difficulty, lobby.starterId).catch(err => {
-      console.error('Quiz: failed to start match after lobby countdown:', err.message);
-    });
-  }, LOBBY_WINDOW_MS);
+  lobby.expiresAt = Date.now() + LOBBY_WINDOW_MS;
+  await lobbyStore.save('quiz', chatId, lobby);
+  await armQuizLobby(client, chatId, lobby);
 
   await msg.react('✅').catch(() => {});
   return msg.reply(buildLobbyCard(lobby));
+}
+
+async function armQuizLobby(client, chatId, lobby) {
+  await lobbyStore.arm('quiz', chatId, lobby, quizLobbies, async () => {
+    const chat = { sendMessage: (text, options) => client.sendMessage(chatId, text, options) };
+    await startQuizMatch(client, chat, chatId, lobby.players, lobby.difficulty, lobby.starterId);
+    quizLobbies.delete(chatId);
+  });
 }
 
 // .quiz join — take a slot in an open lobby (up to MAX_QUIZ_PLAYERS).
@@ -442,6 +442,7 @@ async function joinQuizLobby(client, msg) {
   // Reposts the full lobby card (updated roster) rather than a short
   // "Joined!" confirmation — matches the reference bot showing the whole
   // Players list at a glance after every join.
+  await lobbyStore.save('quiz', chatId, lobby);
   return msg.reply(buildLobbyCard(lobby));
 }
 
@@ -470,6 +471,7 @@ async function leaveQuizLobby(client, msg) {
   if (idx === -1) return msg.reply("❌ You're not in this lobby.");
 
   lobby.players.splice(idx, 1);
+  await lobbyStore.save('quiz', chatId, lobby);
   return msg.reply(`👋 Left the lobby.\n\n${buildLobbyCard(lobby)}`);
 }
 
@@ -490,9 +492,7 @@ async function startQuizMatch(client, chat, chatId, players, difficulty, starter
       .select('name series imageUrl tier')
       .lean();
   } catch (err) {
-    console.error('Quiz: catalogue fetch failed:', err.message);
-    release(chatId, 'quiz');
-    return chat.sendMessage('❌ Could not load the card catalogue right now — the match has been cancelled.');
+    throw err;
   }
 
   // Dedupe by name (case-insensitive) so the same character under two
@@ -507,6 +507,7 @@ async function startQuizMatch(client, chat, chatId, players, difficulty, starter
   }
 
   if (fullPool.length < NUM_OPTIONS + 1) {
+    await lobbyStore.remove('quiz', chatId);
     release(chatId, 'quiz');
     return chat.sendMessage(
       `❌ Not enough cards in the catalogue yet to run a quiz (need at least ${NUM_OPTIONS + 1} distinct characters with art) — the match has been cancelled.`
@@ -540,6 +541,7 @@ async function startQuizMatch(client, chat, chatId, players, difficulty, starter
   };
 
   quizGames.set(chatId, session);
+  await saveQuizSession(session);
   // Lobby already held the activeGame.js claim from .quiz start — the
   // match reuses it, no re-claim needed here.
 
@@ -599,11 +601,12 @@ async function endQuiz(client, msg) {
 //     an in-progress match; a joiner has no individual "quit just for me"
 //     option here (unlike Connect4, quiz has no single 1-for-1 opponent to
 //     hand a win to when one player drops).
-function quitQuiz(chatId, playerId) {
+async function quitQuiz(chatId, playerId) {
   const lobby = quizLobbies.get(chatId);
   if (lobby && lobby.players.some(p => p.id === playerId)) {
     if (playerId !== lobby.starterId) return { ended: false, reason: 'joiner-in-lobby' };
 
+    await lobbyStore.remove('quiz', chatId);
     clearTimeout(lobby.timer);
     quizLobbies.delete(chatId);
     release(chatId, 'quiz');
@@ -616,7 +619,7 @@ function quitQuiz(chatId, playerId) {
 
   const askedSoFar = Math.max(session.questionIndex + 1, 0);
   const total = session.questions.length;
-  teardown(session);
+  await teardown(session);
 
   return { ended: true, askedSoFar, total, board: formatScoreboard(session.scores) };
 }
@@ -899,7 +902,8 @@ async function tryHandleQuizAnswer(client, msg) {
 
   if (isCorrect) {
     scoreEntry.points += 1;
-    saveQuizSession(session);
+    session.nextQuestionAt = Date.now() + NEXT_QUESTION_DELAY_MS;
+    await saveQuizSession(session);
 
     try {
       await msg.react('✅');
@@ -915,7 +919,7 @@ async function tryHandleQuizAnswer(client, msg) {
       console.error('Quiz: correct-answer reply failed:', err.message);
     }
 
-    setTimeout(() => advanceQuestion(session), NEXT_QUESTION_DELAY_MS);
+    runtime.timer('quiz', session.chatId, () => advanceQuestion(session), NEXT_QUESTION_DELAY_MS);
     return true;
   }
 
@@ -930,7 +934,7 @@ async function tryHandleQuizAnswer(client, msg) {
   scoreEntry.wrong += 1;
   const justEliminated = scoreEntry.wrong >= MAX_WRONG_LIVES;
   if (justEliminated) session.eliminated.add(playerId);
-  saveQuizSession(session);
+  await saveQuizSession(session);
 
   try {
     await msg.react('❌');
@@ -954,68 +958,60 @@ async function tryHandleQuizAnswer(client, msg) {
   return true;
 }
 
-// Called once from index.js on bot startup — same pattern as
-// tictactoe.js's _initTTT/connect4.js's _initC4/chess.js's _initChess.
-// Restores in-progress quiz matches from Mongo: rebuilds the Map (scores)
-// and Sets (eliminated, current.answered) from their saved array forms,
-// reattaches the live `client` this function was given, and re-claims
-// each restored chat's activeGame.js lock. Deliberately does NOT restore
-// pending lobbies (.quiz start with the countdown still running) — same
-// reasoning as every other migrated game's lobby phase.
-//
-// The saved question's timer is re-armed with a FRESH full time window
-// rather than the exact remaining time (same simplification every other
-// migrated game's turn timer uses), and `startedAt` is reset to now so the
-// anti-stale-answer heuristics in tryHandleQuizAnswer — which measure
-// elapsed time FROM startedAt — stay internally consistent with that fresh
-// window instead of comparing against a pre-restart instant.
-//
-// If the saved question was already resolved (a correct answer landed, or
-// it timed out, right as the restart happened — either path saves with
-// resolved: true, see handleTimeout/the correct-answer branch above) there
-// is nothing left to resume for it — advanceQuestion() is called directly
-// instead of re-arming a timer, exactly matching what would have happened
-// naturally after the normal 2s reveal pause.
+// Restore saved lobbies and matches independently, using original deadlines.
 async function _initQuiz(client) {
-  const sessions = await GameSession.find({ type: 'quiz' }).catch(err => {
-    console.error('_initQuiz: lookup failed:', err.message);
-    return [];
+  await lobbyStore.restore('quiz', quizLobbies, async (chatId, lobby) => {
+    const chat = { sendMessage: (text, options) => client.sendMessage(chatId, text, options) };
+    await startQuizMatch(client, chat, chatId, lobby.players, lobby.difficulty, lobby.starterId);
+    quizLobbies.delete(chatId);
   });
+  const sessions = await GameSession.find({ type: 'quiz' });
 
   let restored = 0;
   for (const doc of sessions) {
-    const chatId = doc.chatId;
-    const { current: savedCurrent, scores: savedScores, eliminated: savedEliminated, ...rest } = doc.state;
-
-    const session = {
-      ...rest,
-      chatId,
-      client,
-      scores: new Map(savedScores),
-      eliminated: new Set(savedEliminated),
-      current: null,
-    };
-    quizGames.set(chatId, session);
-    claim(chatId, 'quiz');
-
+    if (quizGames.has(doc.chatId)) continue;
+    let validated = false;
     try {
+      const chatId = doc.chatId;
+      if (!Array.isArray(doc.state?.questions) || !Array.isArray(doc.state?.players)) throw new Error('Invalid quiz state');
+      const { current: savedCurrent, scores: savedScores, eliminated: savedEliminated, ...rest } = doc.state;
+
+      const session = {
+        ...rest,
+        chatId,
+        client,
+        scores: new Map(savedScores),
+        eliminated: new Set(savedEliminated),
+        current: null,
+      };
+      validated = true;
+      quizGames.set(chatId, session);
+      claim(chatId, 'quiz');
+
       if (savedCurrent && !savedCurrent.resolved) {
         session.current = {
           ...savedCurrent,
           answered: new Set(savedCurrent.answered),
-          startedAt: Date.now(),
+          startedAt: Number.isFinite(savedCurrent.startedAt) ? savedCurrent.startedAt : Date.now(),
           timer: null,
         };
-        logger.write('INFO', 'background.quiz_question_timeout.armed', { chatId: session.chatId, timeoutMs: session.timeSeconds * 1000 });
-  session.current.timer = setTimeout(() => { logger.write('INFO', 'background.quiz_question_timeout.fired', { chatId: session.chatId }); handleTimeout(session); }, session.timeSeconds * 1000);
-        saveQuizSession(session);
+        if (!session.current.messageId) {
+          await publishCurrentQuestion(session);
+        } else {
+          session.current.timer = runtime.timer('quiz', chatId, () => handleTimeout(session),
+            Math.max(0, session.current.startedAt + session.timeSeconds * 1000 - Date.now()));
+          if (!Number.isFinite(savedCurrent.startedAt)) await saveQuizSession(session);
+        }
       } else {
-        await advanceQuestion(session);
+        runtime.timer('quiz', chatId, () => advanceQuestion(session),
+          Math.max(0, (session.nextQuestionAt || Date.now()) - Date.now()));
       }
+      restored++;
     } catch (err) {
-      console.error('_initQuiz: failed to resume match for', chatId, err.message);
+      if (validated) runtime.pause('quiz', doc.chatId, err, true);
+      else { quizGames.delete(doc.chatId); release(doc.chatId, 'quiz'); }
+      console.error('Skipped invalid quiz session:', doc.chatId, err.message);
     }
-    restored++;
   }
   if (restored) {
     console.log(`🎮 Restored ${restored} quiz match(es)`);
@@ -1031,3 +1027,5 @@ module.exports = {
   MIN_HUMAN_REACTION_MS,
   _initQuiz,
 };
+
+runtime.register('quiz', quizGames, quizLobbies, _initQuiz, module.exports, ['quiz', 'tryHandleQuizAnswer'], ['quitQuiz']);

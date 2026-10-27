@@ -16,11 +16,13 @@ const GroupSchema = new mongoose.Schema({
   muteDurationLabel: { type: String, default: null }, // raw duration text (e.g. "30s") for the auto-unmute notice, kept so it survives a restart
   blacklist: { type: [String], default: [] },
   nsfw: { type: Boolean, default: false },
+  charmExpiresAt: { type: Date, default: null },
   cardsEnabled: { type: Boolean, default: false },
   activeCardId: { type: String, default: null },
   activeCardCode: { type: String, default: null },
   activeCardExpiresAt: { type: Date, default: null },
   cardDropInterval: { type: Number, default: 0 },  // ms between drops
+  nextDropAt: { type: Date, default: null },
   lastDrop: { type: Number, default: 0 },
   messageCount: { type: Number, default: 0 },
   // LEGACY — superseded by the GroupActivity collection (models/GroupActivity.js).

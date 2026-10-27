@@ -1,3 +1,4 @@
+const { purgeMessages } = require('../utils/purgeMessages');
 const Group = require('../models/Group');
 const GroupActivity = require('../models/GroupActivity');
 const User = require('../models/User');
@@ -287,70 +288,32 @@ async function onLeave(client, notification) {
 }
 
 // ─── Inactive User Cleanup ──────────────────────────────────────────────────
-const INACTIVITY_THRESHOLD_MS = 60 * 24 * 60 * 60 * 1000; // 60 days
+const INACTIVITY_THRESHOLD_MS = 120 * 24 * 60 * 60 * 1000; // 120 days
 
-// Internal — called once a minute by index.js's scheduler, same shape as
-// _maybeSendDailyStats in commands/general.js (gated to one specific
-// UTC minute per day, with BotState remembering the last date it actually
-// ran so a PM2 restart landing in that minute can't double-run it).
-//
-// Deletes the PROFILE (economy/xp/level/pet/loan record — the User
-// document) of anyone who hasn't triggered User.findOrCreate in 60+ days.
-// Deliberately does NOT touch their OwnedCard documents — this runs
-// completely unattended with no human review, so it only does exactly what
-// was asked ("his profile should be deleted") rather than also cascading
-// into permanently destroying what could be rare/valuable cards. Those
-// cards just become ownerless; a fresh profile is created automatically
-// the moment this person messages the bot again, in a group or DM, same as
-// any brand new user (see User.findOrCreate) — .deluser below works the
-// same way, for the same reason.
-//
-// Anyone whose lastActiveAt is still null (pre-dates this feature, hasn't
-// run a single command since it was deployed) is deliberately excluded —
-// otherwise the very first sweep after deploy would treat "we've simply
-// never recorded this" as "maximally inactive" and wipe every existing
-// user in one shot. They get a real 60-day grace window starting from
-// their next command instead.
+// Daily 4AM WAT sweep. Unknown activity timestamps are excluded; returning
+// accounts receive a fresh profile only after guarded permanent cleanup.
 async function _sweepInactiveUsers(client) {
   const now = new Date();
-  if (now.getUTCHours() !== 3 || now.getUTCMinutes() !== 0) return; // 4AM WAT — off-peak
-
+  if (now.getUTCHours() !== 3 || now.getUTCMinutes() !== 0) return;
   const todayKey = now.toISOString().slice(0, 10);
-  const state = await BotState.findOne({ key: 'inactiveUserSweepLastRun' }).catch(() => null);
+  const state = await BotState.findOne({ key: 'inactiveUserSweepLastRun' });
   if (state?.value === todayKey) return;
-
-  try {
-    const cutoff = Date.now() - INACTIVITY_THRESHOLD_MS;
-    // The owner is never a cleanup candidate — same reasoning as .users
-    // excluding them from its listing above, but more important to get
-    // right here: this runs completely unattended, so without this check
-    // the owner's OWN profile would get silently deleted the first time
-    // they went 60 days without messaging the bot themselves.
-    const stale = (await User.find({ lastActiveAt: { $ne: null, $lt: cutoff } }).lean())
-      .filter(u => !isOwner(u.id));
-
-    if (stale.length) {
-      await User.deleteMany({ id: { $in: stale.map(u => u.id) } });
-      console.log(`🧹 Auto-deleted ${stale.length} inactive user profile(s) (60+ days idle): ${stale.map(u => u.name || u.id).join(', ')}`);
-
-      const ownerId = process.env.OWNER_NUMBER;
-      if (ownerId) {
-        const list = stale.slice(0, 20).map(u => `• ${u.name || u.id.split('@')[0]}`).join('\n');
-        await client.sendMessage(
-          ownerId,
-          `🧹 *Auto-Cleanup*\n\nDeleted ${stale.length} profile(s) inactive 60+ days:\n${list}${stale.length > 20 ? `\n...and ${stale.length - 20} more` : ''}\n\nTheir cards weren't touched — just sitting there for them to reclaim if they come back.`
-        ).catch(() => {});
-      }
+  const cutoff = Date.now() - INACTIVITY_THRESHOLD_MS;
+  const stale = await User.find({ lastActiveAt: { $ne: null, $lt: cutoff } }, 'id name').lean();
+  let deleted = 0, blocked = 0;
+  for (const user of stale) {
+    if (isOwner(user.id)) continue;
+    try {
+      if (await require('../utils/userDeletion').deleteUser(user.id, { cutoff })) deleted++;
+    } catch (err) {
+      if (err instanceof require('../utils/transaction').BusinessError) blocked++;
+      else throw err; // retry unprocessed accounts after a transient failure
     }
-
-    await BotState.findOneAndUpdate(
-      { key: 'inactiveUserSweepLastRun' },
-      { value: todayKey },
-      { upsert: true }
-    );
-  } catch (err) {
-    console.error('❌ Inactive user sweep failed:', err.message);
   }
+  await BotState.findOneAndUpdate({ key: 'inactiveUserSweepLastRun' }, { value: todayKey }, { upsert: true });
+  console.log(`🧹 120-day cleanup: deleted ${deleted}, protected ${blocked}.`);
+  if (process.env.OWNER_NUMBER && (deleted || blocked)) await client.sendMessage(process.env.OWNER_NUMBER,
+    `🧹 120-day cleanup: permanently deleted ${deleted} account(s), released their cards and queued profile image cleanup. Protected ${blocked} account(s) with obligations or guild leadership.`).catch(() => {});
 }
 
 module.exports = {
@@ -695,12 +658,14 @@ module.exports = {
   // .purge [count] — delete last N messages
   async purge(client, msg, args) {
     if (!await requireAdmin(msg)) return;
-    const count = parseInt(args[0]) || 10;
-    // Intentionally await, not return — the follow-up guidance below still
-    // needs to send after this one.
-    await msg.reply(`🗑️ Purging ${count} messages... (Note: WhatsApp limits bulk delete. Messages will be deleted one by one.)`);
-    // WhatsApp Web JS doesn't support bulk delete; guide user
-    return msg.reply('⚠️ Due to WhatsApp limitations, use the native group clear chat feature for bulk deletes.');
+    const chat = await safeGetChat(msg);
+    if (!chat?.isGroup) return msg.reply('❌ Purge is a group-only command.');
+    if (!await requireBotAdmin(msg)) return;
+    const raw = args[0] ?? '10';
+    const count = /^\d+$/.test(raw) ? Number(raw) : 0;
+    if (!Number.isSafeInteger(count) || count < 1 || count > 100) return msg.reply('❌ Usage: .purge [1–100] (default 10)');
+    const result = await purgeMessages(client, chat, msg, count);
+    return msg.reply(`🗑️ Delete-for-everyone requests sent: ${result.sent}. Skipped/unavailable: ${result.skipped}. Failed: ${result.failed}.`);
   },
 
   // .blacklist add/remove/list
@@ -964,7 +929,7 @@ async tagall(client, msg, args) {
     const fmtUser = (u) => {
       const days = u.lastActiveAt ? Math.floor((now - u.lastActiveAt) / 86_400_000) : null;
       const activity = days === null ? 'never active' : days === 0 ? 'active today' : `inactive ${days}d`;
-      const flag = (days !== null && days >= 60) ? ' ⚠️' : '';
+      const flag = (days !== null && days >= 120) ? ' ⚠️' : '';
       return `• ${u.name || u.id.split('@')[0]} (${u.id.split('@')[0]}) — Lv.${u.level} — ${activity}${flag}`;
     };
 
@@ -995,30 +960,12 @@ async tagall(client, msg, args) {
       if (unseen.length > 25) text += `\n...and ${unseen.length - 25} more`;
     }
 
-    text += `\n\n⚠️ = inactive 60+ days (auto-cleanup candidate — see .deluser)`;
+    text += `\n\n⚠️ = inactive 120+ days (auto-cleanup candidate — see .deluser)`;
 
     return msg.reply(text);
   },
 
-  // .deluser [phone number] [confirm] — owner-only, DM-only. Permanently
-  // deletes a registered user's PROFILE (economy/xp/level/pet/loan
-  // record). Their OwnedCard documents are deliberately left untouched —
-  // same reasoning as the automatic 60-day sweep above
-  // (_sweepInactiveUsers): this only deletes what was asked for, not their
-  // card collection too. A fresh profile is created automatically if/when
-  // they message the bot again.
-  //
-  // BUGFIX (Aug 2026): this used to require @mentioning the target, which
-  // can never actually work here — WhatsApp mentions only resolve to
-  // participants of the CURRENT chat, and this command can only be run in
-  // a private 1:1 DM with the bot (nobody else is ever "in" that chat to
-  // mention). Takes a plain phone number instead — exactly the number
-  // .users already prints next to each name — and matches it against the
-  // stored id by prefix rather than requiring an exact full id, since a
-  // user's stored id isn't always "<number>@c.us": WhatsApp sometimes
-  // hands back an opaque "@lid" id instead of the real number for privacy
-  // reasons (see the @lid notes in utils/helpers.js) — either way, the
-  // digits typed here are exactly the prefix .users already showed.
+  // Owner DM only: permanent guarded account cleanup.
   async deluser(client, msg, args) {
     const senderId = msg.author || msg.from;
     if (!isOwner(senderId)) return msg.reply('❌ This command is for the bot owner only.');
@@ -1036,19 +983,25 @@ async tagall(client, msg, args) {
     if (!targetUser) return msg.reply(`❌ No registered user found with number *${raw}*. Check *.users* for the exact number.`);
 
     const targetId = targetUser.id;
+    if (isOwner(targetId)) return msg.reply('❌ The configured owner cannot be deleted.');
     const confirm = args.some(a => a.toLowerCase() === 'confirm');
     if (!confirm) {
       const cardCount = await OwnedCard.countDocuments({ ownerId: targetId });
       return msg.reply(
         `⚠️ This will permanently delete *${targetUser.name || raw}*'s profile:\n` +
         `Level ${targetUser.level} — 💰 ${formatNum(targetUser.coins)} wallet — 🏦 ${formatNum(targetUser.bank)} bank\n\n` +
-        `They own ${cardCount} card(s) — these are NOT deleted, just left ownerless until they message the bot again (a fresh profile is created automatically then, but today's stats are gone for good).\n\n` +
+        `Their ${cardCount} card(s) will be released to the catalogue. Linked records and the profile image will be permanently removed. Active obligations or guild leadership block deletion.\n\n` +
         `Run *.deluser ${raw} confirm* to actually delete.`
       );
     }
 
-    await User.deleteOne({ id: targetId });
-    return msg.reply(`🗑 Deleted *${targetUser.name || raw}*'s profile. A fresh one is created automatically if they message the bot again.`);
+    try {
+      await require('../utils/userDeletion').deleteUser(targetId);
+      return msg.reply(`🗑 Permanently deleted *${targetUser.name || raw}*'s account and released their cards. Profile image cleanup is queued.`);
+    } catch (err) {
+      if (err instanceof require('../utils/transaction').BusinessError) return msg.reply(`❌ ${err.message}`);
+      throw err;
+    }
   },
 };
 

@@ -25,6 +25,7 @@ const GameSessionSchema = new mongoose.Schema({
   type: { type: String, required: true }, // 'ttt' today; 'c4' | 'chess' | 'battle' | 'quiz' as each migrates
   players: { type: [String], default: [] }, // real WhatsApp ids only — never the literal 'BOT' placeholder some game modes use
   state: { type: mongoose.Schema.Types.Mixed, default: {} },
-}, { timestamps: true });
+}, { timestamps: true, minimize: false });
 
+GameSessionSchema.plugin(require('../utils/optimisticWrites'));
 module.exports = mongoose.model('GameSession', GameSessionSchema);

@@ -27,6 +27,7 @@ function setup(t) {
   };
   t.mock.method(mongoose, 'startSession', async () => session);
   t.mock.method(User, 'findOrCreate', async () => ({}));
+  t.mock.method(User, 'updateOne', async () => ({ matchedCount: state.rejectAccount ? 0 : 1 }));
   t.mock.method(Group, 'findOne', async () => structuredClone(state.group));
   t.mock.method(Group, 'updateOne', async (filter, update, options) => {
     assert.equal(options.session, session);
@@ -145,4 +146,12 @@ test('loan requests cannot stake a card transferred to another user during the t
   t.mock.method(User, 'updateOne', async () => { throw new Error('must not issue the loan'); });
   await loan.loan({}, msg, ['request', '100', '1']);
   assert.match(replies.at(-1), /no longer available to stake/);
+});
+
+test('an account deleted before claim commit cannot receive an orphan card', async t => {
+  const { state, msg, replies } = setup(t);
+  state.rejectAccount = true;
+  await cards.claim({}, msg, ['DROP01']);
+  assert.equal(state.grants.length, 0);
+  assert.match(replies[0], /Account changed/);
 });

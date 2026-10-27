@@ -195,7 +195,7 @@ const GuildSchema = new mongoose.Schema({
   // on sibling fields saving it.
   activityLog: {
     type: [{
-      eventType: { type: String, enum: ['donate', 'withdraw', 'quest_completed', 'mission_completed', 'member_joined', 'member_left', 'announcement', 'upgrade', 'shop_purchase', 'season_won', 'event_bonus'], required: true },
+      eventType: { type: String, enum: ['donate', 'withdraw', 'quest_completed', 'mission_completed', 'member_joined', 'member_left', 'announcement', 'upgrade', 'shop_purchase', 'season_won', 'event_bonus', 'leadership_transfer'], required: true },
       userId: { type: String, default: null },
       amount: { type: Number, default: null },
       questType: { type: String, default: null },
@@ -262,7 +262,7 @@ function applyDailyGuildInterest(guild) {
   const before = guild.bank;
   if (before > 0) {
     const rate = DAILY_BANK_INTEREST_RATE + (guild.upgrades?.vault || 0) * VAULT_INTEREST_BONUS_PER_LEVEL;
-    guild.bank = Math.floor(before * Math.pow(1 + rate, daysElapsed));
+    guild.bank = Math.min(Number.MAX_SAFE_INTEGER, Math.floor(before * Math.pow(1 + rate, daysElapsed)));
   }
   guild._interestCredited = guild.bank - before;
   return true;
@@ -761,13 +761,19 @@ GuildSchema.statics.logActivity = logActivity;
 // every guild once a day.
 GuildSchema.statics.ensureGuildState = async function (guild) {
   if (!guild || typeof guild.save !== 'function') return guild;
-  const needsInterestSave = applyDailyGuildInterest(guild);
-  const needsQuestSave = ensureActiveQuest(guild);
-  const needsMissionSave = ensureActiveMission(guild);
-  if (needsInterestSave || needsQuestSave || needsMissionSave) {
-    await guild.save();
-  }
+  // Re-read inside a transaction. Post-find normalization may have modified
+  // the caller's old document while other commands changed the treasury.
+  const fresh = await require('../utils/transaction').transaction(async session => {
+    const current = await this.findById(guild._id).session(session);
+    if (!current) return null;
+    if (current.isModified()) await current.save({ session });
+    return current;
+  });
+  if (fresh) { guild.overwrite(fresh.toObject()); guild.$session(null); }
   return guild;
 };
+
+GuildSchema.plugin(require('../utils/moneyBounds'), ['bank']);
+GuildSchema.plugin(require('../utils/optimisticWrites'));
 
 module.exports = mongoose.model('Guild', GuildSchema);

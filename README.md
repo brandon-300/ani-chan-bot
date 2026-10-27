@@ -154,10 +154,10 @@ The bot's owner-only admin tools (card catalogue management, testing commands, e
 | `.fuse / .fusion` | Fuse duplicate cards into a higher-tier card |
 | `.wishlist [add\|remove] [name]` | Manage (or view) your card wishlist |
 | `.wishlb` | Leaderboard by wishlist size |
-| `.auction / .listauc` | View all active card auctions |
-| `.submit [id] [amount] / .bid` | Bid on an auction |
+| `.auction / .listauc` | View active auctions; .auction create [card index] [bank price] [5m–24h, default 1h] |
+| `.submit [id] [amount] / .bid` | Bid bank coins held in escrow; an outbid player is refunded |
 | `.myauc` | View your own active auctions |
-| `.remauc [id]` | Cancel one of your auctions |
+| `.remauc [id]` | Cancel an auction before any bids |
 | `.stardust` | Check your stardust balance (from converting duplicates) |
 | `.anticamp` | Check your camp count — hoarding duplicates decays them over time |
 | `.tier [tier]` | View drop-rate odds for every card tier |
@@ -230,7 +230,7 @@ Chess, Tic Tac Toe, and Connect 4 share the same flow: `.<game> start` opens a l
 | `.quitgame / .quit` | Forfeit whichever game (Chess/TTT/Connect 4/Battle) is active, or end a Quiz match you started (joiners: use .quiz leave instead) |
 | `.akinator / .aki` | Guess-the-character game |
 | `.greekgod / .gg` | Find out which Greek god you embody |
-| `.wcg` | Group "Would You Rather" game |
+| `.wcg` | Start a 30-second group A/B vote; .wcg A or .wcg B to vote |
 | `.quiz start [easy\|normal\|hard]` | Open an Anime/Manga Character Quiz lobby — you join automatically as Player 1 (up to 5 total); starts 30s later with whoever joined |
 | `.quiz join` | Take a slot in an open Quiz lobby (up to 5 players) |
 | `.quiz leave` | Back out of a Quiz lobby you joined (not the starter — they use .quiz end) |
@@ -253,6 +253,7 @@ Chess, Tic Tac Toe, and Connect 4 share the same flow: `.<game> start` opens a l
 | `.guild donate [amount]` | Donate coins to the guild bank — also raises your contribution |
 | `.guild leaderboard [level\|xp\|wealth] / .guildlb` | Top 10 guilds by level, XP, or bank (defaults to level) |
 | `.guild leave` | Leave your current guild |
+| `.guild transfer @member` | Leader hands over to an existing member and becomes an officer |
 | `.guild disband` | Disband your guild (leader only) |
 
 ### 🎰 GAMBLE
@@ -287,7 +288,7 @@ Chess, Tic Tac Toe, and Connect 4 share the same flow: `.<game> start` opens a l
 | `.wouldyourather / .wyr` | Would You Rather prompt |
 | `.joke` | Random joke |
 | `.truth / .dare / .td` | Truth, dare, or a random pick of either |
-| `.uno` | Start a silly text-based Uno round |
+| `.uno` | Multiplayer UNO: .uno start, join, begin; hands sent privately |
 | `.meme <text>` | Caption a replied sticker/image as a meme (use \| for top\|bottom text) |
 
 ### ⬇️ DOWNLOADERS
@@ -369,7 +370,7 @@ Chess, Tic Tac Toe, and Connect 4 share the same flow: `.<game> start` opens a l
 | `.setwelcome [message]` | Set the welcome message (use @user as a placeholder) |
 | `.leave on/off` | Toggle goodbye messages when members leave |
 | `.setleave [message]` | Set the goodbye message |
-| `.purge [count]` | Delete the last N messages |
+| `.purge [count]` | Revoke recent eligible messages (default 10, maximum 100; group admin) |
 | `.blacklist add/remove/list` | Manage blacklisted words |
 | `.promote @user` | Promote a user to group admin |
 | `.demote @user` | Demote a group admin |
@@ -431,3 +432,59 @@ Chess, Tic Tac Toe, and Connect 4 share the same flow: `.<game> start` opens a l
 
 ## 📄 License
 This project is released into the public domain under [The Unlicense](LICENSE) — free for anyone to use, modify, sell, or distribute for any purpose, with no restrictions and no attribution required.
+
+
+## Reliability and game rules
+
+The bot uses one PM2 instance. MongoDB must support transactions (Atlas or a
+replica set). Existing `.env` values remain in use; this update adds no required
+API keys. whatsapp-web.js is pinned to 1.34.7 to match the checked-in patch.
+
+- Auctions use bank coins in escrow. `.auction create [card index] [price] [duration]`
+  defaults to one hour; durations range from `5m` to `24h`. Bids increase by at
+  least one coin. Outbid players receive refunds. There are no fees; cancellation
+  is allowed before the first bid. Expired auctions settle automatically after
+  restart, and cards stay locked while an auction is active.
+- UNO: `.uno start`, `.uno join`, then the host may `.uno begin`. The lobby closes
+  after 60 seconds and begins automatically with at least two players. Hands go
+  to each player's DM; `.uno hand` requests yours again. Use `.uno play [number]
+  [wild color] [uno]`, `.uno draw`, `.uno pass`, `.uno uno`, `.uno catch @player`,
+  or `.uno leave`. There is no stacking or jumping in. Legal +4 plays are enforced
+  directly. Playing turns are untimed. Leaving returns a hand to the shuffled
+  deck; the last remaining player wins.
+- WCG: `.wcg` opens a 30-second A/B vote. Send `A`/`B` or `.wcg A`/`.wcg B`.
+  One vote per registered player is counted; it may be changed before expiry.
+  The result is a tally, with no invented points or economy rewards.
+- Existing game turns and quiz questions retain their saved deadlines after
+  restart. An expired turn is skipped once, then the next turn gets its normal
+  window. A malformed session does not prevent other sessions from restoring.
+- Lucky Charm halves a group's normal card-drop interval for one hour and does
+  not stack. It requires enabled card drops in that group. VIP Badge appears on
+  the profile; duplicate activation preserves the spare item.
+- Automatic account cleanup uses **120 days** of recorded inactivity. Unknown
+  activity timestamps and configured owner accounts are excluded. Active loans,
+  lent/staked cards, active auctions and guild leadership block deletion. Eligible
+  accounts lose their linked records and release their owned cards. Profile
+  images are cleaned through a durable retry queue. Shared group AI threads are
+  preserved because their messages have no per-author deletion key.
+- Financial writes use transactions or revision checks; a concurrent command can
+  be rejected instead of overwriting a newer balance. Check the current state
+  before retrying a command after an ambiguous connection failure.
+
+WhatsApp sends cannot participate in a MongoDB transaction. A crash between a
+successful send and recording it can repeat a notification; financial settlement
+is idempotent. Revocation requests depend on WhatsApp eligibility and may partly
+fail. The bot reports those counts.
+
+## Safe source exports and checks
+
+`node scripts/export-source.js` creates a source ZIP from the latest committed
+Git version. It excludes `.env`, authentication sessions, runtime caches, backups
+and logs, and includes `.env.example`. A filesystem ZIP made by another program
+does not automatically use these exclusions. Previously shared archives and
+credentials are not changed by this utility.
+
+Run unit tests with `node --test tests/*.test.js`. Transaction integration tests
+are skipped unless `ANICHAN_TEST_MONGO_URI` points to the explicitly named local
+`anichan_repair_test` database. They delete test fixtures and refuse production
+or remote databases. Run them only against an isolated local replica set.

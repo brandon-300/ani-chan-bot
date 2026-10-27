@@ -116,7 +116,7 @@ const UserSchema = new mongoose.Schema({
   xpMigrated: { type: Boolean, default: true },
   // Last time this user triggered findOrCreate (i.e. ran any command, in a
   // group or DM) — powers .users' "inactive Xd" display and the automatic
-  // 60-day cleanup sweep, both in commands/admin.js. See the write-side
+  // 120-day cleanup sweep, both in commands/admin.js. See the write-side
   // note in findOrCreate below for why this doesn't update on literally
   // every single call.
   lastActiveAt: { type: Number, default: null },
@@ -215,7 +215,7 @@ function applyDailyInterest(user) {
 
   const before = user.bank;
   if (before > 0) {
-    user.bank = Math.floor(before * Math.pow(1 + DAILY_BANK_INTEREST_RATE, daysElapsed));
+    user.bank = Math.min(Number.MAX_SAFE_INTEGER, Math.floor(before * Math.pow(1 + DAILY_BANK_INTEREST_RATE, daysElapsed)));
   }
   user._interestCredited = user.bank - before;
   return true;
@@ -244,36 +244,36 @@ UserSchema.statics.findOrCreate = async function (id, name) {
     registration: { status: 'pending', nameSet: false, dobSet: false, bioSet: false, picSet: false },
   };
   if (name) setOnInsert.name = name;
-  const user = await this.findOneAndUpdate(
-    { id },
-    { $setOnInsert: setOnInsert },
-    { upsert: true, new: true, setDefaultsOnInsert: true }
-  );
-
-  let needsSave = applyDailyInterest(user);
-
-  // Debounced to once/hour rather than every single call — this bot is on
-  // a metered/unstable mobile connection, and hour-level granularity is
-  // already far more than the 60-day cleanup sweep or .users' "inactive
-  // Xd" display could ever need, so there's no reason to pay for an extra
-  // write on every command invocation just to track activity.
-  //
-  // A locked session (see sessionLockedAt on the schema) never has its
-  // lastActiveAt refreshed here: locked accounts only come back through a
-  // verified email code (commands/account.js), and a command like
-  // `.profile @someone` that merely LOOKS UP a locked account must not make
-  // it look active again.
-  const now = Date.now();
-  const ACTIVITY_DEBOUNCE_MS = 60 * 60 * 1000;
-  if (!user.sessionLockedAt && (!user.lastActiveAt || now - user.lastActiveAt > ACTIVITY_DEBOUNCE_MS)) {
-    user.lastActiveAt = now;
-    needsSave = true;
+  // Read paths do not save a stale document. Only interest/activity fields
+  // are updated, with a revision check shared with all other account writes.
+  for (let attempt = 0; attempt < 8; attempt++) {
+    let user = await this.findOne({ id });
+    if (!user) {
+      try {
+        user = await this.findOneAndUpdate({ id }, { $setOnInsert: setOnInsert },
+          { upsert: true, new: true, setDefaultsOnInsert: true });
+      } catch (err) { if (err.code === 11000) continue; throw err; }
+    }
+    const revision = user.__v;
+    const interestChanged = applyDailyInterest(user);
+    const credited = user._interestCredited;
+    const now = Date.now();
+    const activityChanged = !user.sessionLockedAt && (!user.lastActiveAt || now - user.lastActiveAt > 3600000);
+    if (!interestChanged && !activityChanged) return user;
+    const changes = {};
+    if (interestChanged) {
+      changes.lastInterestAt = user.lastInterestAt;
+      changes.bank = Math.min(Number.MAX_SAFE_INTEGER, user.bank);
+    }
+    if (activityChanged) changes.lastActiveAt = now;
+    const updated = await this.findOneAndUpdate({ id, __v: revision === undefined ? { $exists: false } : revision },
+      { $set: changes }, { new: true });
+    if (updated) { updated._interestCredited = credited; return updated; }
   }
-
-  if (needsSave) {
-    await user.save();
-  }
-  return user;
+  throw new Error('Account changed concurrently; please retry the command.');
 };
+
+UserSchema.plugin(require('../utils/moneyBounds'), ['coins', 'bank', 'orbs', 'stardust']);
+UserSchema.plugin(require('../utils/optimisticWrites'));
 
 module.exports = mongoose.model('User', UserSchema);

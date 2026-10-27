@@ -16,7 +16,7 @@ function tmpFile(ext) {
 
 function runFfmpeg(inputPath, outputPath, outputOptions = []) {
   return new Promise((resolve, reject) => {
-    ffmpeg(inputPath)
+    ffmpeg(inputPath, { timeout: 120 })
       .outputOptions(outputOptions)
       .output(outputPath)
       .on('end', resolve)

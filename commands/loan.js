@@ -156,18 +156,15 @@ async function resolveOverdueIfNeeded(user) {
   const session = await mongoose.startSession();
   try {
     await session.withTransaction(async () => {
-      if (cardId) {
-        await OwnedCard.updateOne(
-          { _id: cardId },
-          { $set: { ownerId: BANK_VAULT_ID, isStaked: false } },
-          { session }
-        );
-      }
-      await User.updateOne(
-        { _id: user._id },
-        { $set: { loan: newLoan } },
-        { session }
-      );
+      const fresh = await User.findOne({ _id: user._id, 'loan.active': true }).session(session);
+      if (!fresh || !fresh.loan.dueAt || fresh.loan.dueAt >= Date.now()) throw new Error('Loan state changed');
+      if (!fresh.loan.cardId) throw new Error('Loan collateral missing; owner review required');
+      const seized = await OwnedCard.updateOne(
+        { _id: fresh.loan.cardId, ownerId: fresh.id, isStaked: true },
+        { $set: { ownerId: BANK_VAULT_ID, isStaked: false } }, { session });
+      if (seized.matchedCount !== 1) throw new Error('Loan collateral changed; owner review required');
+      const cleared = await User.updateOne({ _id: fresh._id, 'loan.active': true }, { $set: { loan: newLoan } }, { session });
+      if (cleared.matchedCount !== 1) throw new Error('Loan state changed');
     });
   } catch (err) {
     console.error('loan default: seizure transaction failed — loan left active/overdue for retry:', err.message);
@@ -276,7 +273,7 @@ module.exports = {
             User.findOne({ id: userId }).session(session),
           ]);
 
-          if (!freshCard || freshCard.ownerId !== userId || freshCard.isStaked || freshCard.isLent || freshCard.isForSale) {
+          if (!freshCard || freshCard.ownerId !== userId || freshCard.isStaked || freshCard.isLent || freshCard.isForSale || freshCard.isAuctioned) {
             throw new TransactionAbort('❌ That card is no longer available to stake — check *.col* and try again.');
           }
           if (freshUser?.loan?.active) {
@@ -303,7 +300,8 @@ module.exports = {
           if (staked.matchedCount !== 1 || !freshUser) {
             throw new TransactionAbort('❌ Card ownership or availability changed. Nothing was staked.');
           }
-          await User.updateOne({ _id: freshUser._id }, { $set: { loan: newLoan }, $inc: { bank: amount } }, { session });
+          const credited = await User.updateOne({ _id: freshUser._id, 'loan.active': { $ne: true } }, { $set: { loan: newLoan }, $inc: { bank: amount } }, { session });
+          if (credited.matchedCount !== 1) throw new TransactionAbort('❌ Bank limit exceeded or loan state changed. Nothing was staked.');
         });
       } catch (err) {
         if (err instanceof TransactionAbort) return msg.reply(err.message);
@@ -384,18 +382,20 @@ module.exports = {
           const fromWallet = freshOwed - fromBank;
 
           if (freshUser.loan.cardId) {
-            await OwnedCard.updateOne(
-              { _id: freshUser.loan.cardId },
+            const unstaked = await OwnedCard.updateOne(
+              { _id: freshUser.loan.cardId, ownerId: userId, isStaked: true },
               { $set: { isStaked: false } },
               { session }
             );
+            if (unstaked.matchedCount !== 1) throw new TransactionAbort('❌ Loan collateral changed. Nothing was charged; owner review is needed.');
           }
-          await User.updateOne(
+          const repaid = await User.updateOne(
             { _id: freshUser._id },
             { $set: { loan: clearedLoan() }, $inc: { bank: -fromBank, coins: -fromWallet } },
             { session }
           );
 
+          if (repaid.matchedCount !== 1) throw new TransactionAbort('❌ Account changed. Nothing was charged.');
           finalBank = freshUser.bank - fromBank;
           finalCoins = freshUser.coins - fromWallet;
         });

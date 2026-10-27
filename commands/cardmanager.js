@@ -81,7 +81,6 @@ async function fetchAniListCharacter(name, attempt = 1) {
       await sleep(attempt * 1500);
       return fetchAniListCharacter(name, attempt + 1);
     }
-    operation.finish('failed', { error: err, durationMs: Date.now() - startedAt });
     throw err;
   }
 }

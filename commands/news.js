@@ -1,3 +1,4 @@
+const { deliverOnce, lockChat } = require('../utils/newsDelivery');
 const axios = require('axios');
 const BotState = require('../models/BotState');
 const SentNews = require('../models/SentNews');
@@ -311,7 +312,8 @@ function formatArticle(article) {
 // tracking-param-proof.
 
 async function markSent(chatId, article) {
-  await SentNews.create({ chatId, articleId: article.normalizedLink }).catch(() => {});
+  try { await SentNews.create({ chatId, articleId: article.normalizedLink }); }
+  catch (err) { if (err.code !== 11000) throw err; }
 }
 
 // Sends the article with a WhatsApp link preview (the website card with
@@ -361,6 +363,7 @@ module.exports = {
 
     await msg.react('📰').catch(() => {});
 
+    return lockChat(chat.id._serialized, async () => {
     let article;
     try {
       const all = await fetchAllArticles();
@@ -380,6 +383,7 @@ module.exports = {
     // article stays unseen and is retried next time.
     await msg.reply(formatArticle(article));
     await markSent(chat.id._serialized, article);
+    });
   },
 
   // Internal — called every minute by index.js's scheduler (same shape as
@@ -403,7 +407,8 @@ module.exports = {
   //     tick from entering while a slow run (many groups × send delay) is
   //     still in flight. Released in finally, so even a throw can't wedge
   //     the lock and permanently kill future hourly broadcasts.
-  //   • BotState 'hourlyNewsLastRun' hour-key (Mongo, survives restarts) —
+  //   • Per-group hourly delivery claims (Mongo, survives restarts) plus
+  //     BotState 'hourlyNewsLastRun' hour-key —
   //     stops a PM2 restart landing in the same hour from re-broadcasting.
   //
   // This has no triggering message to reply to (it's unprompted, not a
@@ -411,9 +416,9 @@ module.exports = {
   // .news above.
   async _maybeSendDailyNews(client) {
     const now = new Date();
-    // Fire on the hour, every hour (minute 0). UTC hour === WAT hour − 1,
-    // and since both clocks tick hourly, "minute === 0" is hourly in WAT.
-    if (now.getUTCMinutes() !== 0) return;
+    // One delivery slot per WAT/UTC wall-clock hour. Failed groups retry
+    // on subsequent minute ticks; successful slots are retained.
+    // Retry incomplete group deliveries on later minute ticks within the hour.
 
     // In-process re-entrancy lock — a previous run (same process) is still
     // sending; bail out and let it finish this hour.
@@ -425,7 +430,7 @@ module.exports = {
     try {
       // Hour key — e.g. "2026-09-23T14". One run per wall-clock hour.
       const hourKey = now.toISOString().slice(0, 13);
-      const state = await BotState.findOne({ key: 'hourlyNewsLastRun' }).catch(() => null);
+      const state = await BotState.findOne({ key: 'hourlyNewsLastRun' });
       if (state?.value === hourKey) return;
 
       let articles;
@@ -449,23 +454,26 @@ module.exports = {
         return;
       }
 
+      let failed = false;
       for (const chat of groupChats) {
         try {
           const chatId = chat.id._serialized;
-          const article = await pickNextArticle(chatId, articles);
-          if (article) {
-            await sendArticle(chat, article);
-            // Mark as sent ONLY after the message actually went out, so a
-            // failed send is retried next hour instead of being skipped.
-            await markSent(chatId, article);
-            sentCount++;
-          }
+          await lockChat(chatId, () => deliverOnce(`hourly:${hourKey}:${chatId}`, async () => {
+            const article = await pickNextArticle(chatId, articles);
+            if (article) {
+              await sendArticle(chat, article);
+              await markSent(chatId, article);
+              sentCount++;
+            }
+          }));
         } catch (err) {
+          failed = true;
           logger.error('background.news_auto_broadcast.group_failed', err, { chatId: chat.id._serialized });
         }
         await sleep(NEWS_SEND_DELAY_MS); // gap between groups
       }
 
+      if (failed) return;
       await BotState.findOneAndUpdate(
         { key: 'hourlyNewsLastRun' },
         { value: hourKey },

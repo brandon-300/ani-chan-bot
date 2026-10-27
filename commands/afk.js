@@ -1,3 +1,4 @@
+const { withGuildLock } = require('../utils/guildLock');
 const { formatCooldown, resolveNameById } = require('../utils/helpers');
 const User = require('../models/User');
 
@@ -61,13 +62,15 @@ module.exports = {
     const contact = await msg.getContact();
     const reason = args.length ? capitalize(args.join(' ')) : 'No reason given';
     const since = Date.now();
-    afkUsers.set(contact.id._serialized, { reason, since });
 
     // Low-frequency write (once per .afk, not per message) — safe to await
     // without affecting the hot per-message path above.
     const user = await User.findOrCreate(contact.id._serialized, contact.pushname);
-    user.afk = { active: true, reason, since: new Date(since) };
-    await user.save().catch(err => console.error('afk: persist failed:', err.message));
+    await withGuildLock(`afk:${user.id}`, async () => {
+      const saved = await User.updateOne({ id: user.id }, { $set: { afk: { active: true, reason, since: new Date(since) } } });
+      if (saved.matchedCount !== 1) throw new Error('Account unavailable');
+      afkUsers.set(user.id, { reason, since });
+    });
 
     return msg.reply(`🛑 You are now AFK: ${reason}`);
   },
@@ -99,13 +102,14 @@ module.exports = {
   // directly from that listener, the same convention already used by
   // _initCardDrops in commands/cards.js.
   async _checkAfkReturn(msg, senderId) {
+    return withGuildLock(`afk:${senderId}`, async () => {
     const entry = afkUsers.get(senderId);
     if (entry) {
-      afkUsers.delete(senderId);
-      User.findOneAndUpdate(
-        { id: senderId },
+      await User.findOneAndUpdate(
+        { id: senderId, 'afk.since': new Date(entry.since) },
         { $set: { 'afk.active': false, 'afk.reason': null, 'afk.since': null } }
-      ).catch(err => console.error('_checkAfkReturn: clear failed:', err.message));
+      );
+      afkUsers.delete(senderId);
       const duration = formatCooldown(Date.now() - entry.since);
       await msg.reply(`✅ *Welcome back!*\nYou had been AFK for ${duration}.\nReason: ${entry.reason}`);
     } else {
@@ -116,6 +120,7 @@ module.exports = {
       }
     }
     lastActive.set(senderId, Date.now());
+    });
   },
 
   // Called from a dedicated client.on('message') listener in index.js, for

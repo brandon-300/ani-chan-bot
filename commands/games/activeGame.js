@@ -30,6 +30,8 @@ const LABELS = {
   c4: 'Connect 4',
   battle: 'Battle',
   quiz: 'Anime Quiz',
+  uno: 'UNO',
+  wcg: 'Would You Rather',
 };
 
 // Returns { type, label } if `chatId` currently has any game active

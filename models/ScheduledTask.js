@@ -51,6 +51,7 @@ const ScheduledTaskSchema = new mongoose.Schema({
   // (this app is single-instance, so nothing else would try) — kept as a
   // diagnostic breadcrumb and a hook for future multi-instance safety.
   lockedUntil: { type: Date, default: null },
+  runToken: { type: String, default: null },
   // Message from the most recent failed attempt, if any. Cleared whenever
   // the task is freshly (re)scheduled via scheduleTask.
   lastError: { type: String, default: null },

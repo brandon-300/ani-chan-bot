@@ -6,8 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const { safeGetChat, isAdmin, isOwner, resolveNameById, formatCooldown, getModIds, boldSans, doubleStruck } = require('../utils/helpers');
 
-const BOT_NAME = process.env.BOT_NAME || 'Ani-Chan Bot';
-const PREFIX = process.env.BOT_PREFIX || '.';
+const { BOT_NAME, BOT_PREFIX: PREFIX } = require('../utils/config');
 
 async function getOrCreateGroup(chatId) {
   return Group.findOneAndUpdate({ id: chatId }, {}, { upsert: true, new: true });

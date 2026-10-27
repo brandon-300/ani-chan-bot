@@ -1,3 +1,6 @@
+const auctionsService = require('../utils/auctions');
+const { fuseCards, resellCard, unownedSample } = require('../utils/cardTransactions');
+const { BusinessError } = require('../utils/transaction');
 const { CardCatalogue, OwnedCard, Auction, TradeRequest, SaleRequest } = require('../models/Card');
 const { checkAchievements, formatUnlockNotice } = require('../utils/achievements');
 const { checkTitle, formatTitleUnlockNotice } = require('../utils/titles');
@@ -303,17 +306,8 @@ async function dropCard(chat, client) {
     .filter((v, i, a) => a.indexOf(v) === i);
 
   for (const currentTier of tiers) {
-    const claimedIds = await OwnedCard.distinct('catalogueId');
-
-    const available = await CardCatalogue.find({
-      tier: currentTier,
-      cardId: { $nin: claimedIds }
-    });
-
-    if (available.length) {
-      card = available[Math.floor(Math.random() * available.length)];
-      break;
-    }
+    const [candidate] = await unownedSample(currentTier);
+    if (candidate) { card = candidate; break; }
   }
 
   if (!card) {
@@ -384,55 +378,31 @@ const CARD_DROP_INTERVAL_MS = 5 * 60 * 1000;
 // automatically once the catalogue grows (e.g. via .autoexpand).
 const CARD_DROP_ALL_CLAIMED_INTERVAL_MS = 30 * 60 * 1000;
 
-scheduler.registerHandler('card_drop', async (payload, client) => {
-  const { chatId } = payload;
-
-  // Re-check the group is still enabled right before dropping — it may
-  // have been turned off (or the row deleted) since this was scheduled.
-  // Returning without rescheduling here is what actually stops the cycle;
-  // .cards off's cancelTask is the fast path, this is the safety net.
-  const group = await Group.findOne({ id: chatId }).catch(() => null);
-  if (!group || !group.cardsEnabled) return;
-
-  let chat;
-  try {
-    chat = await client.getChatById(chatId);
-  } catch {
-    // Group no longer reachable (bot removed, chat deleted, etc.) — stop
-    // rescheduling rather than looping on a chat that will never resolve.
+const deliveredDrops = new Map(); // survives transient DB failures within this process
+scheduler.registerHandler('card_drop', async ({ chatId }, client) => {
+  const group = await Group.findOne({ id: chatId });
+  if (!group || !group.cardsEnabled) { deliveredDrops.delete(chatId); return; }
+  const pending = deliveredDrops.get(chatId);
+  if (pending) {
+    await Group.updateOne({ id: chatId }, { $set: { lastDrop: pending.lastDrop, nextDropAt: pending.nextDropAt } });
+    deliveredDrops.delete(chatId);
+    group.nextDropAt = pending.nextDropAt;
+  }
+  if (group.nextDropAt && group.nextDropAt.getTime() > Date.now()) {
+    await scheduler.scheduleTask({ type: 'card_drop', key: `card_drop:${chatId}`, runAt: group.nextDropAt, payload: { chatId } });
     return;
   }
-
-  // Deliberately NOT caught here anymore. A real failure inside dropCard
-  // (a Mongo query, a WhatsApp send that fails for both media AND the
-  // text fallback, etc.) now propagates up to the scheduler, which
-  // retries this exact task with backoff (30s, then 2min, 10min, 30min)
-  // instead of either silently eating the failure and waiting the full
-  // 5-minute interval, or — worse — the old delete-first design losing
-  // the cycle's task row entirely. Retrying is safe here: on a genuine
-  // failure, nothing was actually delivered (or, at worst, an orphaned
-  // unclaimed active-card code got overwritten), never a duplicate drop.
-  //
-  // Returning null (nothing left to claim) is a normal, non-throwing
-  // outcome, not a failure — handled below via a longer reschedule
-  // interval, not a retry.
-  const droppedCard = await dropCard(chat, client);
-
-  // Rescheduling the next occurrence stays in its own try/catch, same as
-  // before: a failure here must NOT propagate and retry the whole
-  // handler, because dropCard() already ran (successfully or as a no-op)
-  // — retrying the handler would call dropCard() again and risk a
-  // duplicate drop. If this write itself fails, it's logged and the cycle
-  // silently stops for this group until a restart or a `.cards off` /
-  // `.cards on` toggle recreates it — a known gap (scheduler reconciliation
-  // is a separate, later improvement), not something this step fixes.
-  const nextInterval = droppedCard ? CARD_DROP_INTERVAL_MS : CARD_DROP_ALL_CLAIMED_INTERVAL_MS;
-  await scheduler.scheduleTask({
-    type: 'card_drop',
-    key: `card_drop:${chatId}`,
-    runAt: new Date(Date.now() + nextInterval),
-    payload: { chatId },
-  }).catch(err => console.error('card_drop: reschedule failed:', err.message));
+  const chat = await client.getChatById(chatId); // transient connection failures must retry
+  const dropped = await dropCard(chat, client);
+  deliveredDrops.set(chatId, { lastDrop: Date.now(), nextDropAt: new Date(Date.now() + CARD_DROP_INTERVAL_MS) });
+  const currentGroup = await Group.findOne({ id: chatId });
+  const boosted = currentGroup?.charmExpiresAt?.getTime() > Date.now();
+  const interval = dropped ? CARD_DROP_INTERVAL_MS / (boosted ? 2 : 1) : CARD_DROP_ALL_CLAIMED_INTERVAL_MS;
+  const timing = { lastDrop: Date.now(), nextDropAt: new Date(Date.now() + interval) };
+  deliveredDrops.set(chatId, timing);
+  await Group.updateOne({ id: chatId }, { $set: timing });
+  deliveredDrops.delete(chatId);
+  await scheduler.scheduleTask({ type: 'card_drop', key: `card_drop:${chatId}`, runAt: timing.nextDropAt, payload: { chatId } });
 });
 
 // Called once from index.js on bot startup. Uses scheduleIfMissing rather
@@ -442,17 +412,19 @@ scheduler.registerHandler('card_drop', async (payload, client) => {
 // group's countdown back to a full 5 minutes. Only a group with no task
 // yet (freshly enabled, or upgrading from the old setInterval system for
 // the first time) gets a fresh one.
+let cardDropsReported = false;
 async function _initCardDrops(client) {
   const enabledGroups = await Group.find({ cardsEnabled: true });
   for (const group of enabledGroups) {
     await scheduler.scheduleIfMissing({
       type: 'card_drop',
       key: `card_drop:${group.id}`,
-      runAt: new Date(Date.now() + CARD_DROP_INTERVAL_MS),
+      runAt: group.nextDropAt || new Date(Date.now() + CARD_DROP_INTERVAL_MS),
       payload: { chatId: group.id },
     }).catch(err => console.error('_initCardDrops: schedule failed for', group.id, err.message));
   }
-  if (enabledGroups.length) {
+  if (enabledGroups.length && !cardDropsReported) {
+    cardDropsReported = true;
     console.log(`🎴 Card drops active in ${enabledGroups.length} group(s)`);
   }
 }
@@ -477,7 +449,7 @@ scheduler.registerHandler('card_lend_return', async (payload, client) => {
   // the task is retried, instead of silently leaving the card
   // isLent: true forever with nothing left to fix it.
   const result = await OwnedCard.findOneAndUpdate(
-    { _id: payload.cardId, isLent: true },
+    { _id: payload.cardId, isLent: true, lendExpiresAt: { $lte: new Date() } },
     { $set: { isLent: false, lentTo: null, lendExpiresAt: null } }
   );
 
@@ -505,6 +477,7 @@ scheduler.registerHandler('card_lend_return', async (payload, client) => {
 // deployed would never auto-return. Safe to run on every boot: scheduleTask
 // upserts by key, and this always passes the card's own already-stored
 // lendExpiresAt, so re-running it never resets or extends anyone's timer.
+let lendingReported = false;
 async function _initCardLending() {
   const lentCards = await OwnedCard.find({ isLent: true, lendExpiresAt: { $ne: null } }).catch(err => {
     console.error('_initCardLending: lookup failed:', err.message);
@@ -512,7 +485,7 @@ async function _initCardLending() {
   });
 
   for (const card of lentCards) {
-    await scheduler.scheduleTask({
+    await scheduler.scheduleIfMissing({
       type: 'card_lend_return',
       key: `lend:${card._id}`,
       runAt: card.lendExpiresAt,
@@ -526,13 +499,15 @@ async function _initCardLending() {
     }).catch(err => console.error('_initCardLending: schedule failed for', card._id, err.message));
   }
 
-  if (lentCards.length) {
+  if (lentCards.length && !lendingReported) {
+    lendingReported = true;
     console.log(`🎴 Backfilled ${lentCards.length} pre-existing card lend(s) into the scheduler`);
   }
 }
 
 // ─── Commands ─────────────────────────────────────────────────────────────────
 module.exports = {
+  _reconcileAuctions: auctionsService.reconcile,
   _initCardDrops,
   _initCardLending,
   // .cards on/off
@@ -1303,7 +1278,8 @@ const cards = await OwnedCard.find({
           await freshCard.save({ session });
 
           if (sellerId) {
-            await User.updateOne({ id: sellerId }, { $inc: { bank: price } }, { upsert: false, session });
+            const paid = await User.updateOne({ id: sellerId, bank: { $lte: Number.MAX_SAFE_INTEGER - price } }, { $inc: { bank: price } }, { session });
+            if (paid.matchedCount !== 1) throw new TransactionAbort('❌ Seller account unavailable or bank limit exceeded. Nothing was transferred.');
           }
 
           boughtCard = freshCard;
@@ -1358,6 +1334,8 @@ const cards = await OwnedCard.find({
     const dropSession = await mongoose.startSession();
     try {
       await dropSession.withTransaction(async () => {
+        const account = await User.updateOne({ id: contact.id._serialized }, { $set: { lastActiveAt: Date.now() } }, { session: dropSession });
+        if (account.matchedCount !== 1) throw new TransactionAbort('❌ Account changed while claiming. Nothing was granted.');
         // Consume exactly this enabled, unexpired drop in the same transaction
         // as the card grant. A newer drop must never be cleared by this claim.
         const consumed = await Group.updateOne({
@@ -1943,7 +1921,22 @@ const cards = await OwnedCard.find({
 
   // .auction
   async auction(client, msg, args) {
-    const auctions = await Auction.find({ isActive: true });
+    if (args[0]?.toLowerCase() === 'create') {
+      const contact = await msg.getContact();
+      const index = Number(args[1]);
+      const price = parseAmount(args[2]);
+      if (!Number.isSafeInteger(index) || index < 1 || !price) return msg.reply('❌ Usage: .auction create [card index] [starting price] [5m–24h, default 1h]');
+      const card = await getCardByIndex(contact.id._serialized, index);
+      if (!card) return msg.reply('❌ Card not found.');
+      try {
+        const auction = await auctionsService.createAuction(contact.id._serialized, card._id, price, args[3], msg.from);
+        return msg.reply(`🔨 Auction created: ${auction.code}\n${card.name} — starts at ${price} bank coins.\nEnds: ${auction.endsAt.toISOString()}\nBid: .bid ${auction.code} [amount]`);
+      } catch (err) {
+        if (err instanceof BusinessError) return msg.reply(err.message);
+        throw err;
+      }
+    }
+    const auctions = await Auction.find({ isActive: true, endsAt: { $gt: new Date() } });
     if (!auctions.length) return msg.reply('🔨 No active auctions.');
 
     let text = `🔨 *Active Auctions*\n\n`;
@@ -1962,23 +1955,19 @@ const cards = await OwnedCard.find({
     const amount = parseAmount(args[1]);
     if (!code || !amount) return msg.reply('❌ Usage: .submit [code] [amount]\n\nAmount supports shorthand: 5k, 1.2m, etc.');
 
-    const auction = await Auction.findOne({ code });
-    if (!auction || !auction.isActive) return msg.reply('❌ Auction not found or ended.');
-
-    const user = await User.findOrCreate(contact.id._serialized);
-    if (user.coins < amount) return msg.reply('❌ Not enough coins.');
-    if (amount <= auction.currentBid) return msg.reply(`❌ Bid must be higher than ${auction.currentBid}.`);
-
-    auction.currentBid = amount;
-    auction.currentBidder = contact.id._serialized;
-    await auction.save();
-    return msg.reply(`✅ Bid of 💰 ${amount} placed on *${auction.cardName}*!`);
+    try {
+      const auction = await auctionsService.bid(code, contact.id._serialized, amount);
+      return msg.reply(`✅ Bid of 💰 ${amount} bank coins reserved on *${auction.cardName}*!`);
+    } catch (err) {
+      if (err instanceof BusinessError) return msg.reply(err.message);
+      throw err;
+    }
   },
 
   // .myauc — your active auctions
   async myauc(client, msg, args) {
     const contact = await msg.getContact();
-    const auctions = await Auction.find({ sellerId: contact.id._serialized, isActive: true });
+    const auctions = await Auction.find({ sellerId: contact.id._serialized, isActive: true, endsAt: { $gt: new Date() } });
     if (!auctions.length) return msg.reply('❌ You have no active auctions.');
 
     let text = `🔨 *Your Auctions*\n\n`;
@@ -1992,11 +1981,13 @@ const cards = await OwnedCard.find({
   async remauc(client, msg, args) {
     const contact = await msg.getContact();
     const code = args[0]?.trim().toUpperCase();
-    const auction = await Auction.findOne({ code, sellerId: contact.id._serialized });
-    if (!auction) return msg.reply('❌ Auction not found.');
-    auction.isActive = false;
-    await auction.save();
-    return msg.reply('✅ Auction removed.');
+    try {
+      await auctionsService.cancel(code, contact.id._serialized);
+      return msg.reply('✅ Auction cancelled; your card is unlocked.');
+    } catch (err) {
+      if (err instanceof BusinessError) return msg.reply(err.message);
+      throw err;
+    }
   },
 
   // .listauc — same as .auction
@@ -2117,51 +2108,20 @@ const cards = await OwnedCard.find({
       return msg.reply('❌ SSS is already the highest tier — nothing to fuse it into.');
     }
 
-    const claimedIds = await OwnedCard.distinct('catalogueId');
-    const targetPool = await CardCatalogue.find({ tier: targetTier, cardId: { $nin: claimedIds } });
-
-    if (!targetPool.length) {
-      return msg.reply(`❌ No unclaimed ${targetTier}-tier cards available to fuse into right now. Your cards are safe — nothing was consumed.`);
-    }
-
-    // Roll outcome BEFORE touching any cards, so a failed roll never costs
-    // more than the 3 inputs, and an unavailable target costs nothing at all.
+    // Roll once outside the transaction; retries must not reroll outcomes.
     const success = Math.random() < 0.7;
-    let finalTier = targetTier;
-    let finalPool = targetPool;
-    let lucky = false;
-
-    if (success && Math.random() < 0.1) {
-      const doubleTier = tierAbove(tier, 2);
-      if (doubleTier) {
-        const doublePool = await CardCatalogue.find({ tier: doubleTier, cardId: { $nin: claimedIds } });
-        if (doublePool.length) {
-          finalTier = doubleTier;
-          finalPool = doublePool;
-          lucky = true;
-        }
-      }
+    const luckyRoll = success && Math.random() < 0.1;
+    let resultCatalogue, lucky;
+    try {
+      ({ resultCatalogue, lucky } = await fuseCards(userId, selected.map(c => c._id), targetTier,
+        tierAbove(tier, 2), success, luckyRoll));
+    } catch (err) {
+      if (err instanceof BusinessError) return msg.reply(err.message);
+      console.error('fuse transaction failed:', err.message);
+      return msg.reply('⚠️ Fusion could not be completed. No partial card consumption is allowed.');
     }
-
-    // Consume the 3 inputs now that the outcome is decided.
-    await OwnedCard.deleteMany({ _id: { $in: selected.map(c => c._id) } });
-
     const consumedList = selected.map(c => `${tierEmoji(c.tier)} ${c.name}`).join(', ');
-
-    if (!success) {
-      return msg.reply(`💥 *Fusion Failed!*\n\nConsumed: ${consumedList}\n\nBetter luck next time.`);
-    }
-
-    const resultCatalogue = finalPool[Math.floor(Math.random() * finalPool.length)];
-    await OwnedCard.create({
-      ownerId: userId,
-      catalogueId: resultCatalogue.cardId,
-      code: await generateUniqueCode(OwnedCard),
-      name: resultCatalogue.name,
-      series: resultCatalogue.series,
-      tier: resultCatalogue.tier,
-      firstOwner: userId
-    });
+    if (!success) return msg.reply(`💥 *Fusion Failed!*\n\nConsumed: ${consumedList}\n\nBetter luck next time.`);
 
     const unlocked = await checkAchievements(userId);
     const xpResult = await addXP(userId, XP_REWARDS.fusion);
@@ -2199,11 +2159,12 @@ const cards = await OwnedCard.find({
     const resellPrice = Math.floor(cardValue(card.tier) * 0.5);
     const user = await User.findOrCreate(contact.id._serialized);
 
-    await OwnedCard.deleteOne({ _id: card._id });
-    // Bot-to-user payout — goes to the bank, not the wallet, same policy as
-    // .loan disbursement and .acceptsale/.claim's shop-purchase payout.
-    user.bank += resellPrice;
-    await user.save();
+    try { await resellCard(contact.id._serialized, card._id, resellPrice); }
+    catch (err) {
+      if (err instanceof BusinessError) return msg.reply(err.message);
+      console.error('resell transaction failed:', err.message);
+      return msg.reply('⚠️ Resell could not complete. Card removal and payment are one transaction.');
+    }
 
     return msg.reply(`✅ Resold *${card.name}* [${card.tier}] to the bot for 💰 ${formatNum(resellPrice)} coins (deposited to your bank).\n\nThis card is gone for good — use *.sellc* instead next time if you want a shot at full value from another player.`);
   },

@@ -48,7 +48,9 @@ function withGuildLock(guildId, fn) {
   // to any caller, so nobody's real success or failure gets swallowed by
   // it. Each caller's OWN `run` above still resolves or rejects with
   // exactly what `fn` did.
-  queues.set(key, run.then(() => {}, () => {}));
+  const tail = run.then(() => {}, () => {});
+  queues.set(key, tail);
+  tail.then(() => { if (queues.get(key) === tail) queues.delete(key); });
   return run;
 }
 

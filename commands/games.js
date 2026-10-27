@@ -44,6 +44,7 @@ module.exports = {
       console.warn('[Akinator] .quitgame cancellation check failed:', err.message);
     }
 
+    if (await require('../utils/multiplayerGames').quit(client, msg)) return;
     const chat = await safeGetChat(msg);
     if (!chat) return;
     const contact = await msg.getContact();
@@ -51,25 +52,25 @@ module.exports = {
     const playerId = contact.id._serialized;
 
     // Tic Tac Toe
-    const tttResult = tictactoe.quitTTT(chatId, playerId);
+    const tttResult = await tictactoe.quitTTT(chatId, playerId);
     if (tttResult) {
       return msg.reply(`🚩 *${tttResult.quitterName}* quit Tic Tac Toe.\n🏆 *${tttResult.winnerName} wins by forfeit!*`);
     }
 
     // Connect 4
-    const c4Result = connect4.quitC4(chatId, playerId);
+    const c4Result = await connect4.quitC4(chatId, playerId);
     if (c4Result) {
       return msg.reply(`🚩 *${c4Result.quitterName}* quit Connect 4.\n🏆 *${c4Result.winnerName} wins by forfeit!*`);
     }
 
     // Chess
-    const chessResult = chessGame.quitChess(chatId, playerId);
+    const chessResult = await chessGame.quitChess(chatId, playerId);
     if (chessResult) {
       return msg.reply(`🚩 *${chessResult.quitterName}* resigned from Chess.\n🏆 *${chessResult.winnerName} wins by forfeit!*`);
     }
 
     // Battle
-    const battleResult = battle.quitBattle(chatId, playerId);
+    const battleResult = await battle.quitBattle(chatId, playerId);
     if (battleResult) {
       return msg.reply(`🚩 *${battleResult.quitterName}* fled the battle.\n🏆 *${battleResult.winnerName} wins by forfeit!*`);
     }
@@ -82,7 +83,7 @@ module.exports = {
     // below, since they genuinely are in one — they just can't end it.
     // quitQuiz returns null only when the caller isn't in a quiz lobby or
     // match here AT ALL, which does fall through to that generic message.
-    const quizResult = quiz.quitQuiz(chatId, playerId);
+    const quizResult = await quiz.quitQuiz(chatId, playerId);
     if (quizResult) {
       if (!quizResult.ended) {
         return msg.reply(
@@ -142,8 +143,7 @@ module.exports = {
 
   // .wcg — would you rather (group game)
   async wcg(client, msg, args) {
-    const q = pick(WCG_QUESTIONS);
-    return msg.reply(`🎮 *Would You Rather?*\n\n${q.q}\n\nA) ${q.opts[0]}\nB) ${q.opts[1]}\n\nReply A or B!`);
+    return require('../utils/multiplayerGames').wcg(client, msg, args, pick(WCG_QUESTIONS));
   },
 
   // .chess @user (play a person) | .chess [easy|medium|hard] (play the bot)

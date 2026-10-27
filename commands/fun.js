@@ -580,14 +580,7 @@ module.exports = {
   },
 
   // .uno — start a silly uno card
-  async uno(client, msg, args) {
-    const colors = ['🔴', '🔵', '🟢', '🟡'];
-    const values = ['1','2','3','4','5','6','7','8','9','Skip','Reverse','+2'];
-    const card = `${pick(colors)} ${pick(values)}`;
-    const special = Math.random() > 0.8 ? ' 🃏 *+4 Wild!*' : '';
-    const contact = await msg.getContact();
-    return msg.reply(`🎴 *UNO!*\n\n${contact.pushname} plays: *${card}*${special}\n\nNext player's turn!`);
-  },
+  uno: require('../utils/multiplayerGames').uno,
 
   // .meme <text>  |  .meme <top text> | <bottom text>
   // Reply to a sticker or an image. Bakes bold white/black-outline caption

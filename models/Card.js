@@ -36,6 +36,7 @@ const CardCatalogueSchema = new mongoose.Schema({
 
   tier: {
     type: String,
+    index: true,
     enum: ['C', 'B', 'A', 'S', 'SS', 'SSS'],
     default: 'C'
   },
@@ -186,6 +187,7 @@ catalogueId: {
   // (overdue) and the card is seized to the bank vault — see BANK_VAULT_ID
   // in commands/loan.js.
   isStaked: { type: Boolean, default: false },
+  isAuctioned: { type: Boolean, default: false },
   obtainedAt: { type: Date, default: Date.now },
   firstOwner: { type: String, default: null },
   timesTraded: { type: Number, default: 0 },
@@ -208,6 +210,10 @@ const AuctionSchema = new mongoose.Schema({
   currentBidder: { type: String, default: null },
   endsAt: { type: Date, required: true },
   isActive: { type: Boolean, default: true },
+  escrowed: { type: Boolean, default: false },
+  chatId: { type: String, default: null },
+  settledAt: { type: Date, default: null },
+  outcome: { type: String, default: null },
 });
 
 // ─── Trade Request (Phase 6: safe trading) ───────────────────────────────────
@@ -267,6 +273,9 @@ const CatalogueGrowthStateSchema = new mongoose.Schema({
   lastRunAt: { type: Date, default: null },
   lastError: { type: String, default: null },
 });
+
+OwnedCardSchema.plugin(require('../utils/optimisticWrites'));
+OwnedCardSchema.plugin(require('../utils/cardAuctionGuard'));
 
 module.exports = {
   CardCatalogue: mongoose.model('CardCatalogue', CardCatalogueSchema),

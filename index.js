@@ -6,7 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
 const { safeGetQuotedMessage, safeGetChat, safeGetContact, resolveSenderName, withRetry, decodeIdKey, isOwner, isMod, buildRegistrationIntroText, buildRegistrationProgressText } = require('./utils/helpers');
-const { BOT_NAME, MENU_IMAGE_URL, BOT_PREFIX, AI_CALL_NAMES_OVERRIDE } = require('./utils/config');
+const { BOT_NAME, MENU_IMAGE_URL, BOT_PREFIX, AI_CALL_NAMES_OVERRIDE, PUPPETEER_EXECUTABLE_PATH } = require('./utils/config');
 const { getActivePersonaSafe } = require('./utils/persona');
 const aiStickers = require('./utils/aiStickers');
 const { instrumentHttpClients, wrapWithUsageTracking } = require('./utils/usageTracking');
@@ -30,7 +30,7 @@ instrumentHttpClients();
 // Shared with the LocalAuth session path below and with the browser-lock
 // recovery helpers further down, so both always agree on the same binary
 // and directory instead of duplicating the string in multiple places.
-const CHROMIUM_PATH = process.env.PUPPETEER_EXECUTABLE_PATH || '/data/data/com.termux/files/usr/bin/chromium-browser';
+const CHROMIUM_PATH = PUPPETEER_EXECUTABLE_PATH;
 const SESSION_DIR = path.join(__dirname, '.wwebjs_auth', 'session');
 
 process.on('uncaughtException', (err) => {
@@ -539,7 +539,10 @@ client.on('ready', () => {
     // BEFORE this scheduler existed — see _initCardLending's own comment
     // in commands/cards.js for why that backfill matters.
     runLoggedBackgroundTask('scheduler_init', {}, () => scheduler.init(client))
-      .then(() => {
+      .then(async () => {
+        await require('./utils/auctions').reconcile();
+        await require('./utils/multiplayerGames').reconcile();
+        await require('./utils/userDeletion').reconcile();
         const { _initCardLending } = require('./commands/cards');
         if (_initCardLending) return _initCardLending();
       })
@@ -1021,6 +1024,14 @@ function handleIncomingMessage(msg, resume = null) {
       return;
     }
 
+    try {
+      if (!resume && await require('./utils/multiplayerGames').handleVote(client, msg)) return;
+    } catch (err) {
+      logger.error('route.wcg_vote.failed', err);
+      await msg.reply('⚠️ Your vote could not be saved. Please try again later.').catch(() => {});
+      return;
+    }
+
     // ── Anime Quiz answers ───────────────────────────────────────────────
     // A bare "1"-"4" typed during an active .quiz is NOT a command (no
     // prefix) and is very often also a quoted reply to the bot's own quiz
@@ -1413,7 +1424,7 @@ function handleIncomingMessage(msg, resume = null) {
       }
     } catch (err) {
       logger.error('command.normal.failed', err, { taskId, command });
-      await msg.reply('❌ An error occurred. Please try again.');
+      await msg.reply(err instanceof require('./utils/transaction').BusinessError ? err.message : err.name === 'VersionError' ? '⚠️ Your account changed during that command. Please check your balance or game status before trying again.' : '❌ An error occurred. Please try again.');
     } finally {
       inFlightCount = Math.max(0, inFlightCount - 1);
     }
@@ -1677,7 +1688,7 @@ setInterval(() => {
   }
 }, 60000);
 
-// ── Daily anime news broadcast (8:00 AM WAT daily) ──────────────────────
+// ── Hourly anime news broadcast (WAT)                  ──────────────────────
 // Same shape again — checked every minute, actual once-a-day gating +
 // duplicate-run protection lives inside _maybeSendDailyNews itself
 // (commands/news.js), via BotState. Unlike the digests above (which go to
@@ -1691,3 +1702,31 @@ setInterval(() => {
 }, 60000);
 
 startWhatsApp();
+
+// Reconcile scheduling writes after outages without overlapping slow sweeps.
+let reconcilingFeatures = false;
+let lastFeatureMaintenance = 0;
+setInterval(async () => {
+  if (reconcilingFeatures || mongoose.connection.readyState !== 1 || !client.info) return;
+  reconcilingFeatures = true;
+  try {
+    const jobs = [
+      ['auction', () => require('./utils/auctions').reconcile()],
+      ['multiplayer', () => require('./utils/multiplayerGames').reconcile()],
+    ];
+    if (Date.now() - lastFeatureMaintenance >= 300000) {
+      lastFeatureMaintenance = Date.now();
+      jobs.push(['cleanup', () => require('./utils/userDeletion').reconcile()],
+        ['lending', () => require('./commands/cards')._initCardLending()],
+        ['drops', () => require('./commands/cards')._initCardDrops(client)],
+        ['scheduler_recovery', () => require('./utils/scheduler').reviveFailed()],
+        ['game_restore', async () => {
+          for (const [file, init] of [['tictactoe','_initTTT'], ['connect4','_initC4'], ['chess','_initChess'], ['battle','_initBattle'], ['quiz','_initQuiz']]) {
+            try { await require(`./commands/games/${file}`)[init](client); }
+            catch (err) { logger.error('game.restore.failed', err, { game: file }); }
+          }
+        }]);
+    }
+    await Promise.all(jobs.map(([name, run]) => Promise.resolve().then(run).catch(err => logger.error(`${name}.reconcile.failed`, err))));
+  } finally { reconcilingFeatures = false; }
+}, 30000).unref();
