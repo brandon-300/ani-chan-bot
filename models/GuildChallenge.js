@@ -10,11 +10,8 @@ const GuildChallengeSchema = new mongoose.Schema({
   participantGuildIds: { type: [String], default: undefined },
   challengerGuildId: { type: String, required: true },
   challengedGuildId: { type: String, required: true },
-  // 'resolving' is a brief, atomically-claimed transit state between
-  // 'active' and 'completed' — see _resolveChallengeIfDue in
-  // commands/guilds.js. It exists purely so two people viewing the same
-  // just-expired challenge at once can't both compute the outcome and
-  // both award the winner's reputation bonus.
+  // 'resolving' identifies legacy interrupted payouts. They are closed
+  // without another award; new payouts go active -> completed atomically.
   status: { type: String, enum: ['pending', 'active', 'resolving', 'completed', 'declined', 'cancelled'], default: 'pending' },
   // Reputation snapshots taken the moment the challenge is ACCEPTED, not
   // when it's proposed — so the racing window is exactly the same length
@@ -26,6 +23,9 @@ const GuildChallengeSchema = new mongoose.Schema({
   startRepChallenged: { type: Number, default: 0 },
   startedAt: { type: Number, default: null },
   endsAt: { type: Number, default: null },
+  // True for an old interrupted payout closed by policy, without another award.
+  closedWithoutPayment: { type: Boolean, default: false },
+  closedAt: { type: Date, default: null },
   winnerGuildId: { type: String, default: null }, // a Guild _id string, or 'tie'
   createdAt: { type: Date, default: Date.now },
 });

@@ -696,27 +696,131 @@ test(
     );
 
     await t.test(
-      'old interrupted payouts stay unchanged until a review policy is chosen',
+      'legacy payouts close once without another award and start a fresh season',
       async () => {
         await reset();
         const a = await guild('a', 'Old A');
         const b = await guild('b', 'Old B');
+        await Guild.updateOne(
+          { _id: a._id },
+          { $set: { bank: 321, reputation: 200, seasonReputation: 70, seasonWins: 2 } }
+        );
         const race = await Challenge.create({
           challengerGuildId: String(a._id),
           challengedGuildId: String(b._id),
           status: 'resolving',
           endsAt: 1,
+          winnerGuildId: String(a._id),
         });
-        await assert.rejects(guilds.resolveChallenge(race._id, 100), /owner review/);
-        await Season.create({ seasonNumber: 1, startedAt: 1, endsAt: 2, status: 'resolving' });
-        await assert.rejects(
-          guilds.resolveSeason({ rewardReputation: 10, rewardCoins: 50, duration: 100000 }),
-          /owner review/
+        const old = await Season.create({
+          seasonNumber: 1,
+          startedAt: 1,
+          endsAt: 2,
+          status: 'resolving',
+          winnerGuildId: String(a._id),
+          payoutComplete: true,
+        });
+        const results = await Promise.all([
+          guilds.closeLegacyPayouts({ duration: 100000 }),
+          guilds.closeLegacyPayouts({ duration: 100000 }),
+        ]);
+        assert.equal(
+          results.reduce((n, result) => n + result.challenges, 0),
+          1
         );
-        assert.equal((await Guild.findById(a._id)).bank, 0);
-        assert.equal((await Challenge.findById(race._id)).status, 'resolving');
+        assert.equal(
+          results.reduce((n, result) => n + result.seasons, 0),
+          1
+        );
+        const current = await Guild.findById(a._id);
+        assert.equal(current.bank, 321);
+        assert.equal(current.reputation, 200);
+        assert.equal(current.seasonWins, 2);
+        assert.equal(current.seasonReputation, 0);
+        for (const record of [await Challenge.findById(race._id), await Season.findById(old._id)]) {
+          assert.equal(record.status, 'completed');
+          assert.equal(record.closedWithoutPayment, true);
+          assert.ok(record.closedAt instanceof Date);
+          assert.equal(record.winnerGuildId, String(a._id));
+        }
+        assert.equal((await Season.findById(old._id)).payoutComplete, true);
+        assert.equal(await Season.countDocuments({ seasonNumber: 2, status: 'active' }), 1);
+        assert.equal(await guilds.resolveChallenge(race._id, 100), null);
+        assert.equal(
+          await guilds.resolveSeason({ rewardReputation: 10, rewardCoins: 50, duration: 100000 }),
+          null
+        );
       }
     );
+    await t.test('legacy closure preserves a newer active season and its standings', async () => {
+      await reset();
+      const a = await guild('a', 'Newer standings');
+      await Guild.updateOne(
+        { _id: a._id },
+        { $set: { bank: 450, reputation: 150, seasonReputation: 90 } }
+      );
+      await Season.create({
+        seasonNumber: 1,
+        startedAt: 1,
+        endsAt: 2,
+        status: 'resolving',
+        payoutComplete: false,
+      });
+      const active = await Season.create({
+        seasonNumber: 2,
+        startedAt: Date.now(),
+        endsAt: Date.now() + 100000,
+        status: 'active',
+      });
+      await guilds.closeLegacyPayouts({ duration: 100000 });
+      const current = await Guild.findById(a._id);
+      assert.equal(current.bank, 450);
+      assert.equal(current.reputation, 150);
+      assert.equal(current.seasonReputation, 90);
+      assert.equal(await Season.countDocuments({}), 2);
+      assert.equal((await Season.findById(active._id)).endsAt, active.endsAt);
+      const old = await Season.findOne({ seasonNumber: 1 });
+      assert.equal(old.status, 'completed');
+      assert.equal(old.payoutComplete, false);
+      assert.equal(old.closedWithoutPayment, true);
+    });
+    await t.test('legacy closure rolls back if the next season cannot be created', async (t) => {
+      await reset();
+      const a = await guild('a', 'Rollback legacy');
+      await Guild.updateOne({ _id: a._id }, { $set: { bank: 250, seasonReputation: 60 } });
+      const race = await Challenge.create({
+        challengerGuildId: String(a._id),
+        challengedGuildId: 'other',
+        status: 'resolving',
+      });
+      await Season.create({ seasonNumber: 1, startedAt: 1, endsAt: 2, status: 'resolving' });
+      const mock = t.mock.method(Season, 'findOneAndUpdate', async () => {
+        throw Error('injected successor failure');
+      });
+      await assert.rejects(guilds.closeLegacyPayouts({ duration: 100000 }), /injected successor/);
+      mock.mock.restore();
+      assert.equal((await Challenge.findById(race._id)).status, 'resolving');
+      assert.equal((await Season.findOne({ seasonNumber: 1 })).status, 'resolving');
+      assert.equal((await Guild.findById(a._id)).bank, 250);
+      assert.equal((await Guild.findById(a._id)).seasonReputation, 60);
+      await guilds.closeLegacyPayouts({ duration: 100000 });
+      assert.equal(await Season.countDocuments({ status: 'active' }), 1);
+    });
+    await t.test('direct resolution of an interrupted challenge cannot award twice', async () => {
+      await reset();
+      const a = await guild('a', 'Direct legacy');
+      const race = await Challenge.create({
+        challengerGuildId: String(a._id),
+        challengedGuildId: 'other',
+        status: 'resolving',
+      });
+      await Promise.all([
+        guilds.resolveChallenge(race._id, 100),
+        guilds.resolveChallenge(race._id, 100),
+      ]);
+      assert.equal((await Challenge.findById(race._id)).status, 'completed');
+      assert.equal((await Guild.findById(a._id)).reputation, 0);
+    });
     await t.test(
       'a saved unsent quiz question is republished with its original deadline',
       async (t) => {

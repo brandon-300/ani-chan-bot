@@ -9,22 +9,14 @@ const SeasonSchema = new mongoose.Schema({
   seasonNumber: { type: Number, required: true, unique: true },
   startedAt: { type: Number, required: true },
   endsAt: { type: Number, required: true },
-  // Replaces the old plain `resolved: Boolean` with a real state machine —
-  // see _resolveSeasonIfDue in commands/guilds.js for the full walk
-  // through. 'resolving' is the important addition: it's the atomic claim
-  // a resolver uses so two people checking .guild season at nearly the
-  // same moment can't both start paying out the same season, AND it's
-  // what lets a resolution that got interrupted (bot crash/restart
-  // mid-payout) be picked back up and finished on the next check instead
-  // of leaving the season permanently stuck between "ended" and "next
-  // season exists".
+  // New payouts and completion commit together. 'resolving' is retained
+  // for old interrupted rows, which are closed without another payment.
   status: { type: String, enum: ['active', 'resolving', 'completed'], default: 'active' },
-  // The next three fields exist so each individual step of resolving a
-  // season (decide winner -> pay winner -> reset every guild -> create
-  // next season) can be safely re-run after a crash without re-deciding
-  // a different winner from already-reset data, or double-paying, or
-  // creating a duplicate next season. null = "not decided yet"; 'none' =
-  // "decided, nobody qualified"; a Guild _id string = the winner.
+  // Historical winner/recovery flags are retained as recorded. Closure
+  // does not infer whether a legacy payout or reset actually happened.
+  // True for an old interrupted payout closed by policy, without another award.
+  closedWithoutPayment: { type: Boolean, default: false },
+  closedAt: { type: Date, default: null },
   winnerGuildId: { type: String, default: null },
   payoutComplete: { type: Boolean, default: false },
   guildsResetComplete: { type: Boolean, default: false },

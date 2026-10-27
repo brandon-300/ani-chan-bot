@@ -14,7 +14,7 @@ are a separate list and are not interchangeable with these section numbers.
 | 6–8 | Fusion and resell run in transactions with fresh ownership, tier/value and availability checks. Existing transactional Card Packs retained. Failed reward/payment writes roll back consumption. |
 | 9 | Lucky Charm halves enabled group drop intervals for one hour without stacking; VIP updates the profile; Health Potion consumption and persisted battle HP change together. |
 | 10 | Loan request, repayment and overdue seizure check ownership/staking and matched writes. Missing or changed collateral keeps the debt for review instead of clearing it or charging another owner's card. |
-| 11–13, 39 | New challenge/season payout and completion commit together. Guild treasury and membership changes commit with account changes. Maintenance refreshes stale reads. Challenge proposals reserve guild participants with a unique partial index. Old interrupted payouts still need the policy decision described below. |
+| 11–13, 39 | New challenge/season payout and completion commit together. Guild treasury and membership changes commit with account changes. Maintenance refreshes stale reads. Challenge proposals reserve guild participants with a unique partial index. Old interrupted payouts close without another award under the confirmed policy. |
 | 14–16, 18–19 | Previously working read hooks, optional menu image, expiring offers, atomic activity tracking and connection routing retained. |
 | 17 | The approved shared group/persona AI history and private DM histories are preserved. Old member histories are not merged. |
 | 20–22, 41 | Game saves/deletes are awaited; actions/timers serialize by chat. Lobbies and absolute turn/question deadlines persist. Restore isolates malformed rows, pauses on persistence failure, and can recover after a failed startup lookup. Quiz questions are persisted before delivery and unsent saved questions can be republished. |
@@ -30,14 +30,16 @@ are a separate list and are not interchangeable with these section numbers.
 | 40 | Leadership can transfer to an existing member; the former leader becomes an officer. |
 | 42 | Regression coverage now includes real local replica-set rollback/concurrency tests plus UNO, purge, scheduler polling, deadlines, exports and deleted-account claims. |
 
-## Pending policy decision
+## Confirmed legacy payout policy
 
-A challenge or season left in `resolving` by the old nontransactional code may
-already have paid its winner without recording completion. The database does
-not reliably distinguish that case from an unpaid winner. No automatic replay
-or destructive closure of those old records is authorized yet. New payouts use
-transactions. The user has been asked whether old records should be preserved
-for owner review or closed without another payout.
+Old challenge/season records left in `resolving` are marked completed with
+`closedWithoutPayment` and a closure timestamp. They receive no further coins,
+reputation or season wins. Existing winner and payout flags are preserved.
+Startup and periodic maintenance apply this policy automatically after deployment;
+repeating closure does not repeat any award or season reset. If the interrupted
+season is the latest one, closure starts its next season with fresh standings
+in the same transaction. An already-existing newer season and its standings
+are preserved.
 
 ## Boundaries
 
@@ -67,4 +69,4 @@ restoration, image cleanup, hourly claims and stale-write protection. All projec
 JavaScript also receives syntax checks and core source receives undefined-name,
 unreachable-code and duplicate-key checks.
 
-Latest validation: **186 unit tests and 27 real MongoDB regression scenarios passed**, including the 119/121-day cleanup boundary. All 165 JavaScript files passed syntax checks; core source passed the configured static checks.
+Latest validation: **186 unit tests and 30 real MongoDB regression scenarios passed**, including the 119/121-day cleanup boundary. All 165 JavaScript files passed syntax checks; core source passed the configured static checks.

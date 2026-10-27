@@ -476,6 +476,12 @@ successful send and recording it can repeat a notification; financial settlement
 is idempotent. Revocation requests depend on WhatsApp eligibility and may partly
 fail. The bot reports those counts.
 
+Old guild challenges and seasons interrupted in the legacy `resolving` state
+are closed automatically without another payment or reputation award. Their
+recorded winner and historical payout flags remain available. A fresh season
+starts only if there is no newer season already; existing newer standings are
+preserved. Repeated restarts do not repeat the closure or reset.
+
 ## Safe source exports and checks
 
 `node scripts/export-source.js` creates a source ZIP from the latest committed

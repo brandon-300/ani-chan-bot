@@ -543,6 +543,7 @@ client.on('ready', () => {
         await require('./utils/auctions').reconcile();
         await require('./utils/multiplayerGames').reconcile();
         await require('./utils/userDeletion').reconcile();
+        await require('./commands/guilds')._closeLegacyPayouts();
         const { _initCardLending } = require('./commands/cards');
         if (_initCardLending) return _initCardLending();
       })
@@ -1716,7 +1717,8 @@ setInterval(async () => {
     ];
     if (Date.now() - lastFeatureMaintenance >= 300000) {
       lastFeatureMaintenance = Date.now();
-      jobs.push(['cleanup', () => require('./utils/userDeletion').reconcile()],
+      jobs.push(['guild_legacy_payouts', () => require('./commands/guilds')._closeLegacyPayouts()],
+        ['cleanup', () => require('./utils/userDeletion').reconcile()],
         ['lending', () => require('./commands/cards')._initCardLending()],
         ['drops', () => require('./commands/cards')._initCardDrops(client)],
         ['scheduler_recovery', () => require('./utils/scheduler').reviveFailed()],

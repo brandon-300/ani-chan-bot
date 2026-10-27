@@ -3,6 +3,7 @@ const User = require('../models/User');
 const GuildChallenge = require('../models/GuildChallenge');
 const Season = require('../models/Season');
 const { transaction, BusinessError } = require('./transaction');
+const logger = require('./logger');
 
 async function treasury(userId, guildId, amount, withdraw = false) {
   if (!Number.isSafeInteger(amount) || amount < 1)
@@ -33,13 +34,70 @@ async function treasury(userId, guildId, amount, withdraw = false) {
     return { user, guild, member, questResult, interestNote: '' };
   });
 }
+// Legacy resolving rows may already have paid. Close them without touching
+// balances or awarding reputation; retain their recorded winner and old flags.
+async function closeLegacyPayouts({ duration }) {
+  await Season.init();
+  const result = await transaction(async (session) => {
+    const closedAt = new Date();
+    const closure = { status: 'completed', closedWithoutPayment: true, closedAt };
+    const challenges = await GuildChallenge.updateMany(
+      { status: 'resolving' },
+      { $set: closure },
+      { session }
+    );
+    const latest = await Season.findOne().sort({ seasonNumber: -1 }).session(session);
+    const seasons = await Season.updateMany(
+      { status: 'resolving' },
+      { $set: closure },
+      { session }
+    );
+    let nextSeason = null;
+    if (latest?.status === 'resolving') {
+      // No newer season existed at this snapshot. Finish the transition to
+      // a fresh season atomically. Never reset standings of a newer season.
+      if (!Number.isSafeInteger(duration) || duration <= 0)
+        throw new BusinessError('Invalid season duration.');
+      await Guild.updateMany({}, { $set: { seasonReputation: 0 } }, { session });
+      nextSeason = await Season.findOneAndUpdate(
+        { seasonNumber: latest.seasonNumber + 1 },
+        {
+          $setOnInsert: {
+            startedAt: closedAt.getTime(),
+            endsAt: closedAt.getTime() + duration,
+            status: 'active',
+          },
+        },
+        { upsert: true, new: true, session }
+      );
+    }
+    return { challenges: challenges.modifiedCount, seasons: seasons.modifiedCount, nextSeason };
+  });
+  if (result.challenges || result.seasons)
+    logger.write('INFO', 'guild.legacy_payouts.closed', {
+      challenges: result.challenges,
+      seasons: result.seasons,
+      nextSeasonNumber: result.nextSeason?.seasonNumber || null,
+    });
+  return result;
+}
 async function resolveChallenge(id, reward) {
   return transaction(async (session) => {
     const challenge = await GuildChallenge.findById(id).session(session);
-    if (challenge?.status === 'resolving')
-      throw new BusinessError(
-        '⚠️ This old interrupted challenge needs owner review before another payout.'
+    if (challenge?.status === 'resolving') {
+      await GuildChallenge.updateOne(
+        { _id: challenge._id, status: 'resolving' },
+        {
+          $set: {
+            status: 'completed',
+            closedWithoutPayment: true,
+            closedAt: new Date(),
+          },
+        },
+        { session }
       );
+      return null;
+    }
     if (!challenge || challenge.status !== 'active' || challenge.endsAt > Date.now()) return null;
     const guildA = await Guild.findById(challenge.challengerGuildId).session(session);
     const guildB = await Guild.findById(challenge.challengedGuildId).session(session);
@@ -58,12 +116,8 @@ async function resolveChallenge(id, reward) {
   });
 }
 async function resolveSeason({ rewardReputation, rewardCoins, duration }) {
-  await Season.init();
+  await closeLegacyPayouts({ duration });
   return transaction(async (session) => {
-    if (await Season.exists({ status: 'resolving' }).session(session))
-      throw new BusinessError(
-        '⚠️ An old interrupted season needs owner review before another payout.'
-      );
     const endedSeason = await Season.findOne({
       $or: [{ status: 'active' }, { status: { $exists: false }, resolved: false }],
       endsAt: { $lte: Date.now() },
@@ -133,4 +187,10 @@ async function transferLeadership(userId, targetId) {
     return guild;
   });
 }
-module.exports = { treasury, resolveChallenge, resolveSeason, transferLeadership };
+module.exports = {
+  treasury,
+  resolveChallenge,
+  resolveSeason,
+  transferLeadership,
+  closeLegacyPayouts,
+};

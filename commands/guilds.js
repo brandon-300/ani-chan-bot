@@ -240,6 +240,11 @@ async function _getCurrentSeason() {
   return season;
 }
 
+// Owner-approved legacy policy: close interrupted payouts without another award.
+async function _closeLegacyPayouts() {
+  return guildTransactions.closeLegacyPayouts({ duration: SEASON_DURATION_MS });
+}
+
 // Reward, completion, reputation reset and next-season creation commit together.
 async function _resolveSeasonIfDue() {
   return guildTransactions.resolveSeason({ rewardReputation: SEASON_WIN_REPUTATION_BONUS,
@@ -302,6 +307,7 @@ async function _removeMemberFromGuild(userId) {
 }
 
 module.exports = {
+  _closeLegacyPayouts,
   async guild_transfer(client, msg) {
     const sender = await msg.getContact();
     const [target] = await msg.getMentions();
@@ -1837,6 +1843,7 @@ module.exports = {
   //                                    reputation race against another
   //                                    guild.
   async guild_challenge(client, msg, args) {
+    await _closeLegacyPayouts();
     const contact = await msg.getContact();
     const user = await User.findOrCreate(contact.id._serialized);
     if (!user.guildId) return msg.reply('❌ You are not in a guild.');
@@ -1860,7 +1867,10 @@ module.exports = {
       // View mode.
       if (!existing) return msg.reply('⚔️ No active or pending guild challenge. Use *.guild challenge [name or ID]* to start one.');
 
-      if (existing.status === 'resolving') return msg.reply('⚠️ This old interrupted challenge needs owner review before another payout.');
+      if (existing.status === 'resolving') {
+        await _resolveChallengeIfDue(existing);
+        return msg.reply('⚔️ The old interrupted challenge has been closed without another payment.');
+      }
       const resolved = existing.status === 'active' ? await _resolveChallengeIfDue(existing) : null;
       if (resolved) return msg.reply(_formatChallengeResult(resolved).trim());
 
