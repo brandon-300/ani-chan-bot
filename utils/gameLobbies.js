@@ -18,7 +18,7 @@ async function save(type, chatId, lobby) {
 async function remove(type, chatId) {
   await GameSession.deleteOne({ chatId, type: `${type}_lobby` });
 }
-async function arm(type, chatId, lobby, map, finish) {
+async function arm(type, chatId, lobby, map, finish, delay = lobby.expiresAt - Date.now()) {
   clearTimeout(lobby.timer);
   lobby.timer = runtime.timer(
     type,
@@ -27,10 +27,10 @@ async function arm(type, chatId, lobby, map, finish) {
       if (map.get(chatId) !== lobby) return;
       await finish();
     },
-    lobby.expiresAt - Date.now()
+    delay
   );
 }
-async function restore(type, map, finish) {
+async function restore(type, map, finish, ready = () => false) {
   for (const row of await GameSession.find({ type: `${type}_lobby` })) {
     if (map.has(row.chatId)) continue;
     if (!Array.isArray(row.state?.players) || !Number.isFinite(row.state.expiresAt)) {
@@ -39,7 +39,14 @@ async function restore(type, map, finish) {
     }
     map.set(row.chatId, row.state);
     claim(row.chatId, type);
-    await arm(type, row.chatId, row.state, map, () => finish(row.chatId, row.state));
+    await arm(
+      type,
+      row.chatId,
+      row.state,
+      map,
+      () => finish(row.chatId, row.state),
+      ready(row.state) ? 0 : undefined
+    );
   }
 }
 async function close(type, chatId, map, send) {

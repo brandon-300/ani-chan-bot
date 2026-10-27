@@ -1689,12 +1689,9 @@ setInterval(() => {
   }
 }, 60000);
 
-// ── Hourly anime news broadcast (WAT)                  ──────────────────────
-// Same shape again — checked every minute, actual once-a-day gating +
-// duplicate-run protection lives inside _maybeSendDailyNews itself
-// (commands/news.js), via BotState. Unlike the digests above (which go to
-// one recipient), this one fans out to every group the bot is CURRENTLY
-// in — see _maybeSendDailyNews's own comment for how that list is built.
+// ── Hourly anime news broadcast (WAT) ───────────────────────────────────
+// Check the clock every minute; news.js starts automatic runs only at :00.
+// Persistent per-hour/per-group claims prevent duplicate deliveries.
 setInterval(() => {
   const { _maybeSendDailyNews } = require('./commands/news');
   if (_maybeSendDailyNews) {

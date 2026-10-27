@@ -24,7 +24,7 @@ are a separate list and are not interchangeable with these section numbers.
 | 28 | No real `.env` is tracked. Git export exclusions and a tracked-source ZIP utility omit credentials, authentication sessions, caches, logs and backups. This does not change earlier filesystem ZIPs or rotate credentials. |
 | 29–30 | whatsapp-web.js is pinned to the patch's exact 1.34.7 version. Default Axios, fetch and media-download timeouts cover requests without an existing limit; explicit provider limits remain. Profile uploads and ffmpeg conversions also have timeouts. |
 | 31–32, 35, 38 | Existing converters, AI/stickers, card core and interaction functionality retained; an undefined-variable failure in AniList's terminal error path was also removed. |
-| 34 | Per-group hourly claims prevent competing broadcasts, successful groups keep their slots, failed groups retry on later minute ticks, and manual sends serialize with broadcasts. |
+| 34 | Per-group hourly claims prevent competing broadcasts, automatic runs start only at :00 WAT, failed runs wait for the next scheduled hour, and manual sends serialize with broadcasts. |
 | 36 | Card drops select unowned candidates inside Mongo with indexed catalogue tiers instead of loading the full catalogue into phone RAM. Drop/lending task reconciliation repairs missing scheduling writes; stored drop timing prevents resending after a reschedule failure. |
 | 37 | AFK state is persisted before acknowledgement and serialized per user; return clears use the recorded AFK timestamp. |
 | 40 | Leadership can transfer to an existing member; the former leader becomes an officer. |
@@ -69,4 +69,22 @@ restoration, image cleanup, hourly claims and stale-write protection. All projec
 JavaScript also receives syntax checks and core source receives undefined-name,
 unreachable-code and duplicate-key checks.
 
-Latest validation: **186 unit tests and 30 real MongoDB regression scenarios passed**, including the 119/121-day cleanup boundary. All 165 JavaScript files passed syntax checks; core source passed the configured static checks.
+Latest validation: **191 unit tests and 33 real MongoDB regression scenarios passed**, including the 119/121-day cleanup boundary. All 166 JavaScript files passed syntax checks; core source passed the configured static checks.
+
+## Follow-up regression review
+
+Reviewed the earlier repair batch against the approved behavior. Fixed three
+confirmed regressions: automatic news catch-up outside minute :00; restored
+full two-player Chess/TTT/C4 lobbies being closed instead of starting; and a
+manual card-drop toggle retaining stale timing or ignoring an active charm's
+first interval. Added tests for on-the-hour broadcasts, restart deduplication,
+failed-send timing, manual news, complete/incomplete lobby restoration and
+normal/charmed card-drop toggles.
+
+Other reviewed behavior includes the 120-day guarded deletion threshold,
+private owner menus, shared group AI history, Apify Pinterest requests, bank
+escrow and auction limits, nonstacking charms, leadership transfer and saved
+turn deadlines. This is a static and isolated-runtime review, without live
+WhatsApp or production data access.
+
+The review also corrected a flaky UNO test: an opening +2 legitimately gives the affected player nine cards; the production game rule was preserved.

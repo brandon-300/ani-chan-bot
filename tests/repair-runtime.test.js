@@ -217,3 +217,15 @@ test('source ZIP exports omit credentials and runtime sessions but include the e
   assert.ok(!listing.includes('.env'));
   assert.ok(!listing.some((p) => p.startsWith('.wwebjs_auth')));
 });
+
+test('UNO opening draw-two gives the first player two extra cards and skips their turn', () => {
+  const game = uno.start([{ id: 'a' }, { id: 'b' }], () => 0.52);
+  assert.equal(game.discard.at(-1).value, '+2');
+  assert.equal(game.hands.a.length, 7);
+  assert.equal(game.hands.b.length, 9);
+  assert.equal(game.players[game.turn].id, 'a');
+  assert.equal(
+    game.deck.length + game.discard.length + game.hands.a.length + game.hands.b.length,
+    108
+  );
+});

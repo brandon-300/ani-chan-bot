@@ -436,6 +436,10 @@ This project is released into the public domain under [The Unlicense](LICENSE) â
 
 ## Reliability and game rules
 
+Automatic news broadcasts start only on the hour (`:00`, WAT). Restarting the bot
+mid-hour does not trigger a catch-up broadcast. Failed automatic deliveries wait
+for the next scheduled hour. Manual `.news` requests remain available at any time.
+
 The bot uses one PM2 instance. MongoDB must support transactions (Atlas or a
 replica set). Existing `.env` values remain in use; this update adds no required
 API keys. whatsapp-web.js is pinned to 1.34.7 to match the checked-in patch.

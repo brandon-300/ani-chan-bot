@@ -232,8 +232,16 @@ async function startC4Game(chat, chatId, players) {
 
 // Restore each saved lobby/match independently, retaining deadlines.
 async function _initC4(client) {
-  await lobbyStore.restore('c4', c4Lobbies, (chatId) =>
-    lobbyStore.close('c4', chatId, c4Lobbies, () => client.sendMessage(chatId, '❌ Connect 4 lobby closed — not enough players joined.')));
+  await lobbyStore.restore('c4', c4Lobbies, async (chatId, lobby) => {
+    if (lobby.players.length === 2) {
+      const chat = { sendMessage: (message, options) => client.sendMessage(chatId, message, options) };
+      c4Lobbies.delete(chatId);
+      await startC4Game(chat, chatId, lobby.players);
+    } else {
+      await lobbyStore.close('c4', chatId, c4Lobbies, () =>
+        client.sendMessage(chatId, '❌ Connect 4 lobby closed — not enough players joined.'));
+    }
+  }, lobby => lobby.players.length === 2);
 
   const sessions = await GameSession.find({ type: 'c4' });
 

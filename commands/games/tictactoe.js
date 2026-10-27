@@ -231,8 +231,16 @@ async function startTTTGame(chat, chatId, players) {
 
 // Restore each saved lobby/match independently, retaining deadlines.
 async function _initTTT(client) {
-  await lobbyStore.restore('ttt', tttLobbies, (chatId) =>
-    lobbyStore.close('ttt', chatId, tttLobbies, () => client.sendMessage(chatId, '❌ Tic Tac Toe lobby closed — not enough players joined.')));
+  await lobbyStore.restore('ttt', tttLobbies, async (chatId, lobby) => {
+    if (lobby.players.length === 2) {
+      const chat = { sendMessage: (message, options) => client.sendMessage(chatId, message, options) };
+      tttLobbies.delete(chatId);
+      await startTTTGame(chat, chatId, lobby.players);
+    } else {
+      await lobbyStore.close('ttt', chatId, tttLobbies, () =>
+        client.sendMessage(chatId, '❌ Tic Tac Toe lobby closed — not enough players joined.'));
+    }
+  }, lobby => lobby.players.length === 2);
 
   const sessions = await GameSession.find({ type: 'ttt' });
 

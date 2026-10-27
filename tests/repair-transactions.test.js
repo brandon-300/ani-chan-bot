@@ -373,7 +373,10 @@ test(
         await multi.uno(client, msg('host@c.us'), ['begin']);
         const match = await GameSession.findOne({ type: 'uno' });
         assert.equal(match.state.game.hands['host@c.us'].length, 7);
-        assert.equal(match.state.game.hands['joiner@c.us'].length, 7);
+        assert.equal(
+          match.state.game.hands['joiner@c.us'].length,
+          match.state.game.discard.at(-1).value === '+2' ? 9 : 7
+        );
         assert.ok(messages.some((m) => m.to === 'host@c.us' && m.text.includes('Your UNO hand')));
         assert.ok(!messages.some((m) => m.to === 'reply' && m.text.includes('1. red')));
         const saved = JSON.stringify(match.state.game.hands);
@@ -899,5 +902,120 @@ test(
       assert.deepEqual((await GameSession.findOne({ chatId: msg.from })).state.votes, {});
       await multi.quit(client, msg);
     });
+    await t.test(
+      'restoring a full two-player lobby starts its match instead of closing it',
+      async (t) => {
+        await reset();
+        const runtime = require('../utils/gameRuntime');
+        const callbacks = [];
+        t.mock.method(runtime, 'timer', (type, chatId, fn, delay) => {
+          callbacks.push({ type, chatId, fn, delay });
+          return null;
+        });
+        const players = [
+          { id: 'restore-p1', name: 'P1', piece: '🔴' },
+          { id: 'restore-p2', name: 'P2', piece: '🟡' },
+        ];
+        for (const [file, type, init, gameMap, lobbyMap] of [
+          ['tictactoe', 'ttt', '_initTTT', 'tttGames', 'tttLobbies'],
+          ['connect4', 'c4', '_initC4', 'c4Games', 'c4Lobbies'],
+          ['chess', 'chess', '_initChess', 'chessGames', 'chessLobbies'],
+        ]) {
+          const chatId = `restore-${type}@g.us`,
+            sent = [];
+          await GameSession.create({
+            chatId,
+            type: `${type}_lobby`,
+            players: players.map((p) => p.id),
+            state: { players, expiresAt: Date.now() + (type === 'c4' ? -1000 : 60000) },
+          });
+          const commands = require(`../commands/games/${file}`);
+          await commands[init]({
+            sendMessage: async (to, message) => {
+              sent.push(message);
+              return {};
+            },
+          });
+          const callback = callbacks.find((item) => item.chatId === chatId);
+          assert.equal(callback.delay, 0);
+          await callback.fn();
+          assert.equal((await GameSession.findOne({ chatId })).type, type);
+          assert.equal(commands[lobbyMap].has(chatId), false);
+          assert.equal(commands[gameMap].has(chatId), true);
+          assert.ok(
+            !sent.some(
+              (message) => typeof message === 'string' && /not enough players/.test(message)
+            )
+          );
+          runtime.forgetUser(players[0].id);
+        }
+      }
+    );
+    await t.test(
+      'an incomplete restored lobby retains its deadline and closes when it expires',
+      async (t) => {
+        await reset();
+        const runtime = require('../utils/gameRuntime');
+        let callback;
+        t.mock.method(runtime, 'timer', (type, chatId, fn, delay) => {
+          callback = { fn, delay };
+          return null;
+        });
+        const chatId = 'incomplete@g.us',
+          sent = [];
+        const expiresAt = Date.now() + 60000;
+        await GameSession.create({
+          chatId,
+          type: 'ttt_lobby',
+          players: ['solo'],
+          state: { players: [{ id: 'solo', name: 'Solo' }], expiresAt },
+        });
+        const commands = require('../commands/games/tictactoe');
+        await commands._initTTT({
+          sendMessage: async (to, message) => {
+            sent.push(message);
+          },
+        });
+        assert.ok(callback.delay > 59000 && callback.delay <= 60000);
+        assert.equal((await GameSession.findOne({ chatId })).state.expiresAt, expiresAt);
+        await callback.fn();
+        assert.equal(await GameSession.findOne({ chatId }), null);
+        assert.match(sent[0], /not enough players/);
+      }
+    );
+    await t.test(
+      'manually enabling cards resets stale drop timing and respects an active charm',
+      async () => {
+        await reset();
+        const Group = require('../models/Group');
+        const commands = require('../commands/cards');
+        const chatId = 'toggle@g.us';
+        await Group.create({
+          id: chatId,
+          cardsEnabled: false,
+          nextDropAt: new Date(Date.now() + 1800000),
+        });
+        const msg = {
+          getChat: async () => ({ isGroup: true, id: { _serialized: chatId } }),
+          reply: async () => {},
+        };
+        await commands.cards({}, msg, ['on']);
+        let group = await Group.findOne({ id: chatId }),
+          task = await ScheduledTask.findOne({ key: `card_drop:${chatId}` });
+        assert.equal(group.nextDropAt.getTime(), task.runAt.getTime());
+        assert.ok(group.nextDropAt - Date.now() <= 300000);
+        await commands.cards({}, msg, ['off']);
+        assert.equal((await Group.findOne({ id: chatId })).nextDropAt, null);
+        await Group.updateOne(
+          { id: chatId },
+          { $set: { charmExpiresAt: new Date(Date.now() + 3600000) } }
+        );
+        await commands.cards({}, msg, ['on']);
+        group = await Group.findOne({ id: chatId });
+        task = await ScheduledTask.findOne({ key: `card_drop:${chatId}` });
+        assert.equal(group.nextDropAt.getTime(), task.runAt.getTime());
+        assert.ok(group.nextDropAt - Date.now() <= 150000);
+      }
+    );
   }
 );

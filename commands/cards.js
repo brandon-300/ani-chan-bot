@@ -525,18 +525,24 @@ module.exports = {
       { cardsEnabled: sub === 'on' },
       { upsert: true, new: true }
     );
+    // A manual toggle supersedes any cached retry timing from an earlier drop.
+    deliveredDrops.delete(group.id);
     // Intentionally await, not return — the scheduler call below still
     // needs to run after this confirmation goes out.
     await msg.reply(`🎴 Cards are now *${group.cardsEnabled ? 'ON' : 'OFF'}*`);
 
     if (group.cardsEnabled) {
+      const boosted = group.charmExpiresAt?.getTime() > Date.now();
+      const runAt = new Date(Date.now() + CARD_DROP_INTERVAL_MS / (boosted ? 2 : 1));
+      await Group.updateOne({ id: group.id, cardsEnabled: true }, { $set: { nextDropAt: runAt } });
       await scheduler.scheduleTask({
         type: 'card_drop',
         key: `card_drop:${chat.id._serialized}`,
-        runAt: new Date(Date.now() + CARD_DROP_INTERVAL_MS),
+        runAt,
         payload: { chatId: chat.id._serialized },
       }).catch(err => console.error('cards: schedule drop failed:', err.message));
     } else {
+      await Group.updateOne({ id: group.id, cardsEnabled: false }, { $set: { nextDropAt: null } });
       await scheduler.cancelTask(`card_drop:${chat.id._serialized}`);
     }
   },

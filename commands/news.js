@@ -416,9 +416,9 @@ module.exports = {
   // .news above.
   async _maybeSendDailyNews(client) {
     const now = new Date();
-    // One delivery slot per WAT/UTC wall-clock hour. Failed groups retry
-    // on subsequent minute ticks; successful slots are retained.
-    // Retry incomplete group deliveries on later minute ticks within the hour.
+    // Nigeria is UTC+1 with no DST, so WAT and UTC share minute :00.
+    // Mid-hour restarts and failed runs wait for the next scheduled hour.
+    if (now.getUTCMinutes() !== 0) return;
 
     // In-process re-entrancy lock — a previous run (same process) is still
     // sending; bail out and let it finish this hour.
@@ -441,8 +441,8 @@ module.exports = {
         return;
       }
       if (!articles.length) {
-        // All sources failed or all items were stale — stay quiet, and only
-        // record the hour AFTER a successful path so a failed hour retries.
+        // Empty or failed feeds send nothing. The next attempt waits for
+        // the next scheduled hour; there is no mid-hour catch-up.
         return;
       }
 
