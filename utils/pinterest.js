@@ -3,8 +3,8 @@
 const axios = require('axios');
 const { createHash } = require('node:crypto');
 
-// Schema checked against accountable_eel/pinterest-search-lookup build 1.0.8.
-// Use the actor's documented input and flat per-pin output, not RapidAPI fields.
+// Support both the documented schema and the flat output observed on-device:
+// found/status/pinId may be absent, with an opaque e1_ ID in the pin permalink.
 const ENDPOINT = 'https://api.apify.com/v2/acts/accountable_eel~pinterest-search-lookup/run-sync-get-dataset-items';
 const CACHE_MAX_QUERIES = 50;
 const cache = new Map();
@@ -22,6 +22,20 @@ function setting(name, fallback, minimum, maximum) {
   return value;
 }
 
+function pinIdFromRow(row) {
+  const validId = /^(?:\d+|e1_[A-Za-z0-9_-]+)$/;
+  if (typeof row.pinId === 'string' && validId.test(row.pinId)) return row.pinId;
+  // Preserve exact IDs as strings for persistent per-chat deduplication.
+  // Only extract from real Pinterest pin permalinks, never arbitrary URLs.
+  try {
+    const link = new URL(row.url);
+    if (link.protocol !== 'https:' || !['pinterest.com', 'www.pinterest.com'].includes(link.hostname)
+      || link.username || link.password) return null;
+    const match = link.pathname.match(/^\/pin\/([^/]+)\/?$/);
+    return match && validId.test(match[1]) ? match[1] : null;
+  } catch { return null; }
+}
+
 function normalizeRows(rows) {
   if (!Array.isArray(rows)) throw new PinterestError('PINTEREST_RESPONSE');
   const pins = new Map();
@@ -29,22 +43,27 @@ function normalizeRows(rows) {
   let malformed = false;
   for (const row of rows) {
     if (!row || typeof row !== 'object') { malformed = true; continue; }
-    if (row.found === false) {
+    if (row.found === false || (typeof row.status === 'string' && row.status !== 'OK')) {
       if (row.status !== 'NOT_FOUND') failures.push(row.status || 'UNKNOWN');
       continue;
     }
-    if (row.found !== true || row.status !== 'OK' || typeof row.pinId !== 'string' || !/^\d+$/.test(row.pinId)) {
+    // Missing status metadata is allowed, but explicit failures and malformed
+    // metadata must never be treated as a successful search result.
+    if ((row.found !== undefined && row.found !== true)
+      || (row.status !== undefined && row.status !== 'OK')) {
       malformed = true;
       continue;
     }
+    const pinId = pinIdFromRow(row);
+    if (!pinId) { malformed = true; continue; }
     let image;
     try { image = new URL(row.imageUrl); } catch { malformed = true; continue; }
     if (image.protocol !== 'https:' || image.hostname !== 'i.pinimg.com' || image.username || image.password) {
       malformed = true;
       continue;
     }
-    pins.set(row.pinId, {
-      id: row.pinId,
+    pins.set(pinId, {
+      id: pinId,
       title: typeof row.title === 'string' ? row.title : '',
       description: typeof row.description === 'string' ? row.description : '',
       image_url: image.href,
@@ -80,7 +99,7 @@ async function searchPinterest(query) {
     const response = await axios.post(ENDPOINT, {
       queries: [query], maxPins, maxResults: maxPins,
       expandRows: true, skipDuplicatePins: true, maxConcurrency: 1,
-      columns: ['pinId', 'title', 'description', 'imageUrl'],
+      columns: ['pinId', 'url', 'title', 'description', 'imageUrl'],
     }, {
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       params: { format: 'json', timeout: 60, restartOnError: false },

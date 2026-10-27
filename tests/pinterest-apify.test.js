@@ -36,7 +36,7 @@ test('Apify request uses the selected actor, Bearer auth, capped input, and docu
     assert.deepEqual(body, {
       queries: ['kitchen ideas'], maxPins: 25, maxResults: 25,
       expandRows: true, skipDuplicatePins: true, maxConcurrency: 1,
-      columns: ['pinId', 'title', 'description', 'imageUrl'],
+      columns: ['pinId', 'url', 'title', 'description', 'imageUrl'],
     });
     assert.equal(options.headers.Authorization, 'Bearer apify_api_test_only');
     assert.equal(options.headers['X-RapidAPI-Key'], undefined);
@@ -50,6 +50,59 @@ test('Apify request uses the selected actor, Bearer auth, capped input, and docu
   assert.equal(result[0].id, '309763280644328288');
   assert.equal(result[0].description, '');
   assert.equal(result[0].image_url, pin().imageUrl);
+});
+
+// Shape reproduced from the user's Apify output screenshot. The opaque IDs
+// below are synthetic because the full permalink was cut off in that image.
+const observedPin = (id = 'e1_Test-Pin_One', title = null) => ({
+  query: 'Rias Gremory', imageUrl: pin().imageUrl, title, description: null,
+  altText: 'a woman with long red hair', boardName: 'DXD',
+  url: `https://www.pinterest.com/pin/${id}/`,
+  scrapedAt: '2026-10-27T07:37:24.181Z',
+});
+
+test('observed flat rows without found/status/pinId use opaque permalink IDs and tolerate null titles', async t => {
+  settings(t);
+  t.mock.method(axios, 'post', async () => ({ data: [observedPin(), observedPin('e1_Test-Pin_Two', 'Rias Gremory | High School DxD')] }));
+  const results = await searchPinterest('observed Rias output');
+  assert.deepEqual(results.map(row => row.id), ['e1_Test-Pin_One', 'e1_Test-Pin_Two']);
+  assert.equal(results[0].title, '');
+  assert.equal(results[0].description, '');
+  assert.equal(results[1].title, 'Rias Gremory | High School DxD');
+});
+
+test('numeric permalink IDs preserve old seen-pin keys; explicit opaque IDs and permalink duplicates normalize consistently', async t => {
+  settings(t);
+  const rows = [
+    observedPin('309763280644328288'), pin('309763280644328288'),
+    { ...pin('e1_Opaque_Test'), url: undefined }, observedPin('e1_Opaque_Test'),
+  ];
+  t.mock.method(axios, 'post', async () => ({ data: rows }));
+  assert.deepEqual((await searchPinterest('mixed Pinterest identities')).map(row => row.id), ['309763280644328288', 'e1_Opaque_Test']);
+});
+
+test('permalink fallback rejects untrusted hosts, non-pin URLs and malformed metadata, and still honors explicit failures', async t => {
+  settings(t);
+  process.env.APIFY_PINTEREST_CACHE_MINUTES = '0';
+  let row;
+  t.mock.method(axios, 'post', async () => ({ data: [row] }));
+  for (const url of [
+    'https://www.pinterest.com.attacker.test/pin/e1_Test/',
+    'https://www.pinterest.com@attacker.test/pin/e1_Test/',
+    'https://attacker@www.pinterest.com/pin/e1_Test/',
+    'http://www.pinterest.com/pin/e1_Test/',
+    'https://www.pinterest.com/search/pins/?q=Rias',
+    'https://www.pinterest.com/pin/not-a-supported-id/',
+  ]) {
+    row = { ...observedPin(), url };
+    await assert.rejects(searchPinterest('invalid permalink'), { code: 'PINTEREST_RESPONSE' });
+  }
+  row = { ...observedPin(), found: false, status: 'BLOCKED' };
+  await assert.rejects(searchPinterest('explicit failure'), { code: 'PINTEREST_BLOCKED' });
+  row = { ...observedPin(), status: 'REQUEST_FAILED' };
+  await assert.rejects(searchPinterest('explicit failure'), { code: 'PINTEREST_UPSTREAM' });
+  row = { ...observedPin(), found: null };
+  await assert.rejects(searchPinterest('invalid metadata'), { code: 'PINTEREST_RESPONSE' });
 });
 
 test('missing credentials and invalid settings never start an actor run', async t => {
@@ -157,6 +210,24 @@ function commandStore(t, failSend = false) {
   });
   return { records, replies, msg };
 }
+
+test('Rias Gremory screenshot-shaped results send one unseen image per command and reuse the cache', async t => {
+  settings(t);
+  const state = commandStore(t);
+  let calls = 0;
+  t.mock.method(axios, 'post', async (url, body) => {
+    assert.ok(body.columns.includes('url'), 'request the identity field actually present in observed output');
+    calls++;
+    return { data: [observedPin(), observedPin('e1_Test-Pin_Two', 'Rias Gremory | High School DxD')] };
+  });
+  await search.pinterest({}, state.msg(), ['Rias', 'gremory']);
+  await search.pinterest({}, state.msg(), ['Rias', 'gremory']);
+  await search.pinterest({}, state.msg(), ['Rias', 'gremory']);
+  assert.equal(calls, 1);
+  assert.equal(state.replies.filter(item => item.options?.caption).length, 2);
+  assert.deepEqual(new Set(state.records.map(doc => doc.pinId)), new Set(['e1_Test-Pin_One', 'e1_Test-Pin_Two']));
+  assert.match(state.replies.at(-1).value, /seen all recent/);
+});
 
 test('the Pinterest command sends one unseen image, reuses cached results, and deduplicates separately per chat', async t => {
   settings(t);
