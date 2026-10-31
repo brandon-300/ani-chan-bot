@@ -48,3 +48,8 @@ Website-only accounts are *not* bot accounts. To avoid locking users out, move r
 4. Upload final profile pictures to Cloudinary and update MongoDB's `profile.picUrl` and `profile.picPublicId`; do not store data URIs in MongoDB gameplay records.
 5. Add site-exclusive registration gate **behind a feature flag**, test with existing and new users, verify rollback, THEN remove bot commands for name/bio/age/DOB/picture and turn on website-only onboarding.
 6. Security review: account recovery, email verification, rate limiting, bot API secret rotation, login load testing, Privacy Policy and Terms.
+
+## Pages deployment
+- Primary site: https://anichan.pages.dev (Cloudflare Pages project `anichan`, Git branch `website-cloudflare`, root directory `website`).
+- Advanced mode: `website/_worker.js` mirrors `website/worker.js`; keep both synchronized until build process consolidates them.
+- Legacy Workers preview: https://anichan-website.g09649009.workers.dev (not the primary site).
