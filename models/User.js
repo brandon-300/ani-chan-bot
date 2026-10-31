@@ -22,6 +22,11 @@ const UserSchema = new mongoose.Schema({
   // needed. A genuinely brand-new user only ever gets 'pending' because
   // findOrCreate() below explicitly $setOnInsert's it — that explicit value
   // wins over this schema default for newly-inserted documents.
+  // Website account identity is optional until users verify a one-time code
+  // through the existing .reg command. Sparse unique index prevents two
+  // WhatsApp users from claiming one website ID.
+  websiteAccountId: { type: String, unique: true, sparse: true },
+  websiteLinkedAt: { type: Date, default: null },
   registration: {
     status: { type: String, enum: ['pending', 'active'], default: 'active' },
     nameSet: { type: Boolean, default: false },
