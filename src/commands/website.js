@@ -4,6 +4,7 @@
 import crypto from 'node:crypto';
 import User from '../models/User.js';
 import * as cloud from '../utils/cloudinary.js';
+import identity from '../whatsapp/identity.js';
 
 const SITE = (process.env.ANICHAN_SITE_URL || 'https://anichan.pages.dev').replace(/\/+$/, '');
 const SECRET = process.env.ANICHAN_SITE_BOT_SECRET || '';
@@ -19,7 +20,15 @@ async function senderInfo(msg) {
     return null;
   }
   const raw = String(msg.author || msg.from);
-  return { raw, canonical: asPhoneJid(raw) };
+  const normalized = asPhoneJid(raw);
+  if (normalized.endsWith('@lid')) {
+    // A LID is NOT a telephone number. Never assume its digits are the user's
+    // phone number: that would risk creating a duplicate legacy account.
+    const pn = await identity.lookupPnForLid(normalized);
+    if (!pn) throw Error('WhatsApp LID-to-number mapping is unavailable. Retry later; no user data was changed.');
+    return { raw, canonical: asPhoneJid(pn) };
+  }
+  return { raw, canonical: normalized };
 }
 async function websiteFetch(path, options = {}) {
   if (SECRET.length < 32) throw Error('Website linking is not configured yet on this bot.');
