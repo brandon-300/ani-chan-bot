@@ -5,7 +5,6 @@ import express, { type Request as ExpressRequest, type Response as ExpressRespon
 import { httpServerHandler } from 'cloudflare:node';
 import { env as workerEnv } from 'cloudflare:workers';
 import { MongoClient, type Document, type Filter } from 'mongodb';
-import legacy from '../worker.js';
 import type { AniChanEnv, CatalogueCard } from './env.js';
 
 const app = express();
@@ -86,9 +85,8 @@ app.all('/api/v2/{*path}', (_req, res) => {
 app.listen(3000);
 const expressHandler = httpServerHandler({ port: 3000 });
 
-// Preserve the existing, currently deployed D1 website API and frontend.
-// The only new routes are /api/v2/*. No registration, password, session,
-// gameplay, or MongoDB mutation behavior is changed by this staging build.
+// Staging deliberately does NOT expose the production D1 authentication
+// handler. Only the read-only API v2 routes can be reached on this hostname.
 export default {
   async fetch(request: Request, env: AniChanEnv, context: any): Promise<Response> {
     if (new URL(request.url).pathname.startsWith('/api/v2/')) {
@@ -97,7 +95,10 @@ export default {
       if (!expressHandler.fetch) return new Response('API handler unavailable', { status: 503 });
       return expressHandler.fetch(request as any, env as any, context as any) as Promise<Response>;
     }
-    return legacy.fetch(request, env);
+    return new Response(JSON.stringify({ error: 'Staging API only' }), {
+      status: 404,
+      headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }
+    });
   }
 };
 
