@@ -19,7 +19,16 @@ async function createSession(id,env){const token=randomHex(32);await env.DB.prep
 async function serve(req,env){
 try{
  const url=new URL(req.url),path=url.pathname,method=req.method;
- if(path==='/api/health')return json({ok:true,name:'AniChan',phase:'website-preview',whatsappLinking:false});
+ if(path==='/api/health')return json({ok:true,name:'AniChan',phase:'website-preview',whatsappLinking:!!env.BOT_LINK_SECRET});
+ if(path==='/api/internal/profile' && method==='GET'){
+  if(!env.BOT_LINK_SECRET)return json({error:'Bot integration not configured'},503);
+  const supplied=(req.headers.get('Authorization')||'').replace(/^Bearer /,'');
+  if(!supplied||!safeEq(supplied,env.BOT_LINK_SECRET))return json({error:'Forbidden'},403);
+  const waid=url.searchParams.get('waid')||'';
+  if(!/^[a-zA-Z0-9]+@(s\.whatsapp\.net|lid)$/.test(waid))return json({error:'Invalid sender ID'},400);
+  const account=await env.DB.prepare('SELECT id,display_name,bio,avatar_data,whatsapp_id,updated_at FROM accounts WHERE whatsapp_id=?').bind(waid).first();
+  return json({account:account?{siteId:account.id,displayName:account.display_name,bio:account.bio||'',avatarData:account.avatar_data||'',updatedAt:account.updated_at}:null});
+ }
  if(path==='/api/me' && method==='GET')return json({account:publicUser(await who(req,env))});
  if(path==='/api/cards' && method==='GET'){
   const q=(url.searchParams.get('q')||'').trim().slice(0,65),tier=(url.searchParams.get('tier')||'').toUpperCase(),page=Math.min(50,Math.max(1,parseInt(url.searchParams.get('page')||'1',10)||1));
@@ -33,6 +42,28 @@ try{
  if(method!=='POST')return json({error:'Not found'},404);
  if(!originOK(req))return json({error:'Invalid request origin or content type'},403);
  const ip=req.headers.get('CF-Connecting-IP')||'unknown';
+ if(path==='/api/internal/claim-link'){
+  if(!env.BOT_LINK_SECRET)return json({error:'Bot integration not configured'},503);
+  const supplied=(req.headers.get('Authorization')||'').replace(/^Bearer /,'');
+  if(!supplied||!safeEq(supplied,env.BOT_LINK_SECRET))return json({error:'Forbidden'},403);
+  const b=await payload(req),waid=String(b.whatsappId||''),code=String(b.code||'');
+  if(!/^[a-zA-Z0-9]+@(s\.whatsapp\.net|lid)$/.test(waid)||!/^\d{8}$/.test(code))return json({error:'Invalid link request'},400);
+  if(!await limit(env,ip,'link:'+waid,7))return json({error:'Too many attempts'},429);
+  const ch=await env.DB.prepare('SELECT c.id AS challenge_id,c.account_id,a.whatsapp_id FROM link_challenges c JOIN accounts a ON a.id=c.account_id WHERE c.code_hash=? AND c.used_at IS NULL AND c.expires_at>?').bind(await sha(code),now()).first();
+  if(!ch)return json({error:'Code is invalid or has expired.'},400);
+  if(ch.whatsapp_id&&ch.whatsapp_id!==waid)return json({error:'Account already linked to another WhatsApp identity'},409);
+  const existing=await env.DB.prepare('SELECT id FROM accounts WHERE whatsapp_id=?').bind(waid).first();
+  if(existing && existing.id!==ch.account_id)return json({error:'This WhatsApp identity already belongs to another account'},409);
+  try{
+    const results=await env.DB.batch([
+      env.DB.prepare('UPDATE link_challenges SET used_at=? WHERE id=? AND used_at IS NULL').bind(now(),ch.challenge_id),
+      env.DB.prepare('UPDATE accounts SET whatsapp_id=?,updated_at=? WHERE id=?').bind(waid,now(),ch.account_id)
+    ]);
+    if(!results[0].meta?.changes)return json({error:'Link code already used.'},409);
+  }catch{return json({error:'This WhatsApp identity cannot be linked.'},409)}
+  const account=await env.DB.prepare('SELECT id,display_name,bio,avatar_data,updated_at FROM accounts WHERE id=?').bind(ch.account_id).first();
+  return json({ok:true,siteId:account.id,displayName:account.display_name,bio:account.bio||'',avatarData:account.avatar_data||'',updatedAt:account.updated_at});
+ }
  if(path==='/api/auth/register'){
   if(!await limit(env,ip,'register',4))return json({error:'Too many attempts. Try again later.'},429);
   const b=await payload(req);const email=String(b.email||'').trim().toLowerCase(),name=String(b.displayName||'').trim(),pw=String(b.password||'');
@@ -59,6 +90,17 @@ try{
   const token=cookie(req);if(token)await env.DB.prepare('DELETE FROM sessions WHERE id_hash=?').bind(await sha(token)).run();
   return json({ok:true},200,{'Set-Cookie':'anichan_session=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0'});
  }
+ if(path==='/api/link/start'){
+  if(!env.BOT_LINK_SECRET)return json({error:'WhatsApp linking will be activated after the bot update.'},503);
+  const a=await who(req,env);if(!a)return json({error:'Please sign in.'},401);
+  if(a.whatsapp_id)return json({error:'This account is already linked.'},409);
+  if(!await limit(env,ip,'link-start:'+a.id,5))return json({error:'Too many requests. Try again later.'},429);
+  const bytes=new Uint32Array(1);crypto.getRandomValues(bytes);
+  const code=String(10000000+(bytes[0]%90000000));
+  await env.DB.prepare('DELETE FROM link_challenges WHERE account_id=? AND used_at IS NULL').bind(a.id).run();
+  await env.DB.prepare('INSERT INTO link_challenges(id,account_id,code_hash,expires_at) VALUES(?,?,?,?)').bind(crypto.randomUUID(),a.id,await sha(code),now()+10*60000).run();
+  return json({code,expiresInSeconds:600,command:'.link '+code});
+ }
  if(path==='/api/profile'){
   const a=await who(req,env);if(!a)return json({error:'Please sign in.'},401);
   if(!await limit(env,ip,'profile',25))return json({error:'Slow down and try again later.'},429);
@@ -70,9 +112,6 @@ try{
   const updated=await who(req,env);
   return json({account:publicUser(updated),whatsappSynced:false});
  }
- // This endpoint intentionally stays disabled until an audited bot integration
- // sets BOT_LINK_SECRET and the bot verifies the inbound WhatsApp sender.
- if(path==='/api/internal/claim-link')return json({error:'WhatsApp linking is not enabled in this release.'},503);
  return json({error:'Not found'},404);
 }catch(err){return json({error:err instanceof SyntaxError?'Invalid JSON request.':'Service temporarily unavailable.'},err instanceof SyntaxError?400:500)}
 }
