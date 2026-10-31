@@ -20,7 +20,7 @@ async function createSession(id,env){const token=randomHex(32);await env.DB.prep
 async function serve(req,env){
 try{
  const url=new URL(req.url),path=url.pathname,method=req.method;
- if(path==='/api/health')return json({ok:true,name:'AniChan',phase:'website-preview',whatsappLinking:!!env.BOT_LINK_SECRET});
+ if(path==='/api/health')return json({ok:true,name:'AniChan',phase:'website-preview',whatsappLinking:!!env.BOT_LINK_SECRET && env.WHATSAPP_LINK_ENABLED === 'true'});
  if(path==='/api/internal/profile' && method==='GET'){
   if(!env.BOT_LINK_SECRET)return json({error:'Bot integration not configured'},503);
   const supplied=(req.headers.get('Authorization')||'').replace(/^Bearer /,'');
@@ -93,7 +93,7 @@ try{
   return json({ok:true},200,{'Set-Cookie':'anichan_session=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0'});
  }
  if(path==='/api/link/start'){
-  if(!env.BOT_LINK_SECRET)return json({error:'WhatsApp linking will be activated after the bot update.'},503);
+  if(!env.BOT_LINK_SECRET || env.WHATSAPP_LINK_ENABLED !== 'true')return json({error:'WhatsApp linking will be activated after the bot update.'},503);
   const a=await who(req,env);if(!a)return json({error:'Please sign in.'},401);
   if(a.whatsapp_id)return json({error:'This account is already linked.'},409);
   if(!await limit(env,ip,'link-start:'+a.id,5))return json({error:'Too many requests. Try again later.'},429);
