@@ -96,7 +96,7 @@ const COMMAND_REFERENCE = [
       { cmd: '.rich', desc: 'Top 10 richest users bot-wide' },
       { cmd: '.richg', desc: 'Richest users in this group' },
       { cmd: '.profile / .p', desc: 'View your profile card (your email and session status are only shown in a private chat with me)' },
-      { cmd: '.reg', desc: 'Main registration command — receive website signup and login instructions (DM only)' },
+      { cmd: '.reg [optional website code]', desc: 'DM only — view website signup/login links; after linking is enabled, submit a one-time website code through the same command' },
       { cmd: '.setemail [email]', desc: 'Temporarily manage your verified recovery email while website account migration is being completed' },
       { cmd: '.edit', desc: 'Temporary legacy profile settings; moving to the website after account linking is ready' },
       { cmd: '.setname [name]', desc: 'Temporary legacy command; name editing will move to the website' },
