@@ -212,7 +212,10 @@ async function _checkSession(client, msg, command, args, registrationCheck) {
   if (isOwner(senderId) || isMod(senderId)) return { blocked: false };
   // .setemail must keep working while locked — it's the way out for an
   // account that has no recovery email yet.
-  if (command === 'setemail') return { blocked: false };
+  // Registration and verified website-account claiming must remain reachable
+  // even when a legacy recovery-email session is locked. This exemption does
+  // not apply to balance, cards, admin, or other gameplay commands.
+  if (command === 'setemail' || command === 'reg') return { blocked: false };
 
   const user = registrationCheck.user
     || await User.findOne({ id: senderId }, 'registration email emailVerifiedAt sessionLockedAt lastActiveAt').lean();
