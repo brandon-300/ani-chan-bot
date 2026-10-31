@@ -309,7 +309,7 @@ const HEAVY_COMMANDS = new Set([
 ]);
 
 // Registration bypass commands
-const REGISTRATION_BYPASS_COMMANDS = new Set(['reg', 'setname', 'setdob', 'bio', 'setpic']);
+const REGISTRATION_BYPASS_COMMANDS = new Set(['reg', 'setname', 'setdob', 'bio', 'setpic', 'website', 'link', 'syncprofile']);
 
 // Registration gate
 async function checkRegistrationGate(msg, command) {
@@ -325,7 +325,7 @@ async function checkRegistrationGate(msg, command) {
     existingUser = await User.default.findOne({ id: senderId }, 'registration').lean();
   } catch (err) {
     console.error('Registration gate: user lookup failed, allowing command through:', err.message);
-    return { blocked: false, senderId, wasActive: true };
+    throw err;
   }
 
   const status = existingUser ? (existingUser.registration?.status || 'active') : null;
@@ -336,7 +336,7 @@ async function checkRegistrationGate(msg, command) {
   }
 
   if (!existingUser) {
-    await msg.reply(buildRegistrationIntroText(BOT_NAME)).catch(err => {
+    await msg.reply(`🌸 *Welcome to AniChan!*\n\nRegister on our website: https://anichan.pages.dev/register\nThen link your WhatsApp account in the dashboard and send *.link [code]* here privately.`).catch(err => {
       console.error('Registration gate: failed to send intro message:', err.message);
     });
     return { blocked: true, senderId, wasActive: false };
@@ -558,8 +558,9 @@ async function initialize() {
 
             // Registration gate
             const registrationCheck = await checkRegistrationGate(baileysMsg, command).catch(err => {
-              logger.error('registration.gate.failed_open', err, { command });
-              return { blocked: false, senderId: null, wasActive: true };
+              logger.error('registration.gate.failed_closed', err, { command });
+              await baileysMsg.reply('⚠️ Cannot verify your registration right now; try again shortly.').catch(() => {});
+              return { blocked: true, senderId: null, wasActive: false };
             });
             if (registrationCheck.blocked) {
               logger.write('INFO', 'registration.blocked', { command, senderId: registrationCheck.senderId, reason: 'incomplete_registration' });
