@@ -1,0 +1,42 @@
+# AniChan Website — Cloudflare Workers + D1
+
+Independent, original AniChan website inspired by the general layout and functionality of Tensura's public community website (not a source-code copy).
+
+## Deployment (2026-10-31)
+- Worker: `anichan-website`
+- Public URL: `https://anichan-website.g09649009.workers.dev`
+- Dedicated D1 database: `anichan-website-auth`
+- Worker binding: `DB`
+- Source: `website/worker.js`; editable HTML source: `website/index.html`
+- GitHub branch: `website-cloudflare` (original bot branches unchanged).
+- Cloudflare worker currently embeds the HTML as `HTML_PAGE`. To update the design, edit `index.html`, then update the embedded HTML in `worker.js` before redeploying.
+
+## Available now
+- Responsive home, searchable 349-card catalogue snapshot copied read-only from the **AniChan** MongoDB collection, Shop/Guilds/Events informational pages.
+- Website account registration and login (email + 10+ character password), random per-account salt + PBKDF2-SHA256 password hash, HttpOnly Secure SameSite session cookie, per-IP write rate limits, CSRF origin checks, database prepared statements.
+- Profile edits: display name, short bio, picture upload (client-side converted to 160×160 WebP, stored in D1).
+- Logout; 14-day session expiry.
+
+## Intentionally not enabled
+- WhatsApp account linking and synchronization. These require an audited bot integration using a shared secret and authenticated WhatsApp message from the real account holder. The Worker denies the internal claim endpoint, and the dashboard labels linking unavailable.
+- Database mirroring from D1 to MongoDB `users`, including existing user balances, cards and guilds.
+- Real purchases, auctions, guild management, events, and Discord bot.
+- Password reset / email ownership verification. Do not treat email as verified or use it to recover ownership yet.
+- Actual card art preview (current catalogue artwork is pending design overhaul).
+- Any Pokémon or Perplexity features.
+
+### Do not disable WhatsApp registration commands yet
+Website-only accounts are *not* bot accounts. To avoid locking users out, move registration gating only after WhatsApp linking, legacy-user migration, and account synchronization are implemented and tested. This protects the 3 existing AniChan users and all inventories and currencies.
+
+## Source of truth
+- AniChan gameplay and card ownership: existing **MongoDB Atlas** `anichan`.
+- Website-only accounts and sessions: dedicated Cloudflare D1, not the Anivora database.
+- Catalogue browser: snapshot imported from MongoDB on October 31, 2026. It must be refreshed after card changes; never treat it as live game state.
+- Cloudinary: retained for the future avatar and card-image pipeline.
+
+## Safety / operational notes
+- Site login uses unverified email addresses. Add email verification and secure password recovery before broad public promotion.
+- Limit account creation while onboarding is being integrated. Rate limits are basic IP controls, not full bot protection.
+- Avatar data is resized on the client. A future release should validate image contents server-side and store final assets in Cloudinary rather than D1.
+- Passwords are hashed with PBKDF2-SHA256; data deletion, privacy notice, account recovery and breach-prevention tests are required before broad launch.
+- Do not disclose any bot authorization secret in GitHub or client JavaScript.
