@@ -15,6 +15,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { isCloudConfigured } = require('../utils/cloudinary');
+const { websiteRegistrationActive, claimWebsiteCode, restoreLinkedProfile } = require('../utils/websiteRegistration');
 const { maskEmail, isPrivateChat } = require('../utils/emailService');
 
 // ─── Profile pictures (.setpic) ───────────────────────────────────────────────
@@ -235,22 +236,51 @@ const ROAST_LINES = [
 ];
 
 module.exports = {
-  // .reg — sole account-registration entry point. Website handles signup and
-  // login; the WhatsApp handler must not create an account or change data.
+  // .reg — the ONLY approved WhatsApp registration entry point.
+  // .reg provides website signup/login. A one-time website code can be
+  // submitted as .reg CODE; this is an argument to .reg, NOT a new command.
   async reg(client, msg, args) {
     const chat = await safeGetChat(msg).catch(() => null);
     if (!chat || chat.isGroup) return msg.reply('🔒 Please send *.reg* privately to AniChan for account registration and login.');
-    if (args.length) return msg.reply('🌸 To register or log in, send *.reg* without arguments.');
-    return msg.reply(
+    const base =
       '🌸 *Welcome to AniChan!*' +
       '\n\nCreate your account or log in through our website:' +
       '\n\n🆕 *New user:* https://anichan.pages.dev/register' +
       '\n🔑 *Existing website account:* https://anichan.pages.dev/login' +
-      '\n\n🎴 Already have an AniChan WhatsApp account? Your cards, coins, and guild remain in MongoDB. ' +
-      'Secure account linking is being prepared; your existing progress will not be reset.' +
-      '\n\n⚠️ Website registration and WhatsApp linking are not fully connected yet. ' +
-      'Until that migration is ready, existing WhatsApp accounts continue under the current rules.'
-    );
+      '\n\n🎴 Already have an AniChan WhatsApp account? Your cards, coins and guild remain in MongoDB.' +
+      '\n\n' + (websiteRegistrationActive()
+        ? 'To connect or recover your account, open your website dashboard, choose *Link WhatsApp*, then send *.reg YOUR_8_DIGIT_CODE* here in this chat. The code expires after 10 minutes.'
+        : 'WhatsApp linking is being prepared and will be enabled after testing. Existing gameplay accounts will not be deleted.');
+    if (!args.length) {
+      if (websiteRegistrationActive()) {
+        try {
+          const restored = await restoreLinkedProfile(msg);
+          if (restored) return msg.reply('✅ Your AniChan website and WhatsApp accounts are connected, and your profile is synchronized. Your existing gameplay progress is preserved.' +
+            (restored.pictureWarning ? '\n⚠️ ' + restored.pictureWarning : ''));
+        } catch (error) {
+          // A failed sync must not prevent a user from seeing the registration
+          // and login links. No secret, OTP or raw API response is logged.
+          console.error('AniChan website registration refresh failed:', error.message);
+        }
+      }
+      return msg.reply(base);
+    }
+    const code = String(args[0] || '');
+    if (args.length !== 1 || !/^\d{8}$/.test(code)) {
+      return msg.reply('❌ To get registration instructions, send *.reg* without extra words.' +
+        (websiteRegistrationActive() ? '\nTo link your website login, send *.reg 12345678* with your own eight-digit code.' : ''));
+    }
+    if (!websiteRegistrationActive()) return msg.reply(base);
+    try {
+      const result = await claimWebsiteCode(msg, code);
+      return msg.reply('✅ *AniChan account connected!*\n\n' +
+        (result.existing ? 'Your existing WhatsApp progress has been retained.' : 'Your new AniChan gameplay account has been created.') +
+        '\nYou can now use AniChan as normal.' +
+        (result.pictureWarning ? '\n⚠️ ' + result.pictureWarning : ''));
+    } catch (error) {
+      return msg.reply('⚠️ Website account linking failed: ' + error.message +
+        '\n\nIf your website already shows the account as linked, send *.reg* to retry synchronization.');
+    }
   },
   // .balance
   async balance(client, msg, args) {
