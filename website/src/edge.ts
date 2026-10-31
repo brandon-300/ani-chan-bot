@@ -49,7 +49,7 @@ app.get('/api/v2/catalogue', async (req, res) => {
 
   if (term) {
     // Escaping prevents user input from defining an arbitrary Mongo regex.
-    const escaped = term.replace(/[.*+?^$()|[\]{}\\]/g, '\\$&');
+    const escaped = [...term].map(char => '^$.*+?()[]{}|\\'.includes(char) ? '\\' + char : char).join('');
     where.$or = [{ name: { $regex: escaped, $options: 'i' } }, { series: { $regex: escaped, $options: 'i' } }];
   }
   if (TIERS.has(tier)) where.tier = tier;
@@ -63,14 +63,14 @@ app.get('/api/v2/catalogue', async (req, res) => {
 
   try {
     await client.connect();
-    const cards = client.db('anichan').collection<CatalogueCard>('cardcatalogues');
+    const cards = client.db('anichan').collection<Document>('cardcatalogues');
     const [total, entries] = await Promise.all([
       cards.countDocuments(where, { maxTimeMS: 3500 }),
       cards.find(where, {
         projection: { _id: 0, cardId: 1, name: 1, series: 1, tier: 1 }
       }).sort({ tier: 1, name: 1 }).skip((page - 1) * 20).limit(20).maxTimeMS(3500).toArray()
     ]);
-    res.status(200).json({ cards: entries, total, page, source: 'mongodb-anichan-live' });
+    res.status(200).json({ cards: entries as unknown as CatalogueCard[], total, page, source: 'mongodb-anichan-live' });
   } catch {
     // Avoid revealing connection strings, MongoDB hostnames, or credentials.
     res.status(503).json(errorBody('The catalogue is temporarily unavailable.'));
