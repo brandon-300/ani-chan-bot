@@ -1,7 +1,7 @@
 // AniChan API v2: TypeScript + Express.js + native MongoDB driver.
 // This module is staged behind /api/v2/* while the existing D1 website stays
 // authoritative for website login. No MongoDB writes occur in this module.
-import express, { type Request, type Response, type NextFunction } from 'express';
+import express, { type Request as ExpressRequest, type Response as ExpressResponse, type NextFunction } from 'express';
 import { httpServerHandler } from 'cloudflare:node';
 import { env as workerEnv } from 'cloudflare:workers';
 import { MongoClient, type Document, type Filter } from 'mongodb';
@@ -11,7 +11,7 @@ import type { AniChanEnv, CatalogueCard } from './env.js';
 const app = express();
 app.disable('x-powered-by');
 app.disable('etag');
-app.use((_request: Request, response: Response, next: NextFunction) => {
+app.use((_request: ExpressRequest, response: ExpressResponse, next: NextFunction) => {
   response.setHeader('Cache-Control', 'no-store');
   response.setHeader('X-Content-Type-Options', 'nosniff');
   next();
@@ -92,9 +92,12 @@ const expressHandler = httpServerHandler({ port: 3000 });
 export default {
   async fetch(request: Request, env: AniChanEnv, context: any): Promise<Response> {
     if (new URL(request.url).pathname.startsWith('/api/v2/')) {
-      return expressHandler.fetch(request, env, context);
+      // Cloudflare's exported fetch handler is optional in its interface;
+      // Express supplies it at runtime, and we reject if unavailable.
+      if (!expressHandler.fetch) return new Response('API handler unavailable', { status: 503 });
+      return expressHandler.fetch(request as any, env as any, context as any) as Promise<Response>;
     }
-    return legacy.fetch(request, env, context);
+    return legacy.fetch(request, env);
   }
 };
 
