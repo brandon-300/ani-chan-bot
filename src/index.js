@@ -324,7 +324,7 @@ async function checkRegistrationGate(msg, command) {
     const User = await import('./models/User.js');
     existingUser = await User.default.findOne({ id: senderId }, 'registration').lean();
   } catch (err) {
-    console.error('Registration gate: user lookup failed, allowing command through:', err.message);
+    console.error('Registration gate: user lookup failed; blocking command:', err.message);
     throw err;
   }
 
@@ -557,7 +557,7 @@ async function initialize() {
             }
 
             // Registration gate
-            const registrationCheck = await checkRegistrationGate(baileysMsg, command).catch(err => {
+            const registrationCheck = await checkRegistrationGate(baileysMsg, command).catch(async err => {
               logger.error('registration.gate.failed_closed', err, { command });
               await baileysMsg.reply('⚠️ Cannot verify your registration right now; try again shortly.').catch(() => {});
               return { blocked: true, senderId: null, wasActive: false };
