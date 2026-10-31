@@ -718,16 +718,7 @@ const HEAVY_COMMANDS = new Set([
 // blocked by the same gate that guards everything else. `command` here has
 // already gone through the aliases map by the time this runs (setbio ->
 // bio), so only the canonical names need listing.
-// Website-only registration remains off until WhatsApp linking, recovery and
-// existing-user migration pass QA. Flip via .env after testing; no DB migration
-// is performed on startup and the old account records remain intact.
-const WEBSITE_ONLY_REGISTRATION = process.env.ANICHAN_WEB_REGISTRATION_ONLY === 'true';
-const WEBSITE_ONLY_PROFILE_COMMANDS = new Set(['reg', 'setname', 'setdob', 'bio', 'setpic', 'removepic', 'setage', 'edit']);
-const REGISTRATION_BYPASS_COMMANDS = new Set(
-  WEBSITE_ONLY_REGISTRATION
-    ? ['website', 'link', 'syncprofile']
-    : ['reg', 'setname', 'setdob', 'bio', 'setpic', 'website', 'link', 'syncprofile']
-);
+const REGISTRATION_BYPASS_COMMANDS = new Set(['reg', 'setname', 'setdob', 'bio', 'setpic']);
 
 // Checks whether `command` should be allowed to run for whoever sent `msg`.
 // Returns { blocked, senderId, wasActive, user }:
@@ -745,12 +736,6 @@ const REGISTRATION_BYPASS_COMMANDS = new Set(
 //
 // Account gates fail closed when account state cannot be verified.
 async function checkRegistrationGate(msg, command) {
-  // During website-only rollout, profile edits are a website responsibility;
-  // never run old WhatsApp handlers or create a pending legacy registration.
-  if (WEBSITE_ONLY_REGISTRATION && WEBSITE_ONLY_PROFILE_COMMANDS.has(command)) {
-    await msg.reply('🌸 AniChan account registration and profile editing have moved to the website.\n\nhttps://anichan.pages.dev/dashboard\n\nNew here? https://anichan.pages.dev/register\n\nTo link WhatsApp, generate a code from your web dashboard and send *.link [code]* here in a private message.').catch(() => {});
-    return { blocked: true, senderId: null, wasActive: false };
-  }
   let senderId = null;
   try {
     const contact = await safeGetContact(msg);
@@ -787,7 +772,7 @@ async function checkRegistrationGate(msg, command) {
   }
 
   if (!existingUser) {
-    await msg.reply(`🌸 *Welcome to AniChan!*\n\nNew users can create their web account at https://anichan.pages.dev/register\nAfter registration, use the website dashboard to link your WhatsApp number, then send *.link [code]* to me privately.\n\nWebsite linking must be activated on this bot before your web account can be used.`).catch(err => {
+    await msg.reply(`🌸 *Welcome to AniChan!*\n\nTo get started, message me privately with *.reg*.\nThat command will show you how to register or log in on the AniChan website.`).catch(err => {
       console.error('Registration gate: failed to send intro message:', err.message);
     });
     return { blocked: true, senderId, wasActive: false };
@@ -797,9 +782,7 @@ async function checkRegistrationGate(msg, command) {
     return { blocked: false, senderId, wasActive: true, user: existingUser };
   }
 
-  await msg.reply(WEBSITE_ONLY_REGISTRATION
-    ? '🌸 Finish setting up and linking your AniChan account on https://anichan.pages.dev/dashboard, then send *.link [code]* in my DMs.'
-    : buildRegistrationProgressText(existingUser)).catch(err => {
+  await msg.reply(`🌸 Your AniChan account setup is not yet complete. Send *.reg* privately to see the website registration and login options.\n\nExisting WhatsApp registration steps remain temporarily available during migration.`).catch(err => {
     console.error('Registration gate: failed to send progress message:', err.message);
   });
   return { blocked: true, senderId, wasActive: false };
