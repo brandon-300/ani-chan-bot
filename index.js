@@ -718,7 +718,7 @@ const HEAVY_COMMANDS = new Set([
 // blocked by the same gate that guards everything else. `command` here has
 // already gone through the aliases map by the time this runs (setbio ->
 // bio), so only the canonical names need listing.
-const REGISTRATION_BYPASS_COMMANDS = new Set(['reg', 'setname', 'setdob', 'bio', 'setpic']);
+const REGISTRATION_BYPASS_COMMANDS = new Set(['reg', 'setname', 'setdob', 'bio', 'setpic', 'website', 'link', 'syncprofile']);
 
 // Checks whether `command` should be allowed to run for whoever sent `msg`.
 // Returns { blocked, senderId, wasActive, user }:
@@ -772,7 +772,7 @@ async function checkRegistrationGate(msg, command) {
   }
 
   if (!existingUser) {
-    await msg.reply(buildRegistrationIntroText(BOT_NAME)).catch(err => {
+    await msg.reply(`🌸 *Welcome to AniChan!*\n\nNew users can create their web account at https://anichan.pages.dev/register\nAfter registration, use the website dashboard to link your WhatsApp number, then send *.link [code]* to me privately.\n\nWebsite linking must be activated on this bot before your web account can be used.`).catch(err => {
       console.error('Registration gate: failed to send intro message:', err.message);
     });
     return { blocked: true, senderId, wasActive: false };
