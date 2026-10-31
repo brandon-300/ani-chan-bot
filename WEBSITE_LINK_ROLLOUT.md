@@ -1,39 +1,39 @@
-# AniChan: wweb.js-first website migration
+# AniChan — approved website registration and tech-stack direction (2026-10-31)
 
-This development branch is intentionally based on **main** (whatsapp-web.js). Do not copy these changes to `baileys-migration` until the wweb.js migration is complete and proven stable.
+## Governance: commands require user approval
+No new WhatsApp commands are to be created, added to help menus, or merged without the owner's explicit approval.
+Unapproved experimental `.website`, `.link` and `.syncprofile` handlers were removed from the active **wweb.js** development branch.
+The existing `.reg` command is the only approved onboarding entry point.
 
-## Verified preparation
-- AniChan Pages site: `https://anichan.pages.dev` (Cloudflare Pages project `anichan`, branch `website-cloudflare`).
-- Bot-only authenticated API: `/api/internal/claim-link` and `/api/internal/profile`.
-- The owner verified an HTTP 200 response to the authenticated profile endpoint from Termux on 2026-10-31; this establishes matching configured secrets for that test.
-- The site database is D1 `anichan-website-auth`, independent of the MongoDB `anichan` gameplay database.
-- WhatsApp linking is *not* enabled for public signup at this stage: `WHATSAPP_LINK_ENABLED` defaults to off.
+## Approved .reg behavior (wweb.js development branch)
+- When a new WhatsApp user talks to the bot, registration gate prompts them to send **.reg** privately.
+- On `.reg` in a DM, the bot provides the existing website registration and login links:
+  - https://anichan.pages.dev/register
+  - https://anichan.pages.dev/login
+- `.reg` does not create a duplicate MongoDB user and does not require a pre-existing password.
+- Existing registered WhatsApp users continue to use their current account, cards, balances, and guilds; nobody loses progress.
+- Profile-editing commands such as `.setname`, `.setdob`, `.bio`, and `.setpic` remain temporarily usable while the website linking and migration are still incomplete. They should be retired only after account verification, migration, and testing succeed.
+- A secure method for verifying a web account's ownership of a WhatsApp sender still must be designed and **approved by the owner**. It may be implemented within the existing `.reg` flow, via a bot-initiated reply, or through another explicitly approved UX; do not assume a new command is allowed.
 
-## Development branch implementation
-- `commands/website.js` supports `.website`, DM-only `.link <8 digits>`, and `.syncprofile`.
-- Existing MongoDB users are located by their WhatsApp ID; the migration does not touch coins, bank, orbs, cards, guilds, inventory, achievements or progression.
-- Profile updates to name, bio, date of birth, age, and (where Cloudinary is configured) avatar are applied to the matched MongoDB user.
-- If the website successfully claims a code but the MongoDB profile update fails, `.syncprofile` can retry without the original code.
-- The wweb.js router permits the three website commands before registration, and the old session-lock gate exempts them.
-- `ANICHAN_WEB_REGISTRATION_ONLY=true` (disabled by default) blocks the old bot registration/profile-edit handlers and redirects users to the site. **Do not enable this flag until the full account migration is tested.**
-- `.setemail` remains as legacy account recovery while website email verification/recovery and the old session-lock behavior are migrated.
-- The command menu references website registration and linking.
+## Stack
+- Desired codebase: TypeScript, MongoDB Atlas, Express.js, whatsapp-web.js (first; Baileys later).
+- Cloudflare Pages remains the frontend at https://anichan.pages.dev.
+- Cloudflare Workers can host a TypeScript Express API using `httpServerHandler`; Cloudflare documents Express-on-Workers as supported. Preserve Pages as the site's frontend hostname.
+- MongoDB Atlas (`anichan`) should be canonical for gameplay and linked-account identity. The website's existing D1 account and sessions must be safely migrated or integrated without losing any website-created login accounts. Do not drop D1 or automatically migrate before account/secret tests.
+- The existing WhatsApp bot is JavaScript: gradually introduce TypeScript and types instead of an unsafe automated rewrite. Keep the wweb.js runtime intact until integration tests pass.
 
-## Required acceptance tests before cutover
-1. **Web account signup:** verify a new 18+ test account can register, sign in, edit its profile, and sign out. Add email-ownership verification and password recovery before broad public use.
-2. **Existing user claim:** snapshot their MongoDB document. Generate a code in the website dashboard after enabling linking in a controlled test. Send `.link CODE` from that *existing* account in a DM. Verify `User.id`, coins, card records, guild, loans, orbs and XP are unchanged and that the website profile is synchronized.
-3. **New user claim:** use a new test WhatsApp number and confirm exactly one new MongoDB account is created with correct registration status, while an invalid or expired link code creates none.
-4. **Authorization:** verify linking from a group, from a different WhatsApp number, after code expiry, or with an incorrect secret is rejected.
-5. **Recovery:** simulate a MongoDB write failure after code claim, restore DB, and confirm `.syncprofile` completes without lost card/economy data.
-6. **Profile edits:** change site name, bio, DOB, and avatar; run `.syncprofile`, check old WhatsApp messages/renderers still display the new values. Test legacy `@c.us` and `@s.whatsapp.net` ID mappings.
-7. **Session/legacy-email lock:** test an existing user with `sessionLockedAt` set can use `.link` / `.syncprofile` safely without bypassing unrelated privileged commands.
-8. **Enable website-only registration:** set `ANICHAN_WEB_REGISTRATION_ONLY=true` in the **running wweb.js bot** only after tests. Confirm `.reg`, `.setname`, `.setdob`, `.setpic`, `.removepic`, `.bio`, `.setage`, `.edit` no longer execute legacy writes. Confirm `.profile`, `.balance` and games remain available to already-active legacy users.
-9. **Menu/audit:** confirm commands and help messages match the new workflow. Only then merge to `main`, and separately handle Baileys later.
+## Current safety state
+- Production `main`, `baileys-migration`, and dated backup branches remain unchanged.
+- wweb.js development work stays in `feature/website-link-main`.
+- The old unapproved command file was deleted from the active wweb.js development branch; the separate Baileys experimental branch is parked and must not be merged.
+- Pages has an encrypted `BOT_LINK_SECRET` and the owner independently confirmed a 200 response to the protected API from Termux; the full WhatsApp account linking flow is not yet activated.
+- Keep Pages public `WHATSAPP_LINK_ENABLED` false until an owner-approved verified flow works with an actual WhatsApp account.
+- No direct MongoDB cleanup, asset deletion, or production cutover was authorized.
 
-## Security and rollback
-- Store the same 32-byte generated key as **encrypted Pages secret** `BOT_LINK_SECRET` and **private bot `.env`** variable `ANICHAN_SITE_BOT_SECRET`. No secrets belong in Git, screenshots or chats.
-- `WHATSAPP_LINK_ENABLED=true` is a separate public-link-code issuance gate on Pages, disabled unless the bot's `.link` handler is deployed and tested.
-- Use HTTPS only. The WhatsApp sender ID comes from the authenticated WhatsApp message, **never a web form**.
-- Disable both feature flags to return to the original registration flows if tests fail, and revert only the wweb.js development deployment.
-- The original `main` and `baileys-migration` branches and dated backup branches must not be changed during this phase.
-- Do not run destructive MongoDB cleanup, drop indexes or overwrite user data as part of registration migration.
+## Acceptance gates
+1. Confirm TypeScript + Express build/deployment workflow and MongoDB connection without moving or deleting user data.
+2. Get explicit approval on account-linking UX (prefer keeping only `.reg`).
+3. Test identity verification, attempts/expiry, old WhatsApp IDs, account recovery, and collision handling.
+4. Verify current users keep coins, owned cards, guilds, age, session state, achievements, and loans.
+5. Verify accounts created on the website can log in and no duplicate account is created for existing WhatsApp users.
+6. Only then remove old WhatsApp profile mutation handlers, update the menu, and enable public website-only registration.
