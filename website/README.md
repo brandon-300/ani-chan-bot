@@ -53,3 +53,9 @@ Website-only accounts are *not* bot accounts. To avoid locking users out, move r
 - Primary site: https://anichan.pages.dev (Cloudflare Pages project `anichan`, Git branch `website-cloudflare`, root directory `website`).
 - Advanced mode: `website/_worker.js` mirrors `website/worker.js`; keep both synchronized until build process consolidates them.
 - Legacy Workers preview: https://anichan-website.g09649009.workers.dev (not the primary site).
+
+## Secrets configuration (production)
+- Required Pages secret: `BOT_LINK_SECRET` (encrypted; secret value never stored in Git).
+- Matching Termux bot `.env` secret: `ANICHAN_SITE_BOT_SECRET`.
+- Add or update the Pages secret in the `anichan` project's Production environment, then trigger a new production deployment so Pages Functions receive it.
+- Bot activation requires a corresponding tested `.website`, `.link`, `.syncprofile` command implementation. Keep existing registration commands operational until verified account migration passes.
