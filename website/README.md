@@ -59,3 +59,8 @@ Website-only accounts are *not* bot accounts. To avoid locking users out, move r
 - Matching Termux bot `.env` secret: `ANICHAN_SITE_BOT_SECRET`.
 - Add or update the Pages secret in the `anichan` project's Production environment, then trigger a new production deployment so Pages Functions receive it.
 - Bot activation requires a corresponding tested `.website`, `.link`, `.syncprofile` command implementation. Keep existing registration commands operational until verified account migration passes.
+
+## Safe public-linking rollout flag
+- Encrypted `BOT_LINK_SECRET` authenticates the WhatsApp bot to Pages.
+- Public link-code generation deliberately remains disabled until the existing wweb.js or Baileys bot is running tested `.link` and `.syncprofile` handlers. Only then set Pages Production variable `WHATSAPP_LINK_ENABLED=true` (plain text is sufficient for this non-secret flag) and redeploy.
+- `/api/health` exposes only a boolean for linking readiness, never secret contents.
