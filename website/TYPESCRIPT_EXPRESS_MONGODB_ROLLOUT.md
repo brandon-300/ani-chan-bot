@@ -7,11 +7,12 @@ Status: **STAGING ONLY — no production data or login path has been switched.**
 - New isolated staging site: `https://anichan-api-staging.pages.dev`, Git branch `feature/typescript-express-mongodb`, root `website`, build `npm run build`.
 - `src/edge.ts`: TypeScript, Express 5 HTTP server on Cloudflare `httpServerHandler`, MongoDB native Node driver 6, Pages advanced-mode Worker entrypoint.
 - `scripts/build.mjs`: esbuild creates `dist/_worker.js` and retains `dist/index.html`.
-- Existing `website/worker.js` is delegated **all legacy routes** by the staging Worker; registration/login/session behavior remains D1 until a separately audited cutover.
+- The staging Worker exposes **only** `/api/v2/*` read-only endpoints. All other routes return 404; it does not expose the production D1 signup/login API. Production login/session behavior remains D1 until a separately audited cutover.
 - New versioned read-only endpoints:
   - GET `/api/v2/health`: API health, whether Mongo URI secret is configured (never reveals it).
   - GET `/api/v2/catalogue?page=1&q=&tier=`: live AniChan MongoDB catalogue data, limited to 20 cards per page and 50 pages, with whitelist projection. Returns 503 if Mongo backend not configured.
 - No credentials, usernames, passwords, sessions, cards or balances are copied or modified by these endpoints.
+- Dedicated Atlas user `anichan_cf_stage_ro` is scoped to read-only access to the `anichan` database; its generated password is saved as an encrypted `MONGODB_URI` Pages staging secret and was never checked into Git.
 - No new WhatsApp commands; `.reg` remains the only onboarding entrypoint in wweb.js development branch.
 
 ## Configuration and rollback
@@ -23,7 +24,7 @@ Status: **STAGING ONLY — no production data or login path has been switched.**
 - To roll back staging, revert this feature branch; production is a distinct Cloudflare Pages project and stays unaffected.
 
 ## QA gates
-- [ ] Staging Git deployment and TypeScript build successfully completed.
+- [x] Initial staging deployment completed; TypeScript build and typecheck enabled. Latest release verification still required.
 - [ ] Live /api/v2/health on staging returns expected JSON.
 - [ ] Read-only MongoDB credentials installed and live /api/v2/catalogue returns the correct catalogue.
 - [ ] API query validation and error paths tested.
