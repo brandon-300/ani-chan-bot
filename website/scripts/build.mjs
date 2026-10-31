@@ -12,6 +12,9 @@ await build({
   target: ['es2022'],
   // Cloudflare provides Node.js APIs and its native HTTP-server bridge.
   external: ['node:*', 'cloudflare:*'],
+  // The CommonJS dependencies of Express use require('node:*'). Preserve a
+  // real require bridge in the generated ES module so Workers can load them.
+  banner: { js: 'import { createRequire } from "node:module"; const require = createRequire(import.meta.url);' },
   sourcemap: false,
   logLevel: 'info'
 });
