@@ -14,7 +14,7 @@ await build({
   external: ['node:*', 'cloudflare:*'],
   // The CommonJS dependencies of Express use require('node:*'). Preserve a
   // real require bridge in the generated ES module so Workers can load them.
-  banner: { js: 'import { createRequire } from "node:module"; const require = createRequire(import.meta.url);' },
+  banner: { js: 'import { createRequire } from "node:module"; const require = createRequire("file:///anichan/pages/_worker.js");' },
   sourcemap: false,
   logLevel: 'info'
 });
