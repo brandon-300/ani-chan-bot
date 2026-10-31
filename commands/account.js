@@ -212,7 +212,7 @@ async function _checkSession(client, msg, command, args, registrationCheck) {
   if (isOwner(senderId) || isMod(senderId)) return { blocked: false };
   // .setemail must keep working while locked — it's the way out for an
   // account that has no recovery email yet.
-  if (['setemail', 'website', 'link', 'syncprofile'].includes(command)) return { blocked: false };
+  if (command === 'setemail') return { blocked: false };
 
   const user = registrationCheck.user
     || await User.findOne({ id: senderId }, 'registration email emailVerifiedAt sessionLockedAt lastActiveAt').lean();
