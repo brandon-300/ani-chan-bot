@@ -39,6 +39,21 @@ export interface Challenge {
   expiresAt: Date;
   claimedAt?: number | null;
 }
+let indexInit: Promise<void> | null = null;
+async function ensureSiteIndexes(db: Db): Promise<void> {
+  if (!indexInit) {
+    indexInit = Promise.all([
+      db.collection<WebAccount>('accounts').createIndex({email:1},{unique:true}),
+      db.collection<WebAccount>('accounts').createIndex(
+        {whatsappId:1},{unique:true,partialFilterExpression:{whatsappId:{$type:'string'}}}
+      ),
+      db.collection<Session>('sessions').createIndex({expiresAt:1},{expireAfterSeconds:0}),
+      db.collection<Challenge>('challenges').createIndex({expiresAt:1},{expireAfterSeconds:0}),
+      db.collection('rateLimits').createIndex({expiresAt:1},{expireAfterSeconds:0})
+    ]).then(()=>undefined).catch(err=>{indexInit=null;throw err});
+  }
+  await indexInit;
+}
 export async function withMongo<T>(fn: (db: Db, client: MongoClient) => Promise<T>): Promise<T> {
   const uri = cfg().MONGODB_URI;
   if (!uri) throw new Error('Database not configured');
@@ -49,16 +64,7 @@ export async function withMongo<T>(fn: (db: Db, client: MongoClient) => Promise<
   try {
     await client.connect();
     const db = client.db('anichan_site');
-    // Safe, additive indexes only. This database is entirely separate from the
-    // existing MongoDB anichan.users / cards / gameplay collections.
-    await Promise.all([
-      db.collection<WebAccount>('accounts').createIndex({email: 1},{unique:true}),
-      db.collection<WebAccount>('accounts').createIndex(
-        {whatsappId:1},{unique:true,partialFilterExpression:{whatsappId:{$type:'string'}}}
-      ),
-      db.collection<Session>('sessions').createIndex({expiresAt:1},{expireAfterSeconds:0}),
-      db.collection<Challenge>('challenges').createIndex({expiresAt:1},{expireAfterSeconds:0})
-    ]);
+    await ensureSiteIndexes(db);
     return await fn(db,client);
   } finally { await client.close().catch(()=>undefined); }
 }
