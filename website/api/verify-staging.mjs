@@ -43,3 +43,37 @@ if(protectedRes.status!==403){
   process.exit(1);
 }
 console.log('Bot-only profile endpoint correctly rejects unauthenticated requests.');
+
+if (!health.data.emailReady) {
+  console.error('Gmail SMTP configuration is not ready in the deployed Worker (no secret values were read).');
+  process.exit(1);
+}
+console.log('Gmail SMTP environment is configured; no message was sent.');
+async function postApi(path,body={}) {
+  const response=await fetch(base+path,{
+    method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(body),signal:AbortSignal.timeout(30000)
+  });
+  let data;try{data=await response.json()}catch{data={}};
+  return {status:response.status,data};
+}
+const anonymous=await probe('/api/me');
+if(anonymous.status!==200 || anonymous.data.account!==null){
+  console.error('Anonymous session safety check failed. HTTP',anonymous.status);process.exit(1);
+}
+console.log('Anonymous account lookup returns no user.');
+const invalidRegistration=await postApi('/api/auth/register',{email:'not-an-email'});
+if(invalidRegistration.status!==400){
+  console.error('Registration input validation failed. HTTP',invalidRegistration.status);process.exit(1);
+}
+console.log('Invalid signup cannot create an account.');
+const unauthenticatedMail=await postApi('/api/auth/email/send',{});
+if(unauthenticatedMail.status!==401){
+  console.error('Unauthenticated email sender must reject requests. HTTP',unauthenticatedMail.status);process.exit(1);
+}
+console.log('Email verification sending correctly requires a logged-in account.');
+const unauthenticatedLink=await postApi('/api/link/start',{});
+if(unauthenticatedLink.status!==503){
+  console.error('WhatsApp linking feature gate must remain disabled on staging. HTTP',unauthenticatedLink.status);process.exit(1);
+}
+console.log('WhatsApp linking stays disabled until end-to-end verification is complete.');
