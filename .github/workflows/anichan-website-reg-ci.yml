@@ -1,0 +1,29 @@
+name: AniChan wweb.js website registration checks
+on:
+  push:
+    branches:
+      - feature/website-link-main
+    paths:
+      - 'utils/websiteRegistration.js'
+      - 'commands/economy.js'
+      - 'index.js'
+      - 'tests/website-registration.test.js'
+      - '.github/workflows/anichan-website-reg-ci.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Syntax check wweb.js changes
+        run: |
+          node --check index.js
+          node --check commands/economy.js
+          node --check utils/websiteRegistration.js
+      - name: Run website-linking safety tests
+        run: node --test tests/website-registration.test.js
