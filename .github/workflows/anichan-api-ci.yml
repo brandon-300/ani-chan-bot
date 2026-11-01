@@ -5,6 +5,7 @@ on:
       - feature/typescript-express-mongodb
     paths:
       - 'website/api/**'
+      - 'website/index.html'
       - '.github/workflows/anichan-api-ci.yml'
   workflow_dispatch:
 permissions:
@@ -26,3 +27,14 @@ jobs:
       - name: Compile-check API
         working-directory: website/api
         run: npm run check
+
+      - name: Check AniChan staging frontend JavaScript
+        run: |
+          node <<'NODE'
+          const fs=require('node:fs'),vm=require('node:vm');
+          const html=fs.readFileSync('website/index.html','utf8');
+          const scripts=[...html.matchAll(/<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/g)];
+          if(!scripts.length)throw Error('No frontend JavaScript found');
+          for(const entry of scripts) new vm.Script(entry[1]);
+          console.log('Validated',scripts.length,'frontend script(s)');
+          NODE
