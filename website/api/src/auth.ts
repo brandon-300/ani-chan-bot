@@ -3,7 +3,7 @@ import { mailReady, sendVerificationEmail } from './email';
 import type { Db } from 'mongodb';
 import { cfg, publicAccount, requestLimited, withMongo, type WebAccount, type Session, type Challenge } from './mongo';
 import { cookieValue, digest, isAdult, millis, normalizedEmail, normalizedString,
-  originAllowed, passwordDigest, pin, otpDigest, safeEqual, setSessionCookie, token } from './security';
+  originAllowed, passwordDigest, PASSWORD_SCHEME, pin, otpDigest, safeEqual, setSessionCookie, token } from './security';
 
 export const auth = express.Router();
 const ipOf = (req: Request) => req.get('CF-Connecting-IP') || 'unknown';
@@ -65,7 +65,7 @@ auth.post('/api/auth/register',async(req,res)=>{
     const hash=await passwordDigest(password,salt),t=millis();
     signupStage='account insertion';
     const account:WebAccount={_id:crypto.randomUUID(),email,displayName,bio:'',dob,avatarData:'',
-      passwordSalt:salt,passwordHash:hash,emailVerifiedAt:null,whatsappId:null,createdAt:t,updatedAt:t};
+      passwordSalt:salt,passwordHash:hash,passwordScheme:PASSWORD_SCHEME,emailVerifiedAt:null,whatsappId:null,createdAt:t,updatedAt:t};
     try{await db.collection<WebAccount>('accounts').insertOne(account);}
     catch(err){if((err as {code?:number}).code===11000)return reject(res,409,'An account with this email already exists.');throw err}
     signupStage='session creation';
@@ -88,7 +88,7 @@ auth.post('/api/auth/login',async(req,res)=>{
     if(!await requestLimited(db,ipOf(req),'login',12))return reject(res,429,'Too many login attempts.');
     const a=await db.collection<WebAccount>('accounts').findOne({email});
     const calculated=await passwordDigest(password,a?.passwordSalt||'00000000000000000000000000000000');
-    if(!a||!safeEqual(calculated,a.passwordHash))return reject(res,401,'Invalid email or password.');
+    if(!a || a.passwordScheme!==PASSWORD_SCHEME || !safeEqual(calculated,a.passwordHash))return reject(res,401,'Invalid email or password.');
     await startSession(res,db,a);
     res.set('Cache-Control','no-store').json({account:publicAccount(a)});
   });}catch{if(!res.headersSent)reject(res,503,'Login service temporarily unavailable.');}
@@ -162,7 +162,7 @@ auth.post('/api/auth/reset/confirm',async(req,res)=>{
     const a=await db.collection<WebAccount>('accounts').findOne({email,emailVerifiedAt:{$ne:null}});
     if(!a||!await claimEmailChallenge(db,a,'reset-password',b.code))return reject(res,400,'Invalid or expired recovery code.');
     const salt=token(16),hash=await passwordDigest(pw,salt);
-    await db.collection<WebAccount>('accounts').updateOne({_id:a._id},{$set:{passwordSalt:salt,passwordHash:hash,updatedAt:millis()}});
+    await db.collection<WebAccount>('accounts').updateOne({_id:a._id},{$set:{passwordSalt:salt,passwordHash:hash,passwordScheme:PASSWORD_SCHEME,updatedAt:millis()}});
     await db.collection<Session>('sessions').deleteMany({accountId:a._id});
     res.json({ok:true});
   });}catch{if(!res.headersSent)reject(res,503,'Password recovery unavailable.');}
