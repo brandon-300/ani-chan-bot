@@ -68,8 +68,8 @@ const source=fs.readFileSync(path.join(__dirname,'src/bot.ts'),'utf8');
 const compiled=ts.transpileModule(source,{compilerOptions:{
   target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS,esModuleInterop:true
 }}).outputText;
-const module={exports:{}};
-vm.runInNewContext(compiled,{exports:module.exports,module,require:name=>{
+const compiledModule={exports:{}};
+vm.runInNewContext(compiled,{exports:compiledModule.exports,module:compiledModule,require:name=>{
   if(!(name in mocks))throw Error('Unexpected dependency '+name);
   return mocks[name];
 },console,Date},{filename:'bot.js'});
