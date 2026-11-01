@@ -26,6 +26,7 @@ export interface WebAccount {
   avatarData: string;
   passwordSalt: string;
   passwordHash: string;
+  passwordScheme?: string;
   emailVerifiedAt?: number | null;
   whatsappId?: string | null;
   createdAt: number;
