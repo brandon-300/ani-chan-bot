@@ -9,7 +9,11 @@
     "check": "tsc --noEmit",
     "cf-typegen": "wrangler types"
   },
-  "dependencies": { "express": "^5.1.0", "mongodb": "^6.20.0" },
+  "dependencies": {
+    "express": "^5.1.0",
+    "mongodb": "^6.20.0",
+    "nodemailer": "^10.2.1"
+  },
   "devDependencies": {
     "@types/express": "^5.0.0",
     "@types/node": "^22.0.0",
