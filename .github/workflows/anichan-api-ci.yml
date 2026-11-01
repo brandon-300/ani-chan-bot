@@ -27,6 +27,8 @@ jobs:
       - name: Compile-check API
         working-directory: website/api
         run: npm run check
+      - name: Verify original AniChan HTML email design is preserved
+        run: node website/api/verify-email-template.cjs
 
       - name: Check AniChan staging frontend JavaScript
         run: |
