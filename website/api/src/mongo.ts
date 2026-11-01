@@ -6,8 +6,13 @@ export interface Environment {
   MONGODB_URI?: string;
   BOT_LINK_SECRET?: string;
   OTP_SECRET?: string;
-  RESEND_API_KEY?: string;
+  SMTP_HOST?: string;
+  SMTP_PORT?: string;
+  SMTP_SECURE?: string;
+  SMTP_USER?: string;
+  SMTP_PASS?: string;
   EMAIL_FROM?: string;
+  EMAIL_FROM_NAME?: string;
   WHATSAPP_LINK_ENABLED?: string;
 }
 export function cfg(): Environment { return env as unknown as Environment; }
