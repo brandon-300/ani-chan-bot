@@ -42,3 +42,52 @@ The existing `.reg` command is the only approved onboarding entry point.
 - The dedicated `utils/websiteRegistration.js` passed synthetic linking and recovery tests with a representative pre-existing `@c.us` account.
 - Both methods authenticated requests, preserved the original `User.id`, and updated *only* profile and website-link fields. MongoDB coins, bank, cards, guild membership, inventory, orbs and XP were absent from the `$set` update.
 - No live production WhatsApp account linking has been exercised, and the bot has not been restarted or switched to this branch.
+
+## 2026-11-01: staged website-to-WhatsApp linking implementation
+
+The Cloudflare Pages **staging site** is now `https://anichan-api-stage.pages.dev`
+from branch `feature/typescript-express-mongodb`; this is not the production
+`https://anichan.pages.dev` site. The bot development branch remains
+`feature/website-link-main`. Neither production `main` nor Baileys is switched.
+
+**Approved user experience:**
+1. New WhatsApp user privately sends `.reg`, receiving signup/login links.
+2. User registers/logs into the website and verifies their email.
+3. Website dashboard generates an expiring eight-digit one-time code.
+4. User sends `.reg 12345678` privately to AniChan, using their actual code.
+5. Bot calls `/api/internal/inspect-link` using its Bearer secret, but the
+   server does **not consume** the code yet.
+6. Bot checks both `@c.us` and `@s.whatsapp.net` MongoDB IDs to protect
+   existing progress, reject ambiguous duplicates, and reject already linked users.
+7. Bot calls `/api/internal/claim-link` with the inspected `siteId`. Server
+   atomically consumes the code, prevents identity collisions, and saves website
+   account ↔ WhatsApp identity. Bot then updates **only** profile and link fields
+   on its existing MongoDB document, with an atomic conditional write.
+8. If bot profile syncing fails after website claim, send `.reg` without a
+   code to restore from `/api/internal/profile`. Existing economy, cards,
+   loans, guild membership, and email recovery state are never overwritten.
+9. No new WhatsApp commands are introduced.
+
+**Tested offline:** both branches have successful CI checks. The staged API
+test covers Bearer authentication, inspection without consumption, site-ID match,
+replay/expiration, identity conflicts, and the disabled feature gate. The
+wweb.js tests cover inspection-before-claim, existing IDs, duplicate prevention,
+new-user registration writes, code use ordering, recovery, and website link URLs.
+
+**Not yet tested or enabled on live WhatsApp:**
+- Cloudflare staging project does not have a `BOT_LINK_SECRET` configured.
+- Website `WHATSAPP_LINK_ENABLED` and bot `ANICHAN_REG_LINK_ENABLED` must remain
+  disabled until a controlled pilot with a real, owner-authorized phone.
+- The bot and staging website must share a strong, new Bearer secret; do not put
+  it in GitHub or chat. Do not reuse the public production secret if staging can
+  have its own.
+- Pilot bot environment: `ANICHAN_SITE_URL=https://anichan-api-stage.pages.dev`,
+  `ANICHAN_SITE_BOT_SECRET=<the same staging secret>`,
+  `ANICHAN_REG_LINK_ENABLED=true`. Start with a safe backup of the Termux bot
+  MongoDB data, and do not run two wweb.js sessions for the same account.
+- Staging Pages secret: `BOT_LINK_SECRET=<same staging secret>`. Only during the
+  authorized pilot set `WHATSAPP_LINK_ENABLED=true` on the staging project.
+- A real inbox's styled Gmail OTP must also be confirmed before approving public
+  onboarding. There has not been any real Gmail delivery test yet.
+- Never turn on production-only registration, retire legacy commands, migrate
+  D1 passwords or deploy to `main` until the real pilot passes.
