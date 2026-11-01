@@ -1,10 +1,10 @@
 'use strict';
 
 /**
- * The *existing* .reg command is the only entry point for website signup and
- * WhatsApp identity verification. No new chat commands are registered here.
- * This integration stays off until ANICHAN_REG_LINK_ENABLED=true is explicitly
- * configured on the running wweb.js bot.
+ * Preserve the existing AniChan .reg command. Never register extra commands.
+ * Staging link activation requires an explicit owner-side .env switch.
+ * The site first inspects the code without spending it; the bot checks
+ * legacy user records before the one-time website claim can be consumed.
  */
 const crypto = require('node:crypto');
 const User = require('../models/User');
@@ -22,24 +22,24 @@ function canonicalizeSender(jid) {
   const raw = String(jid || '').trim().replace(/:\d+(?=@)/, '');
   if (/^\d+@c\.us$/.test(raw)) return raw.replace('@c.us', '@s.whatsapp.net');
   if (/^\d+@s\.whatsapp\.net$/.test(raw)) return raw;
-  // The current bot is whatsapp-web.js. Unresolved Baileys @lid IDs must
-  // never be treated as a phone number when assigning an existing account.
+  // No guessing mobile numbers from Baileys @lid or group identifiers.
   throw new Error('Cannot securely identify this WhatsApp sender.');
 }
 
 function relatedUserIds(raw, pn) {
-  const set = new Set([raw, pn]);
-  if (pn.endsWith('@s.whatsapp.net')) set.add(pn.replace('@s.whatsapp.net', '@c.us'));
-  return [...set];
+  const ids = new Set([raw, pn]);
+  if (pn.endsWith('@s.whatsapp.net')) ids.add(pn.replace('@s.whatsapp.net', '@c.us'));
+  return [...ids];
 }
 
 async function getSender(msg) {
+  // Only the existing .reg handler calls this, and it rejects group chats.
   const contact = await msg.getContact();
-  const raw = String(contact?.id?._serialized || msg.author || msg.from || '');
-  if (!raw || !/^\d+@(c\.us|s\.whatsapp\.net)$/.test(raw)) {
+  const raw = String(contact?.id?._serialized || '');
+  if (!/^\d+@(c\.us|s\.whatsapp\.net)$/.test(raw)) {
     throw new Error('This WhatsApp identity cannot be verified.');
   }
-  return { raw, pn: canonicalizeSender(raw) };
+  return { raw, pn:canonicalizeSender(raw) };
 }
 
 async function siteRequest(path, { method = 'GET', data } = {}) {
@@ -56,8 +56,7 @@ async function siteRequest(path, { method = 'GET', data } = {}) {
     },
     body: data ? JSON.stringify(data) : undefined,
     signal: AbortSignal.timeout(13000),
-    redirect: 'error',
-    cache: 'no-store'
+    redirect:'error', cache:'no-store'
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(
@@ -69,7 +68,9 @@ async function siteRequest(path, { method = 'GET', data } = {}) {
 
 function checkedProfile(source) {
   const siteId = String(source?.siteId || '');
-  if (!/^[0-9a-f-]{36}$/i.test(siteId)) throw new Error('Website identity is missing or invalid.');
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(siteId)) {
+    throw new Error('Website identity is missing or invalid.');
+  }
   const name = String(source?.displayName || '').trim();
   if (name.length < 2 || name.length > 32) throw new Error('Invalid website display name.');
   const bio = String(source?.bio || '').trim();
@@ -90,84 +91,108 @@ function checkedProfile(source) {
       !/^data:image\/(webp|png|jpeg);base64,[A-Za-z0-9+/=]+$/.test(avatar))) {
     throw new Error('The website profile picture is invalid.');
   }
-  return { siteId, name, bio, dob, age, avatar };
+  return { siteId,name,bio,dob,age,avatar };
 }
 
-async function applyProfile(sender, source) {
-  const profile = checkedProfile(source);
-  const ids = relatedUserIds(sender.raw, sender.pn);
-  const [records, claimed] = await Promise.all([
-    User.find({ id: { $in: ids } }).select('id websiteAccountId').lean(),
-    User.findOne({ websiteAccountId: profile.siteId }).select('id').lean()
+/**
+ * Resolve all possible legacy JID variants BEFORE consuming a one-time code.
+ * One existing account is retained under its original MongoDB id.
+ * Never merge different ids or overwrite another websiteAccountId.
+ */
+async function planProfile(sender, source) {
+  const profile=checkedProfile(source);
+  const ids=relatedUserIds(sender.raw,sender.pn);
+  const [records,claimed]=await Promise.all([
+    User.find({id:{$in:ids}}).select('id websiteAccountId').lean(),
+    User.findOne({websiteAccountId:profile.siteId}).select('id').lean()
   ]);
-  if (records.length > 1) throw new Error('Multiple legacy accounts found for this WhatsApp number. Owner reconciliation is required.');
-  const userId = records[0]?.id || sender.raw;
-  if (claimed?.id && claimed.id !== userId) throw new Error('This website account is already connected to another WhatsApp user.');
-  if (records[0]?.websiteAccountId && records[0].websiteAccountId !== profile.siteId) {
+  if(records.length>1)throw new Error('Multiple legacy accounts found for this WhatsApp number. Owner reconciliation is required.');
+  const userId=records[0]?.id || sender.raw;
+  if(claimed?.id && claimed.id!==userId)throw new Error('This website account is already connected to another WhatsApp user.');
+  if(records[0]?.websiteAccountId && records[0].websiteAccountId!==profile.siteId){
     throw new Error('Your existing WhatsApp account is already linked to a different website login.');
   }
-  const update = {
-    name: profile.name,
-    bio: profile.bio,
-    dob: profile.dob,
-    age: profile.age,
-    websiteAccountId: profile.siteId,
-    websiteLinkedAt: new Date(),
-    'registration.status': 'active',
-    'registration.nameSet': true,
-    'registration.dobSet': true,
-    'registration.bioSet': true,
-    'registration.picSet': true
+  return {userId,existing:Boolean(records.length),profile};
+}
+
+async function applyProfile(sender, source, earlierPlan) {
+  // Repeat all local checks after the website claim to detect races.
+  const plan=await planProfile(sender,source);
+  if(earlierPlan && (earlierPlan.userId!==plan.userId ||
+      earlierPlan.profile.siteId!==plan.profile.siteId)){
+    throw new Error('WhatsApp identity state changed during linking; send .reg to recover.');
+  }
+  const {userId,existing,profile}=plan;
+  const update={
+    name:profile.name,bio:profile.bio,dob:profile.dob,age:profile.age,
+    websiteAccountId:profile.siteId,websiteLinkedAt:new Date(),
+    'registration.status':'active','registration.nameSet':true,
+    'registration.dobSet':true,'registration.bioSet':true,'registration.picSet':true
   };
-  let pictureWarning = '';
-  if (profile.avatar) {
-    if (!isCloudConfigured()) {
-      pictureWarning = 'Profile picture syncing needs Cloudinary configuration.';
-    } else {
-      try {
-        const bytes = Buffer.from(profile.avatar.split(',')[1], 'base64');
-        const ownerHash = crypto.createHash('sha256').update(userId).digest('hex').slice(0, 24);
-        const uploaded = await uploadBufferToCloud(bytes, {
-          folder: 'anichan/profile_pics',
-          publicId: 'website_' + ownerHash
+  let pictureWarning='';
+  if(profile.avatar){
+    if(!isCloudConfigured()){
+      pictureWarning='Profile picture syncing needs Cloudinary configuration.';
+    }else{
+      try{
+        const bytes=Buffer.from(profile.avatar.split(',')[1],'base64');
+        const ownerHash=crypto.createHash('sha256').update(userId).digest('hex').slice(0,24);
+        const uploaded=await uploadBufferToCloud(bytes,{
+          folder:'anichan/profile_pics',publicId:'website_'+ownerHash
         });
-        update['profile.picUrl'] = uploaded.url;
-        update['profile.picPublicId'] = uploaded.publicId;
-      } catch {
-        pictureWarning = 'The profile picture could not be uploaded yet; retry registration later.';
+        update['profile.picUrl']=uploaded.url;
+        update['profile.picPublicId']=uploaded.publicId;
+      }catch{
+        pictureWarning='The profile picture could not be uploaded yet; retry .reg later.';
       }
     }
   }
-
-  // The $set list contains ONLY profile/linking data. Existing coins, bank,
-  // cards, loans, orbs, guilds, inventory, XP, games and achievements survive.
-  await User.findOneAndUpdate(
-    { id: userId },
-    { $set: update },
-    { upsert: true, new: true, setDefaultsOnInsert: true }
-  );
-  return { userId, pictureWarning, existing: Boolean(records.length) };
+  // Atomic compare-and-set: a conflicting website link is never overwritten,
+  // including when another request claims an account between preflight/write.
+  const filter={
+    id:userId,
+    $or:[{websiteAccountId:profile.siteId},{websiteAccountId:null},{websiteAccountId:{$exists:false}}]
+  };
+  const options={upsert:!existing,new:true,setDefaultsOnInsert:true};
+  const payload={ $set:update };
+  if(!existing)payload.$setOnInsert={id:userId};
+  let saved;
+  try{saved=await User.findOneAndUpdate(filter,payload,options);}
+  catch(err){
+    if(err?.code===11000)throw new Error('An account was linked concurrently; send .reg to reconcile.');
+    throw err;
+  }
+  if(!saved)throw new Error('Your WhatsApp account changed during linking; send .reg to retry.');
+  // Existing coins, bank, cards, guild, loans, sessions, XP and inventory
+  // are intentionally absent from $set.
+  return {userId,pictureWarning,existing};
 }
 
 async function claimWebsiteCode(msg, code) {
-  if (!websiteRegistrationActive()) throw new Error('Website linking is not enabled yet.');
-  if (!/^\d{8}$/.test(code)) throw new Error('Use an eight-digit code from your AniChan website dashboard.');
-  const sender = await getSender(msg);
-  const claimed = await siteRequest('/api/internal/claim-link', {
-    method: 'POST',
-    data: { whatsappId: sender.pn, code }
+  if(!websiteRegistrationActive())throw new Error('Website linking is not enabled yet.');
+  if(!/^\d{8}$/.test(code))throw new Error('Use an eight-digit code from your AniChan website dashboard.');
+  const sender=await getSender(msg);
+  // Step 1: inspect without consuming the code.
+  const preview=await siteRequest('/api/internal/inspect-link',{
+    method:'POST',data:{whatsappId:sender.pn,code}
   });
-  // Claiming the D1 code precedes the MongoDB profile update. If the update
-  // fails, .reg without arguments can recover by reading /api/internal/profile.
-  return applyProfile(sender, claimed);
+  const plan=await planProfile(sender,preview.account);
+  // Step 2: claim atomically only after both sides passed preflight checks.
+  const claimed=await siteRequest('/api/internal/claim-link',{
+    method:'POST',data:{whatsappId:sender.pn,code,siteId:plan.profile.siteId}
+  });
+  if(claimed.siteId!==plan.profile.siteId)throw new Error('Website account identity changed during linking.');
+  // Step 3: update only profile and linking fields on the existing bot user.
+  // If this write fails after the website claim, plain .reg can restore it.
+  return applyProfile(sender,claimed,plan);
 }
 
 async function restoreLinkedProfile(msg) {
-  if (!websiteRegistrationActive()) return null;
-  const sender = await getSender(msg);
-  const data = await siteRequest('/api/internal/profile?waid=' + encodeURIComponent(sender.pn));
-  if (!data.account) return null;
-  return applyProfile(sender, data.account);
+  if(!websiteRegistrationActive())return null;
+  const sender=await getSender(msg);
+  const data=await siteRequest('/api/internal/profile?waid='+encodeURIComponent(sender.pn));
+  if(!data.account)return null;
+  return applyProfile(sender,data.account);
 }
 
-module.exports = { websiteRegistrationActive, claimWebsiteCode, restoreLinkedProfile };
+module.exports={websiteRegistrationActive,claimWebsiteCode,restoreLinkedProfile};
