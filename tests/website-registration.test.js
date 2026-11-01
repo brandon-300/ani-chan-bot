@@ -118,3 +118,30 @@ test('existing user updates cannot upsert a duplicate gameplay account',async()=
   for(const field of ['coins','bank','cards','guildId','sessionLockedAt','lastActiveAt','email','emailVerifiedAt'])
     assert.ok(!(field in changed),field+' preserved');
 });
+
+test('already-linked user restores profile without spending a new code',async()=>{
+  const saved={id:'2348000000000@c.us',websiteAccountId:SITE_ID,coins:100,bank:500,cards:['card1'],guildId:'guild1'};
+  const h=instance({users:[saved]});
+  const result=await h.mod.exports.restoreLinkedProfile(sender());
+  assert.equal(result.existing,true);
+  assert.equal(h.requests.length,1);
+  assert.ok(h.requests[0].url.includes('/api/internal/profile?waid='));
+  assert.equal(h.requests[0].opts.method,'GET');
+  assert.equal(h.writes.length,1);
+  assert.equal(h.writes[0].options.upsert,false);
+  assert.equal(h.writes[0].update.$set.websiteAccountId,SITE_ID);
+  for(const key of ['coins','bank','cards','guildId']) assert.ok(!(key in h.writes[0].update.$set));
+});
+test('registration links remain confined to configured website',()=>{
+  const h=instance();
+  const links=h.mod.exports.websiteRegistrationLinks();
+  assert.equal(links.register,'https://anichan.pages.dev/register');
+  assert.equal(links.login,'https://anichan.pages.dev/login');
+});
+test('disabled linking prevents recovery and leaves account untouched',async()=>{
+  const h=instance({enabled:false,users:[{id:'2348000000000@c.us',websiteAccountId:SITE_ID}]});
+  const result=await h.mod.exports.restoreLinkedProfile(sender());
+  assert.equal(result,null);
+  assert.equal(h.requests.length,0);
+  assert.equal(h.writes.length,0);
+});
