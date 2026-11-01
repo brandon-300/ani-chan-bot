@@ -65,15 +65,16 @@ app.use((err:unknown,_req:Request,res:Response,_next:NextFunction)=>{
 });
 app.listen(3000);
 const apiHandler=httpServerHandler({port:3000});
-type AssetEnv = { ASSETS:{fetch(request:Request):Promise<Response>} };
+type AssetEnv = { ASSETS:{fetch(request:globalThis.Request):Promise<globalThis.Response>} };
+type ApiFetch = (request:globalThis.Request, environment:unknown, context:ExecutionContext) => Promise<globalThis.Response>;
+const apiFetch = apiHandler.fetch as ApiFetch;
 export default {
-  fetch(request:Request, environment:AssetEnv, context:ExecutionContext):Promise<Response> {
+  fetch(request:globalThis.Request, environment:AssetEnv, context:ExecutionContext):Promise<globalThis.Response> {
     const url=new URL(request.url);
     if(url.pathname==='/api' || url.pathname.startsWith('/api/')){
-      return apiHandler.fetch(request,environment,context);
+      return apiFetch(request,environment,context);
     }
-    // Pages advanced mode serves the original AniChan HTML source from
-    // the uploaded assets, while Express owns only /api routes.
-    return environment.ASSETS.fetch(new Request(new URL('/index.html',url),request));
+    // Pages advanced mode serves original AniChan frontend alongside Express.
+    return environment.ASSETS.fetch(new globalThis.Request(new URL('/index.html',url)));
   }
 };
