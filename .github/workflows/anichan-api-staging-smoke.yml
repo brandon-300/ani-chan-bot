@@ -1,0 +1,22 @@
+name: AniChan API staging database smoke check
+on:
+  push:
+    branches:
+      - feature/typescript-express-mongodb
+    paths:
+      - 'website/api/verify-staging.mjs'
+      - '.github/workflows/anichan-api-staging-smoke.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  mongo-readonly-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Validate staged API and real MongoDB catalogue
+        run: node website/api/verify-staging.mjs
