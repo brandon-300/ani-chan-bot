@@ -15,7 +15,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { isCloudConfigured } = require('../utils/cloudinary');
-const { websiteRegistrationActive, claimWebsiteCode, restoreLinkedProfile } = require('../utils/websiteRegistration');
+const { websiteRegistrationActive, websiteRegistrationLinks, claimWebsiteCode, restoreLinkedProfile } = require('../utils/websiteRegistration');
 const { maskEmail, isPrivateChat } = require('../utils/emailService');
 
 // ─── Profile pictures (.setpic) ───────────────────────────────────────────────
@@ -242,11 +242,12 @@ module.exports = {
   async reg(client, msg, args) {
     const chat = await safeGetChat(msg).catch(() => null);
     if (!chat || chat.isGroup) return msg.reply('🔒 Please send *.reg* privately to AniChan for account registration and login.');
+    const websiteLinks = websiteRegistrationLinks();
     const base =
       '🌸 *Welcome to AniChan!*' +
       '\n\nCreate your account or log in through our website:' +
-      '\n\n🆕 *New user:* https://anichan.pages.dev/register' +
-      '\n🔑 *Existing website account:* https://anichan.pages.dev/login' +
+      '\n\n🆕 *New user:* ' + websiteLinks.register +
+      '\n🔑 *Existing website account:* ' + websiteLinks.login +
       '\n\n🎴 Already have an AniChan WhatsApp account? Your cards, coins and guild remain in MongoDB.' +
       '\n\n' + (websiteRegistrationActive()
         ? 'To connect or recover your account, open your website dashboard, choose *Link WhatsApp*, then send *.reg YOUR_8_DIGIT_CODE* here in this chat. The code expires after 10 minutes.'
