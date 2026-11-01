@@ -27,6 +27,8 @@ jobs:
       - name: Compile-check API
         working-directory: website/api
         run: npm run check
+      - name: Test WhatsApp one-time linking rules without any real account
+        run: node website/api/verify-linking.cjs
       - name: Verify original AniChan HTML email design is preserved
         run: node website/api/verify-email-template.cjs
 
