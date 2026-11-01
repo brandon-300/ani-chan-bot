@@ -59,8 +59,10 @@ auth.post('/api/auth/register',async(req,res)=>{
   try{await withMongo(async db=>{
     signupStage='rate limit';
     if(!await requestLimited(db,ipOf(req),'register',4))return reject(res,429,'Too many registration attempts.');
-    signupStage='password hashing';
-    const salt=token(16),hash=await passwordDigest(password,salt),t=millis();
+    signupStage='random salt';
+    const salt=token(16);
+    signupStage='PBKDF2 hashing';
+    const hash=await passwordDigest(password,salt),t=millis();
     signupStage='account insertion';
     const account:WebAccount={_id:crypto.randomUUID(),email,displayName,bio:'',dob,avatarData:'',
       passwordSalt:salt,passwordHash:hash,emailVerifiedAt:null,whatsappId:null,createdAt:t,updatedAt:t};
@@ -69,10 +71,11 @@ auth.post('/api/auth/register',async(req,res)=>{
     signupStage='session creation';
     await startSession(res,db,account);
     res.status(201).set('Cache-Control','no-store').json({account:publicAccount(account)});
-  });}catch{
+  });}catch(err){
     if(!res.headersSent){
       // Staging-only diagnostic: no sensitive values or error messages.
       res.set('X-AniChan-QA-Phase',signupStage);
+      res.set('X-AniChan-QA-Type', err instanceof Error ? err.name.slice(0,40) : 'Unknown');
       reject(res,503,'Account service temporarily unavailable.');
     }
   }
