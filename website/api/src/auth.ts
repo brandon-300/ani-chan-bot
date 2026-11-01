@@ -1,5 +1,6 @@
 import express, { type Request, type Response } from 'express';
 import { mailReady, sendVerificationEmail } from './email';
+import nodemailer from 'nodemailer';
 import type { Db } from 'mongodb';
 import { cfg, publicAccount, requestLimited, withMongo, type WebAccount, type Session, type Challenge } from './mongo';
 import { cookieValue, digest, isAdult, millis, normalizedEmail, normalizedString,
@@ -153,4 +154,30 @@ auth.post('/api/auth/reset/confirm',async(req,res)=>{
     await db.collection<Session>('sessions').deleteMany({accountId:a._id});
     res.json({ok:true});
   });}catch{if(!res.headersSent)reject(res,503,'Password recovery unavailable.');}
+});
+
+
+// Staging-only, authenticated and rate-limited SMTP handshake probe.
+// It NEVER sends a message and only accepts disposable QA accounts.
+auth.post('/api/_qa/smtp-verify',async(req,res)=>{
+  if(!String(req.get('host')||'').endsWith('anichan-api-stage.pages.dev'))return reject(res,404,'Not found.');
+  if(!originAllowed(req))return reject(res,403,'Invalid request origin.');
+  if(!mailReady())return reject(res,503,'SMTP is not configured.');
+  try{await withMongo(async db=>{
+    const account=await signedIn(req,db);
+    if(!account || !/^ani-qa-smoke-[\d-]+@example\.invalid$/.test(account.email))return reject(res,403,'Forbidden.');
+    if(!await requestLimited(db,ipOf(req),'qa-smtp:'+account._id,1))return reject(res,429,'Already checked.');
+    const e=cfg(),port=Number(e.SMTP_PORT||465);
+    const transport=nodemailer.createTransport({
+      host:e.SMTP_HOST!,port,secure:port===465,requireTLS:port===587,
+      auth:{user:e.SMTP_USER!,pass:e.SMTP_PASS!.replace(/\s+/g,'')},
+      connectionTimeout:15000,greetingTimeout:15000,socketTimeout:15000,pool:false
+    });
+    try{await transport.verify();}
+    finally{transport.close();}
+    res.set('Cache-Control','no-store').json({ok:true,smtp:'authenticated',messageSent:false});
+  });}catch(err){
+    // No SMTP usernames, passwords, server replies or email addresses are logged.
+    if(!res.headersSent)res.status(503).json({error:'Gmail SMTP authentication/connection failed.',type:err instanceof Error?err.name:'Unknown'});
+  }
 });
