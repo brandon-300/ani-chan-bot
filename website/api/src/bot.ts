@@ -13,8 +13,8 @@ const fail = (res:Response,status:number,error:string) => {
   res.status(status).set('Cache-Control','no-store').json({error});
 };
 const authBot = (req:Request):boolean =>
-  !!cfg().BOT_LINK_SECRET && safeEqual(bearer(req),cfg().BOT_LINK_SECRET!);
-const enabled = () => !!cfg().BOT_LINK_SECRET && cfg().WHATSAPP_LINK_ENABLED === 'true';
+  !!cfg().BOT_LINK_SECRET && cfg().BOT_LINK_SECRET!.length>=32 && safeEqual(bearer(req),cfg().BOT_LINK_SECRET!);
+const enabled = () => !!cfg().BOT_LINK_SECRET && cfg().BOT_LINK_SECRET!.length>=32 && cfg().WHATSAPP_LINK_ENABLED === 'true';
 
 function candidate(req:Request): {whatsappId:string;code:string;siteId?:string}|null {
   const body=req.body && typeof req.body==='object' && !Array.isArray(req.body) ? req.body : {};
@@ -76,10 +76,16 @@ bot.post('/api/link/start',async(req,res)=>{
       });
       if(existing)continue;
       await db.collection<Challenge>('challenges').deleteMany({accountId:a._id,purpose:'whatsapp-link'});
-      await db.collection<Challenge>('challenges').insertOne({
-        _id:token(16),accountId:a._id,purpose:'whatsapp-link',tokenHash:hash,attempts:0,
-        expiresAt:new Date(millis()+600000),claimedAt:null
-      });
+      try{
+        await db.collection<Challenge>('challenges').insertOne({
+          _id:token(16),accountId:a._id,purpose:'whatsapp-link',tokenHash:hash,attempts:0,
+          expiresAt:new Date(millis()+600000),claimedAt:null
+        });
+      }catch(e){
+        // A concurrent request may have just issued the same code.
+        if((e as {code?:number}).code===11000)continue;
+        throw e;
+      }
       return res.set('Cache-Control','no-store').json({code,command:'.reg '+code,expiresInSeconds:600});
     }
     fail(res,503,'Could not generate a unique code. Please retry.');
