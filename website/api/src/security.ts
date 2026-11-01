@@ -1,4 +1,4 @@
-import { randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
+import { randomBytes, randomInt, timingSafeEqual, pbkdf2 } from 'node:crypto';
 import type { Request, Response } from 'express';
 
 const encoder = new TextEncoder();
@@ -23,11 +23,16 @@ export async function digest(value: string): Promise<string> {
   return Buffer.from(raw).toString('hex');
 }
 export async function passwordDigest(pw: string, salt: string): Promise<string> {
-  const key = await crypto.subtle.importKey('raw', encoder.encode(pw), 'PBKDF2', false, ['deriveBits']);
-  const result = await crypto.subtle.deriveBits({
-    name: 'PBKDF2', salt: encoder.encode(salt), iterations: 150_000, hash: 'SHA-256'
-  }, key, 256);
-  return Buffer.from(result).toString('hex');
+  // Same 150k-iteration PBKDF2-HMAC-SHA256/32-byte format used by the
+  // original D1 website. Workers' Node crypto adapter is more compatible
+  // with the staged Express runtime than crypto.subtle PBKDF2.
+  const derived = await new Promise<Buffer>((resolve, reject) => {
+    pbkdf2(pw, salt, 150_000, 32, 'sha256', (err, output) => {
+      if (err) reject(err);
+      else resolve(output);
+    });
+  });
+  return derived.toString('hex');
 }
 export function safeEqual(a: string, b: string): boolean {
   if (!a || !b || a.length !== b.length) return false;
