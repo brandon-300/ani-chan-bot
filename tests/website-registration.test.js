@@ -105,16 +105,16 @@ test('new user insert remains conditional on empty website link',async()=>{
   const h=instance();
   await h.mod.exports.claimWebsiteCode(sender(),'12345678');
   assert.equal(h.writes.length,1);
-  assert.equal(h.writes[0].o.upsert,true);
-  assert.ok(h.writes[0].q.$or.length>0);
-  assert.equal(h.writes[0].u.$setOnInsert.id,h.writes[0].q.id);
+  assert.equal(h.writes[0].options.upsert,true);
+  assert.ok(h.writes[0].query.$or.length>0);
+  assert.equal(h.writes[0].update.$setOnInsert.id,h.writes[0].query.id);
 });
 test('existing user updates cannot upsert a duplicate gameplay account',async()=>{
   const h=instance({users:[{id:'2348000000000@c.us',coins:555,bank:888,cards:['1'],guildId:'g1'}]});
   await h.mod.exports.claimWebsiteCode(sender(),'12345678');
-  assert.equal(h.writes[0].o.upsert,false);
-  assert.ok(h.writes[0].q.$or.some(x=>x.websiteAccountId===SITE_ID));
-  const changed=h.writes[0].u.$set;
+  assert.equal(h.writes[0].options.upsert,false);
+  assert.ok(h.writes[0].query.$or.some(x=>x.websiteAccountId===SITE_ID));
+  const changed=h.writes[0].update.$set;
   for(const field of ['coins','bank','cards','guildId','sessionLockedAt','lastActiveAt','email','emailVerifiedAt'])
     assert.ok(!(field in changed),field+' preserved');
 });
