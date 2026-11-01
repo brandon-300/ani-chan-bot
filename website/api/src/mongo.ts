@@ -28,7 +28,7 @@ export interface WebAccount {
 export interface Session {
   _id: string;
   accountId: string;
-  expiresAt: number;
+  expiresAt: Date;
 }
 export interface Challenge {
   _id: string;
@@ -36,7 +36,7 @@ export interface Challenge {
   purpose: 'whatsapp-link'|'verify-email'|'reset-password';
   tokenHash: string;
   attempts: number;
-  expiresAt: number;
+  expiresAt: Date;
   claimedAt?: number | null;
 }
 export async function withMongo<T>(fn: (db: Db, client: MongoClient) => Promise<T>): Promise<T> {
