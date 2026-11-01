@@ -9,6 +9,7 @@ import { type Filter } from 'mongodb';
 import { auth } from './auth';
 import { bot } from './bot';
 import { cfg, withMongo } from './mongo';
+import { mailReady } from './email';
 
 interface Card { cardId: string; name: string; series: string; tier: string }
 
@@ -29,7 +30,7 @@ app.get('/api/health',(_req:Request,res:Response)=>{
     ok:true,service:'anichan-api',
     stack:'TypeScript / Express.js / MongoDB Atlas',
     databaseConfigured:Boolean(cfg().MONGODB_URI),
-    emailReady:Boolean(cfg().OTP_SECRET && cfg().RESEND_API_KEY && cfg().EMAIL_FROM),
+    emailReady:mailReady(),
     whatsappLinking:Boolean(cfg().BOT_LINK_SECRET && cfg().WHATSAPP_LINK_ENABLED==='true'),
     productionCutover:false
   });
