@@ -73,3 +73,6 @@ Docs:
 
 ## Pages packaging
 `pages-bundle.mjs` copies Wrangler's dry-run Worker bundle to `dist/_worker.js` and prefixes Node built-in import specifiers for Pages advanced-mode bundling. This is staging-only; no production cutover.
+
+### Gmail SMTP (no Resend required)
+The staged Express API supports the existing bot's `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `EMAIL_FROM` and optional `EMAIL_FROM_NAME` as encrypted Cloudflare Pages production-environment variables; configure a separate cryptographically strong `OTP_SECRET` as an encrypted secret. Recommended Gmail configuration: `SMTP_HOST=smtp.gmail.com`, `SMTP_PORT=465`, and the existing Gmail App Password (not a normal Google login password). The production wweb.js bot already works with these values locally; they are **not** automatically shared with Cloudflare. Never commit SMTP credentials or put them into CI logs. `emailReady` remains false until the required private values are configured. Re-deploy stage before running email verification tests.
