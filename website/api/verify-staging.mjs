@@ -28,3 +28,18 @@ if(cards.status!==200 || !Array.isArray(cards.data?.cards) || typeof cards.data?
 }
 console.log('Read-only MongoDB catalogue check passed. Public card count:',cards.data.total);
 console.log('Database connection confirmed without any writes.');
+
+const page=await fetch(base+'/',{signal:AbortSignal.timeout(30000)});
+const html=await page.text();
+if(page.status!==200 || !html.includes('AniChan') || !html.includes('forgot-password')) {
+  console.error('Staging website page validation failed. HTTP',page.status);
+  process.exit(1);
+}
+console.log('Staging website frontend loaded, including password-recovery flow.');
+const protectedRes=await fetch(base+'/api/internal/profile?waid=2348000000000%40s.whatsapp.net',
+  {signal:AbortSignal.timeout(30000)});
+if(protectedRes.status!==403){
+  console.error('Protected WhatsApp profile endpoint unexpectedly returned',protectedRes.status);
+  process.exit(1);
+}
+console.log('Bot-only profile endpoint correctly rejects unauthenticated requests.');
