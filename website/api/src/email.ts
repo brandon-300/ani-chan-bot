@@ -22,7 +22,7 @@ export function mailReady(): boolean {
   const e = cfg();
   const port = Number(e.SMTP_PORT || 465);
   return !!(e.OTP_SECRET && e.OTP_SECRET.length >= 32 &&
-    e.SMTP_USER && e.SMTP_PASS && e.EMAIL_FROM &&
+    e.SMTP_USER && e.SMTP_PASS &&
     (port === 465 || port === 587) && e.SMTP_HOST);
 }
 function imageMime(bytes: Buffer): InlineImage['contentType'] | null {
@@ -79,7 +79,7 @@ export async function sendVerificationEmail(
   });
   try {
     await transport.sendMail({
-      from:{name:e.EMAIL_FROM_NAME || 'AniChan', address:e.EMAIL_FROM!},
+      from:{name:e.EMAIL_FROM_NAME || 'AniChan', address:e.EMAIL_FROM || e.SMTP_USER!},
       to, subject, text, html, attachments
     });
   } finally {
