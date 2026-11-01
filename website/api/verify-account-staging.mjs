@@ -14,12 +14,12 @@ const request=async(path,{method='GET',body,cookie}={})=>{
   const r=await fetch(base+path,{method,headers,
     body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(30000)});
   const payload=await r.json().catch(()=>null);
-  return {status:r.status,payload,cookie:r.headers.get('set-cookie')?.split(';')[0],phase:r.headers.get('x-anichan-qa-phase')};
+  return {status:r.status,payload,cookie:r.headers.get('set-cookie')?.split(';')[0],phase:r.headers.get('x-anichan-qa-phase'),errorType:r.headers.get('x-anichan-qa-type')};
 };
 let result=await request('/api/auth/register',{method:'POST',body:{
   displayName:qaName,email:qaEmail,password:qaPassword,dob:'2001-03-21'
 }});
-if(result.status!==201)console.error('Staging registration failed:',{status:result.status,phase:result.phase});
+if(result.status!==201)console.error('Staging registration failed:',{status:result.status,phase:result.phase,errorType:result.errorType});
 assert.equal(result.status,201,'Website registration should succeed');
 assert.equal(result.payload?.account?.email,qaEmail,'Email stored correctly');
 assert.ok(result.cookie?.startsWith('anichan_session='),'Session cookie required');
