@@ -70,3 +70,6 @@ Docs:
 - GitHub Actions TypeScript check: successful after including Wrangler-generated declaration file.
 - Cloudflare Pages isolated staging project: `anichan-api-stage.pages.dev`. Deployment and MongoDB connectivity must be validated separately from production.
 - `MONGODB_URI` must be installed as an encrypted **staging-only** secret; credentials must never be committed.
+
+## Pages packaging
+`pages-bundle.mjs` copies Wrangler's dry-run Worker bundle to `dist/_worker.js` and prefixes Node built-in import specifiers for Pages advanced-mode bundling. This is staging-only; no production cutover.
