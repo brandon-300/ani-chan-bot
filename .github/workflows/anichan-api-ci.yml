@@ -1,0 +1,28 @@
+name: AniChan API TypeScript validation
+on:
+  push:
+    branches:
+      - feature/typescript-express-mongodb
+    paths:
+      - 'website/api/**'
+      - '.github/workflows/anichan-api-ci.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install API dependencies
+        working-directory: website/api
+        run: npm install --ignore-scripts --no-audit
+      - name: Generate Cloudflare types
+        working-directory: website/api
+        run: npx wrangler types
+      - name: Compile-check API
+        working-directory: website/api
+        run: npm run check
