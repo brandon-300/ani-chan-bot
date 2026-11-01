@@ -73,7 +73,7 @@ export async function sendVerificationEmail(
   const transport = nodemailer.createTransport({
     host:e.SMTP_HOST!, port, secure:port === 465,
     requireTLS:port === 587,
-    auth:{user:e.SMTP_USER!, pass:e.SMTP_PASS!},
+    auth:{user:e.SMTP_USER!, pass:e.SMTP_PASS!.replace(/\s+/g,'')},
     connectionTimeout:12000, greetingTimeout:12000, socketTimeout:15000,
     pool:false
   });
