@@ -64,4 +64,16 @@ app.use((err:unknown,_req:Request,res:Response,_next:NextFunction)=>{
   apiError(res,400,'Invalid request.');
 });
 app.listen(3000);
-export default httpServerHandler({port:3000});
+const apiHandler=httpServerHandler({port:3000});
+type AssetEnv = { ASSETS:{fetch(request:Request):Promise<Response>} };
+export default {
+  fetch(request:Request, environment:AssetEnv, context:ExecutionContext):Promise<Response> {
+    const url=new URL(request.url);
+    if(url.pathname==='/api' || url.pathname.startsWith('/api/')){
+      return apiHandler.fetch(request,environment,context);
+    }
+    // Pages advanced mode serves the original AniChan HTML source from
+    // the uploaded assets, while Express owns only /api routes.
+    return environment.ASSETS.fetch(new Request(new URL('/index.html',url),request));
+  }
+};
