@@ -1,5 +1,5 @@
 import express, { type Request, type Response } from 'express';
-import { mailReady, sendMail } from './email';
+import { mailReady, sendVerificationEmail } from './email';
 import type { Db } from 'mongodb';
 import { cfg, publicAccount, requestLimited, withMongo, type WebAccount, type Session, type Challenge } from './mongo';
 import { cookieValue, digest, isAdult, millis, normalizedEmail, normalizedString,
@@ -109,7 +109,7 @@ auth.post('/api/auth/email/send',async(req,res)=>{
     if(a.emailVerifiedAt)return res.json({ok:true,alreadyVerified:true});
     if(!await requestLimited(db,ipOf(req),'verify-email:'+a._id,4))return reject(res,429,'Too many requests.');
     const code=await createChallenge(db,a,'verify-email');
-    try{await sendMail(a.email,'Verify your AniChan email','Your AniChan verification code is '+code+'. It expires in 10 minutes.');}
+    try{await sendVerificationEmail(a.email,code,'email_verification');}
     catch{await db.collection<Challenge>('challenges').deleteMany({accountId:a._id,purpose:'verify-email'});return reject(res,503,'Unable to send verification email.');}
     res.json({ok:true});
   });}catch{if(!res.headersSent)reject(res,503,'Email service unavailable.');}
@@ -134,7 +134,7 @@ auth.post('/api/auth/reset/send',async(req,res)=>{
     if(!await requestLimited(db,ipOf(req),'reset-send',4))return reject(res,429,'Too many requests.');
     const a=await db.collection<WebAccount>('accounts').findOne({email,emailVerifiedAt:{$ne:null}});
     if(a){const code=await createChallenge(db,a,'reset-password');
-      await sendMail(a.email,'AniChan password recovery','Your AniChan recovery code is '+code+'. It expires in 10 minutes.').catch(()=>undefined);}
+      await sendVerificationEmail(a.email,code,'password_reset').catch(()=>undefined);}
     res.json({ok:true,message:'If a verified account exists, a recovery code has been sent.'});
   });}catch{if(!res.headersSent)reject(res,503,'Password recovery temporarily unavailable.');}
 });
