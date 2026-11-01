@@ -195,4 +195,13 @@ async function restoreLinkedProfile(msg) {
   return applyProfile(sender,data.account);
 }
 
-module.exports={websiteRegistrationActive,claimWebsiteCode,restoreLinkedProfile};
+function websiteRegistrationLinks() {
+  // Supports the isolated staging site when ANICHAN_SITE_URL is overridden.
+  // Do not expose query, fragment, credentials, or unsafe redirect URLs.
+  const u=new URL(SITE);
+  if(u.protocol!=='https:' || u.username || u.password || u.search || u.hash) {
+    throw new Error('Website URL is invalid.');
+  }
+  return {register:u.origin+'/register',login:u.origin+'/login'};
+}
+module.exports={websiteRegistrationActive,websiteRegistrationLinks,claimWebsiteCode,restoreLinkedProfile};
