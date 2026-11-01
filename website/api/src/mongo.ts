@@ -13,6 +13,7 @@ export interface Environment {
   SMTP_PASS?: string;
   EMAIL_FROM?: string;
   EMAIL_FROM_NAME?: string;
+  EMAIL_AVATAR_IMAGE_URL?: string;
   WHATSAPP_LINK_ENABLED?: string;
 }
 export function cfg(): Environment { return env as unknown as Environment; }
