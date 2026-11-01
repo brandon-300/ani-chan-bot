@@ -66,3 +66,7 @@ staged API intentionally uses a short-lived connection only for low traffic.
 Docs:
 - https://developers.cloudflare.com/workers/tutorials/deploy-an-express-app/
 - https://developers.cloudflare.com/workers/databases/third-party-integrations/mongodb/
+## Staging CI/deployment
+- GitHub Actions TypeScript check: successful after including Wrangler-generated declaration file.
+- Cloudflare Pages isolated staging project: `anichan-api-stage.pages.dev`. Deployment and MongoDB connectivity must be validated separately from production.
+- `MONGODB_URI` must be installed as an encrypted **staging-only** secret; credentials must never be committed.
