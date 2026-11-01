@@ -86,3 +86,23 @@ The staged Express API supports the existing bot's `SMTP_HOST`, `SMTP_PORT`, `SM
 - The Cloudflare runtime rejects single PBKDF2 calls above 100,000 iterations. **New staged accounts use the explicitly versioned `pbkdf2-sha256-chain6x100k-v1` composed KDF**, six sequential domain-separated PBKDF2-HMAC-SHA256 derivations, each at 100,000 iterations (600,000 total). This is NOT byte-for-byte equivalent to a single PBKDF2-150k or PBKDF2-600k call. Login rejects hashes with unknown schemes; migration of old D1 password hashes must be handled separately, preserving access via an approved recovery path.
 - Temporary debugging endpoints, headers, and disposable automated-account-test workflow were removed after test success; do not publish diagnostic routes to production.
 - `WHATSAPP_LINK_ENABLED` remains disabled, and the staging project does not yet have its own `BOT_LINK_SECRET`. Do not enable WhatsApp registration-only gating in the bot until the complete `.reg` code proof, collision handling, email verification and profile sync are tested with an authorized real sender.
+
+## 2026-11-01: verified WhatsApp link protocol (still gated off)
+
+The website remains a separate staged TypeScript/Express/MongoDB service.
+`.reg` is the **only** WhatsApp onboarding command. Existing wweb.js
+development code is on `feature/website-link-main`. The staging API adds
+`POST /api/internal/inspect-link` (read-only preflight), followed by
+`POST /api/internal/claim-link` with `whatsappId`, `code`, and the
+preflight-confirmed `siteId`. Every internal route uses a shared Bearer secret.
+Claims consume one-time HMAC-hashed codes with an atomic compare-and-set.
+MongoDB indexes enforce uniqueness of website-linked WhatsApp identities
+and prohibit ambiguous one-time tokens. Expiration and replay are rejected.
+No gameplay document is modified by the website API.
+
+**Current status:** Both feature branches pass no-network security unit tests;
+website staging deploys from GitHub. Cloudflare staging
+`BOT_LINK_SECRET` and `WHATSAPP_LINK_ENABLED` are intentionally absent.
+Do not enable them or switch the real bot to this branch before an authorized
+backup-backed test from a genuine WhatsApp contact. Also verify a real
+styled Gmail verification message is received and approved.
