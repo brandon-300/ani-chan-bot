@@ -55,30 +55,17 @@ auth.post('/api/auth/register',async(req,res)=>{
   if(displayName.length<2||/[<>\x00-\x1f]/.test(displayName))return reject(res,400,'Display name must be 2–32 characters.');
   if(password.length<10||password.length>128)return reject(res,400,'Password must be 10–128 characters.');
   if(!isAdult(dob))return reject(res,400,'You must provide a valid date of birth and be at least 18.');
-  let signupStage = 'initial database access';
   try{await withMongo(async db=>{
-    signupStage='rate limit';
     if(!await requestLimited(db,ipOf(req),'register',4))return reject(res,429,'Too many registration attempts.');
-    signupStage='random salt';
     const salt=token(16);
-    signupStage='PBKDF2 hashing';
     const hash=await passwordDigest(password,salt),t=millis();
-    signupStage='account insertion';
     const account:WebAccount={_id:crypto.randomUUID(),email,displayName,bio:'',dob,avatarData:'',
       passwordSalt:salt,passwordHash:hash,passwordScheme:PASSWORD_SCHEME,emailVerifiedAt:null,whatsappId:null,createdAt:t,updatedAt:t};
     try{await db.collection<WebAccount>('accounts').insertOne(account);}
     catch(err){if((err as {code?:number}).code===11000)return reject(res,409,'An account with this email already exists.');throw err}
-    signupStage='session creation';
     await startSession(res,db,account);
     res.status(201).set('Cache-Control','no-store').json({account:publicAccount(account)});
-  });}catch(err){
-    if(!res.headersSent){
-      // Staging-only diagnostic: no sensitive values or error messages.
-      res.set('X-AniChan-QA-Phase',signupStage);
-      res.set('X-AniChan-QA-Type', err instanceof Error ? err.name.slice(0,40) : 'Unknown');
-      reject(res,503,'Account service temporarily unavailable.');
-    }
-  }
+  });}catch{if(!res.headersSent)reject(res,503,'Account service temporarily unavailable.');}
 });
 auth.post('/api/auth/login',async(req,res)=>{
   if(!originAllowed(req))return reject(res,403,'Invalid request origin.');
