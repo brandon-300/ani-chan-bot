@@ -1,4 +1,5 @@
 import express, { type Request, type Response } from 'express';
+import { mailReady, sendMail } from './email';
 import type { Db } from 'mongodb';
 import { cfg, publicAccount, requestLimited, withMongo, type WebAccount, type Session, type Challenge } from './mongo';
 import { cookieValue, digest, isAdult, millis, normalizedEmail, normalizedString,
@@ -9,7 +10,7 @@ const ipOf = (req: Request) => req.get('CF-Connecting-IP') || 'unknown';
 const reject = (res: Response, status: number, error: string) => {res.status(status).set('Cache-Control','no-store').json({error});};
 const validateEmail = (email: string) => email.length<160 && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 const authBody = (req: Request) => (req.body && typeof req.body==='object' && !Array.isArray(req.body)) ? req.body : {};
-const settingsReady = () => !!(cfg().RESEND_API_KEY && cfg().EMAIL_FROM && cfg().OTP_SECRET && cfg().OTP_SECRET!.length>=32);
+const settingsReady = mailReady;
 
 export async function signedIn(req: Request, db: Db): Promise<WebAccount|null> {
   const cookie = cookieValue(req);
@@ -22,15 +23,6 @@ async function startSession(res: Response, db:Db, account:WebAccount) {
   const raw=token(), expiresAt=new Date(millis()+14*86400_000);
   await db.collection<Session>('sessions').insertOne({_id:await digest(raw),accountId:account._id,expiresAt});
   setSessionCookie(res,raw);
-}
-async function sendEmail(to:string,subject:string,text:string): Promise<void> {
-  const e=cfg();
-  if(!settingsReady()) throw Error('Email service is not configured.');
-  const r=await fetch('https://api.resend.com/emails',{
-    method:'POST',headers:{Authorization:'Bearer '+e.RESEND_API_KEY,'Content-Type':'application/json'},
-    body:JSON.stringify({from:e.EMAIL_FROM,to:[to],subject,text}),signal:AbortSignal.timeout(10000)
-  });
-  if(!r.ok)throw Error('Email could not be delivered.');
 }
 async function createChallenge(db:Db,account:WebAccount,purpose:'verify-email'|'reset-password'):Promise<string> {
   const code=String(Math.floor(100000+crypto.getRandomValues(new Uint32Array(1))[0]/4294967296*900000));
@@ -117,7 +109,7 @@ auth.post('/api/auth/email/send',async(req,res)=>{
     if(a.emailVerifiedAt)return res.json({ok:true,alreadyVerified:true});
     if(!await requestLimited(db,ipOf(req),'verify-email:'+a._id,4))return reject(res,429,'Too many requests.');
     const code=await createChallenge(db,a,'verify-email');
-    try{await sendEmail(a.email,'Verify your AniChan email','Your AniChan verification code is '+code+'. It expires in 10 minutes.');}
+    try{await sendMail(a.email,'Verify your AniChan email','Your AniChan verification code is '+code+'. It expires in 10 minutes.');}
     catch{await db.collection<Challenge>('challenges').deleteMany({accountId:a._id,purpose:'verify-email'});return reject(res,503,'Unable to send verification email.');}
     res.json({ok:true});
   });}catch{if(!res.headersSent)reject(res,503,'Email service unavailable.');}
@@ -142,7 +134,7 @@ auth.post('/api/auth/reset/send',async(req,res)=>{
     if(!await requestLimited(db,ipOf(req),'reset-send',4))return reject(res,429,'Too many requests.');
     const a=await db.collection<WebAccount>('accounts').findOne({email,emailVerifiedAt:{$ne:null}});
     if(a){const code=await createChallenge(db,a,'reset-password');
-      await sendEmail(a.email,'AniChan password recovery','Your AniChan recovery code is '+code+'. It expires in 10 minutes.').catch(()=>undefined);}
+      await sendMail(a.email,'AniChan password recovery','Your AniChan recovery code is '+code+'. It expires in 10 minutes.').catch(()=>undefined);}
     res.json({ok:true,message:'If a verified account exists, a recovery code has been sent.'});
   });}catch{if(!res.headersSent)reject(res,503,'Password recovery temporarily unavailable.');}
 });
