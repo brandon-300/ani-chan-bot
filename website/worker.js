@@ -101,7 +101,7 @@ try{
   const code=String(10000000+(bytes[0]%90000000));
   await env.DB.prepare('DELETE FROM link_challenges WHERE account_id=? AND used_at IS NULL').bind(a.id).run();
   await env.DB.prepare('INSERT INTO link_challenges(id,account_id,code_hash,expires_at) VALUES(?,?,?,?)').bind(crypto.randomUUID(),a.id,await sha(code),now()+10*60000).run();
-  return json({code,expiresInSeconds:600,command:'.link '+code});
+  return json({code,expiresInSeconds:600,command:'.reg '+code});
  }
  if(path==='/api/profile'){
   const a=await who(req,env);if(!a)return json({error:'Please sign in.'},401);
