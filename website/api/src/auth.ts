@@ -11,7 +11,7 @@ const validateEmail = (email: string) => email.length<160 && /^[^\s@]+@[^\s@]+\.
 const authBody = (req: Request) => (req.body && typeof req.body==='object' && !Array.isArray(req.body)) ? req.body : {};
 const settingsReady = () => !!(cfg().RESEND_API_KEY && cfg().EMAIL_FROM && cfg().OTP_SECRET && cfg().OTP_SECRET!.length>=32);
 
-async function signedIn(req: Request, db: Db): Promise<WebAccount|null> {
+export async function signedIn(req: Request, db: Db): Promise<WebAccount|null> {
   const cookie = cookieValue(req);
   if (!cookie) return null;
   const session = await db.collection<Session>('sessions').findOne({_id:await digest(cookie),expiresAt:{$gt:new Date()}});
