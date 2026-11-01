@@ -7,7 +7,7 @@ const vm=require('node:vm');
 
 // Keep the website template pixel-for-pixel consistent with the approved
 // whatsapp-web.js email template; no email is sent during this test.
-const original=require(path.resolve(__dirname,'../../../utils/emailTemplate.js'));
+const original=require(path.resolve(__dirname,'../../utils/emailTemplate.js'));
 const input=fs.readFileSync(path.join(__dirname,'src/emailTemplate.ts'),'utf8');
 const output=ts.transpileModule(input,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText;
 const mod={exports:{}};
