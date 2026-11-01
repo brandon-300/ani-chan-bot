@@ -22,17 +22,24 @@ export async function digest(value: string): Promise<string> {
   const raw = await crypto.subtle.digest('SHA-256', encoder.encode(value));
   return Buffer.from(raw).toString('hex');
 }
+export const PASSWORD_SCHEME = 'pbkdf2-sha256-chain6x100k-v1';
 export async function passwordDigest(pw: string, salt: string): Promise<string> {
-  // Same 150k-iteration PBKDF2-HMAC-SHA256/32-byte format used by the
-  // original D1 website. Workers' Node crypto adapter is more compatible
-  // with the staged Express runtime than crypto.subtle PBKDF2.
-  const derived = await new Promise<Buffer>((resolve, reject) => {
-    pbkdf2(pw, salt, 150_000, 32, 'sha256', (err, output) => {
-      if (err) reject(err);
-      else resolve(output);
+  // workerd enforces <= 100,000 iterations per individual PBKDF2 operation.
+  // Chain six domain-separated PBKDF2-HMAC-SHA256 operations for a total of
+  // 600,000 KDF iterations, without weakening to one 100k-iteration call.
+  // This is a versioned composed KDF, NOT interoperable with legacy single
+  // PBKDF2-150k hashes; legacy migration must be handled explicitly.
+  let input: string | Buffer = pw;
+  for (let round = 0; round < 6; round++) {
+    const roundSalt = salt + ':anichan:pbkdf2chain:v1:' + round;
+    input = await new Promise<Buffer>((resolve, reject) => {
+      pbkdf2(input, roundSalt, 100_000, 32, 'sha256', (err, output) => {
+        if (err) reject(err);
+        else resolve(output);
+      });
     });
-  });
-  return derived.toString('hex');
+  }
+  return input.toString('hex');
 }
 export function safeEqual(a: string, b: string): boolean {
   if (!a || !b || a.length !== b.length) return false;
