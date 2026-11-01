@@ -25,26 +25,6 @@ const scalar=(v:unknown,n:number)=>typeof v==='string'?v.trim().slice(0,n):'';
 const escapeRegex=(s:string)=>Array.from(s).map(c=>'\\^$.*+?()[]{}|'.includes(c)?'\\'+c:c).join('');
 const safePage=(v:unknown)=>{const page=Number(v);return Number.isSafeInteger(page)&&page>0?Math.min(50,page):1};
 
-app.get('/api/_qa/crypto',async(req:Request,res:Response)=>{
-  // TEMPORARY, STAGING ONLY. No user passwords, database access or secrets.
-  if(!String(req.get('host')||'').endsWith('anichan-api-stage.pages.dev'))return apiError(res,404,'Not found.');
-  const report:Record<string,string>={};
-  const bytes=new TextEncoder().encode('qa-only-not-a-password');
-  try{
-    const key=await crypto.subtle.importKey('raw',bytes,'PBKDF2',false,['deriveBits']);
-    report.webImport='ok';
-    try{
-      const v=await crypto.subtle.deriveBits({name:'PBKDF2',salt:bytes,iterations:1,hash:'SHA-256'},key,256);
-      report.webDerive=v.byteLength===32?'ok':'wrong length';
-    }catch(e){report.webDerive=e instanceof Error?e.name:'Unknown';}
-  }catch(e){report.webImport=e instanceof Error?e.name:'Unknown';}
-  try{
-    const nodeCrypto=await import('node:crypto');
-    await new Promise<void>((resolve,reject)=>nodeCrypto.pbkdf2('qa','salt',1,32,'sha256',(err)=>err?reject(err):resolve()));
-    report.nodePbkdf2='ok';
-  }catch(e){report.nodePbkdf2=e instanceof Error?e.name:'Unknown';}
-  res.set('Cache-Control','no-store').json(report);
-});
 app.get('/api/health',(_req:Request,res:Response)=>{
   res.set('Cache-Control','no-store').json({
     ok:true,service:'anichan-api',
