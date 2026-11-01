@@ -79,3 +79,42 @@ test('a different web account cannot overwrite an existing link',async()=>{
   assert.equal(h.writes.length,0);
 });
 
+
+test('preflight inspection happens before atomic website claim',async()=>{
+  const {mod,requests,writes}=instance({users:[{id:'2348000000000@c.us',coins:123}]});
+  await mod.exports.claimWebsiteCode(sender(),'12345678');
+  assert.equal(requests.length,2);
+  assert.ok(requests[0].url.endsWith('/api/internal/inspect-link'));
+  assert.ok(requests[1].url.endsWith('/api/internal/claim-link'));
+  assert.equal(JSON.parse(requests[1].opts.body).siteId,SITE_ID);
+  assert.equal(writes.length,1);
+});
+test('unsafe legacy duplicates block before consuming a code',async()=>{
+  const h=instance({users:[{id:'2348000000000@c.us'},{id:'2348000000000@s.whatsapp.net'}]});
+  await assert.rejects(()=>h.mod.exports.claimWebsiteCode(sender(),'12345678'),/Multiple legacy accounts/);
+  assert.equal(h.requests.length,1);
+  assert.ok(h.requests[0].url.includes('/inspect-link'));
+  assert.equal(h.writes.length,0);
+});
+test('already linked local user cannot consume another website code',async()=>{
+  const h=instance({users:[{id:'2348000000000@c.us',websiteAccountId:'some-other-account'}]});
+  await assert.rejects(()=>h.mod.exports.claimWebsiteCode(sender(),'12345678'),/different website login/);
+  assert.equal(h.requests.length,1);
+});
+test('new user insert remains conditional on empty website link',async()=>{
+  const h=instance();
+  await h.mod.exports.claimWebsiteCode(sender(),'12345678');
+  assert.equal(h.writes.length,1);
+  assert.equal(h.writes[0].o.upsert,true);
+  assert.ok(h.writes[0].q.$or.length>0);
+  assert.equal(h.writes[0].u.$setOnInsert.id,h.writes[0].q.id);
+});
+test('existing user updates cannot upsert a duplicate gameplay account',async()=>{
+  const h=instance({users:[{id:'2348000000000@c.us',coins:555,bank:888,cards:['1'],guildId:'g1'}]});
+  await h.mod.exports.claimWebsiteCode(sender(),'12345678');
+  assert.equal(h.writes[0].o.upsert,false);
+  assert.ok(h.writes[0].q.$or.some(x=>x.websiteAccountId===SITE_ID));
+  const changed=h.writes[0].u.$set;
+  for(const field of ['coins','bank','cards','guildId','sessionLockedAt','lastActiveAt','email','emailVerifiedAt'])
+    assert.ok(!(field in changed),field+' preserved');
+});
