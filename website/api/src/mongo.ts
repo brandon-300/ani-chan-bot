@@ -56,10 +56,9 @@ async function ensureSiteIndexes(db: Db): Promise<void> {
       ),
       db.collection<Session>('sessions').createIndex({expiresAt:1},{expireAfterSeconds:0}),
       db.collection<Challenge>('challenges').createIndex({expiresAt:1},{expireAfterSeconds:0}),
-      // Prevent concurrent issuance of duplicate active WhatsApp codes.
-      db.collection<Challenge>('challenges').createIndex(
-        {tokenHash:1},{unique:true,partialFilterExpression:{purpose:'whatsapp-link'}}
-      ),
+      // Expire private, one-use website handoff tokens after 15 minutes.
+      db.collection('whatsappHandoffs').createIndex({expiresAt:1},{expireAfterSeconds:0}),
+      db.collection('whatsappHandoffs').createIndex({whatsappId:1}),
       db.collection('rateLimits').createIndex({expiresAt:1},{expireAfterSeconds:0})
     ]).then(()=>undefined).catch(err=>{indexInit=null;throw err});
   }
