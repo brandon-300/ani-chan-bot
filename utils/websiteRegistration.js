@@ -168,23 +168,26 @@ async function applyProfile(sender, source, earlierPlan) {
   return {userId,pictureWarning,existing};
 }
 
-async function claimWebsiteCode(msg, code) {
-  if(!websiteRegistrationActive())throw new Error('Website linking is not enabled yet.');
-  if(!/^\d{8}$/.test(code))throw new Error('Use an eight-digit code from your AniChan website dashboard.');
+async function createWebsiteHandoff(msg) {
+  if(!websiteRegistrationActive())throw new Error('Website account linking is not enabled yet.');
   const sender=await getSender(msg);
-  // Step 1: inspect without consuming the code.
-  const preview=await siteRequest('/api/internal/inspect-link',{
-    method:'POST',data:{whatsappId:sender.pn,code}
+  // Fail closed on ambiguous legacy records BEFORE issuing any one-time link.
+  const records=await User.find({id:{$in:relatedUserIds(sender.raw,sender.pn)}})
+    .select('id websiteAccountId').lean();
+  if(records.length>1)throw new Error('Multiple legacy accounts exist for this WhatsApp identity. Contact the AniChan owner for reconciliation.');
+  if(records[0]?.websiteAccountId){
+    return {alreadyLinked:true,links:websiteRegistrationLinks()};
+  }
+  const response=await siteRequest('/api/internal/handoff',{
+    method:'POST',data:{whatsappId:sender.pn}
   });
-  const plan=await planProfile(sender,preview.account);
-  // Step 2: claim atomically only after both sides passed preflight checks.
-  const claimed=await siteRequest('/api/internal/claim-link',{
-    method:'POST',data:{whatsappId:sender.pn,code,siteId:plan.profile.siteId}
-  });
-  if(claimed.siteId!==plan.profile.siteId)throw new Error('Website account identity changed during linking.');
-  // Step 3: update only profile and linking fields on the existing bot user.
-  // If this write fails after the website claim, plain .reg can restore it.
-  return applyProfile(sender,claimed,plan);
+  if(response.linked)return {alreadyLinked:true,links:websiteRegistrationLinks()};
+  if(typeof response.ticket!=='string' || !/^[a-f0-9]{64}$/.test(response.ticket)){
+    throw new Error('The website returned an invalid private login link.');
+  }
+  const links=websiteRegistrationLinks();
+  // The secret stays after '#', which is never transmitted to the web server.
+  return {alreadyLinked:false,url:links.register+'#wa='+response.ticket,expiresInSeconds:900,links};
 }
 
 async function restoreLinkedProfile(msg) {
@@ -204,4 +207,4 @@ function websiteRegistrationLinks() {
   }
   return {register:u.origin+'/register',login:u.origin+'/login'};
 }
-module.exports={websiteRegistrationActive,websiteRegistrationLinks,claimWebsiteCode,restoreLinkedProfile};
+module.exports={websiteRegistrationActive,websiteRegistrationLinks,createWebsiteHandoff,restoreLinkedProfile};
