@@ -771,6 +771,28 @@ async function checkRegistrationGate(msg, command) {
     return { blocked: false, senderId, wasActive, user: existingUser };
   }
 
+  // Website-only linking: the user has already authenticated and verified
+  // inside the browser. On their NEXT WhatsApp message, load the linked
+  // identity from the protected site API and activate the existing bot account.
+  // The user never has to send a second .reg command or a linking code.
+  if (!wasActive && command !== 'reg') {
+    const { websiteRegistrationActive, restoreLinkedProfile } = require('./utils/websiteRegistration');
+    if (websiteRegistrationActive()) {
+      const restored = await restoreLinkedProfile(msg);
+      if (restored) {
+        const User = require('./models/User');
+        const user = await User.findOne(
+          { id:restored.userId },
+          'registration email emailVerifiedAt sessionLockedAt lastActiveAt'
+        ).lean();
+        if (!user || user.registration?.status !== 'active') {
+          throw new Error('Website linked but the bot registration state was not saved.');
+        }
+        return {blocked:false,senderId:restored.userId,wasActive:true,user};
+      }
+    }
+  }
+
   if (!existingUser) {
     await msg.reply(`🌸 *Welcome to AniChan!*\n\nTo get started, message me privately with *.reg*.\nThat command will show you how to register or log in on the AniChan website.`).catch(err => {
       console.error('Registration gate: failed to send intro message:', err.message);
