@@ -60,7 +60,7 @@ auth.post('/api/auth/register',async(req,res)=>{
     const salt=token(16);
     const hash=await passwordDigest(password,salt),t=millis();
     const account:WebAccount={_id:crypto.randomUUID(),email,displayName,bio:'',dob,avatarData:'',
-      passwordSalt:salt,passwordHash:hash,passwordScheme:PASSWORD_SCHEME,emailVerifiedAt:null,whatsappId:null,createdAt:t,updatedAt:t};
+      passwordSalt:salt,passwordHash:hash,passwordScheme:PASSWORD_SCHEME,emailVerifiedAt:null,lastWebLoginAt:t,whatsappId:null,createdAt:t,updatedAt:t};
     try{await db.collection<WebAccount>('accounts').insertOne(account);}
     catch(err){if((err as {code?:number}).code===11000)return reject(res,409,'An account with this email already exists.');throw err}
     await startSession(res,db,account);
@@ -76,6 +76,7 @@ auth.post('/api/auth/login',async(req,res)=>{
     const a=await db.collection<WebAccount>('accounts').findOne({email});
     const calculated=await passwordDigest(password,a?.passwordSalt||'00000000000000000000000000000000');
     if(!a || a.passwordScheme!==PASSWORD_SCHEME || !safeEqual(calculated,a.passwordHash))return reject(res,401,'Invalid email or password.');
+    await db.collection<WebAccount>('accounts').updateOne({_id:a._id},{$set:{lastWebLoginAt:millis()}});
     await startSession(res,db,a);
     res.set('Cache-Control','no-store').json({account:publicAccount(a)});
   });}catch{if(!res.headersSent)reject(res,503,'Login service temporarily unavailable.');}
