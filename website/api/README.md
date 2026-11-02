@@ -87,22 +87,31 @@ The staged Express API supports the existing bot's `SMTP_HOST`, `SMTP_PORT`, `SM
 - Temporary debugging endpoints, headers, and disposable automated-account-test workflow were removed after test success; do not publish diagnostic routes to production.
 - `WHATSAPP_LINK_ENABLED` remains disabled, and the staging project does not yet have its own `BOT_LINK_SECRET`. Do not enable WhatsApp registration-only gating in the bot until the complete `.reg` code proof, collision handling, email verification and profile sync are tested with an authorized real sender.
 
-## 2026-11-01: verified WhatsApp link protocol (still gated off)
+## Website-only WhatsApp account linking (staging)
 
-The website remains a separate staged TypeScript/Express/MongoDB service.
-`.reg` is the **only** WhatsApp onboarding command. Existing wweb.js
-development code is on `feature/website-link-main`. The staging API adds
-`POST /api/internal/inspect-link` (read-only preflight), followed by
-`POST /api/internal/claim-link` with `whatsappId`, `code`, and the
-preflight-confirmed `siteId`. Every internal route uses a shared Bearer secret.
-Claims consume one-time HMAC-hashed codes with an atomic compare-and-set.
-MongoDB indexes enforce uniqueness of website-linked WhatsApp identities
-and prohibit ambiguous one-time tokens. Expiration and replay are rejected.
-No gameplay document is modified by the website API.
+The user sends only `.reg` in the bot's private DM. The bot requests
+`POST /api/internal/handoff` with a shared Bearer secret and the
+canonically verified WhatsApp sender identity. The API creates a 256-bit random
+15-minute single-use ticket, storing only its SHA-256 hash in an indexed TTL
+MongoDB collection. The bot sends a private URL:
 
-**Current status:** Both feature branches pass no-network security unit tests;
-website staging deploys from GitHub. Cloudflare staging
-`BOT_LINK_SECRET` and `WHATSAPP_LINK_ENABLED` are intentionally absent.
-Do not enable them or switch the real bot to this branch before an authorized
-backup-backed test from a genuine WhatsApp contact. Also verify a real
-styled Gmail verification message is received and approved.
+`https://anichan-api-stage.pages.dev/register#wa=<private-ticket>`
+
+The website immediately captures the fragment into sessionStorage and
+removes it from browser history. Once website registration/login and email
+verification are complete, the browser posts `{ticket}` to
+`POST /api/link/complete`, which checks the verified website session and
+atomically consumes the ticket to link exactly one WhatsApp ID to one website
+account. No WhatsApp-entered code is used or requested.
+
+Returning to the bot, the existing registration gate calls authenticated
+`GET /api/internal/profile?waid=...`, restores the linked website profile, and
+opens regular commands/AI chatting. Existing game accounts are preserved.
+Website-linked legacy session locks are unlocked by a newer successful web
+login, never a chat-side OTP.
+
+**Release gate:** Staging does not yet have `BOT_LINK_SECRET` or
+`WHATSAPP_LINK_ENABLED=true`. The development bot also remains disabled.
+End-to-end testing requires a backed-up wweb.js bot plus secure matching
+secrets in both services. Do not deploy the changes to production until a
+real-owner pilot confirms Gmail email receipt and linked identity.
