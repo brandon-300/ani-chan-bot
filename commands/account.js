@@ -218,17 +218,19 @@ async function _checkSession(client, msg, command, args, registrationCheck) {
   if (command === 'setemail' || command === 'reg') return { blocked: false };
 
   const user = registrationCheck.user
-    || await User.findOne({ id: senderId }, 'registration email emailVerifiedAt sessionLockedAt lastActiveAt').lean();
+    || await User.findOne({ id: senderId }, 'registration websiteAccountId email emailVerifiedAt sessionLockedAt lastActiveAt').lean();
   if (!user) return { blocked: false };
 
   const now = Date.now();
   let locked = Boolean(user.sessionLockedAt);
+  let lockedSince = user.sessionLockedAt ? new Date(user.sessionLockedAt).getTime() : null;
 
   if (!locked && user.lastActiveAt && now - user.lastActiveAt >= SESSION_LOCK_DAYS * ONE_DAY_MS) {
     // Conditional on "not already locked" so two simultaneous commands lock
     // exactly once and keep the first lock time.
     await User.updateOne({ id: senderId, sessionLockedAt: null }, { $set: { sessionLockedAt: new Date(now) } });
     locked = true;
+    lockedSince = now;
   }
 
   if (!locked) {
@@ -242,6 +244,32 @@ async function _checkSession(client, msg, command, args, registrationCheck) {
   }
 
   // ── Locked ──
+  // Website-linked accounts never receive WhatsApp OTP prompts. The user
+  // simply logs in again on the website, where email/password verification
+  // remains authoritative; a new website login timestamp unlocks the bot.
+  if(user.websiteAccountId){
+    const { websiteRegistrationActive, websiteRegistrationLinks, getLinkedWebsiteProof } =
+      require('../utils/websiteRegistration');
+    if(websiteRegistrationActive()){
+      try{
+        const proof=await getLinkedWebsiteProof(msg);
+        if(proof && proof.siteId===user.websiteAccountId &&
+          proof.lastWebLoginAt && lockedSince && proof.lastWebLoginAt>lockedSince){
+          const result=await User.updateOne(
+            {id:senderId,sessionLockedAt:user.sessionLockedAt || new Date(lockedSince)},
+            {$set:{sessionLockedAt:null,otpLockedUntil:null,lastActiveAt:Date.now()}}
+          );
+          if(result.modifiedCount===1)return {blocked:false};
+        }
+      }catch(err){
+        console.error('Website session recovery check failed:',err.message);
+      }
+      await msg.reply('🔒 *AniChan session locked*\\n\\nLog in to your AniChan account on the website to unlock it: '+
+        websiteRegistrationLinks().login+
+        '\\n\\nAfter completing website login, return here and send your message again. No WhatsApp verification code is needed.');
+      return {blocked:true};
+    }
+  }
   if (!user.email) {
     await msg.reply(
       `🔒 *Session locked*\n\n` +
