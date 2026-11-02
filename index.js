@@ -754,7 +754,7 @@ async function checkRegistrationGate(msg, command) {
   let existingUser = null;
   try {
     const User = require('./models/User');
-    existingUser = await User.findOne({ id: senderId }, 'registration email emailVerifiedAt sessionLockedAt lastActiveAt').lean();
+    existingUser = await User.findOne({ id: senderId }, 'registration websiteAccountId email emailVerifiedAt sessionLockedAt lastActiveAt').lean();
   } catch (err) {
     throw err;
   }
@@ -801,6 +801,27 @@ async function checkRegistrationGate(msg, command) {
   }
 
   if (status === 'active') {
+    // Grandfathered bot accounts keep playing without losing gameplay data.
+    // If the user has now completed website login after .reg, transparently
+    // copy the verified website identity/profile on their next interaction.
+    if (!existingUser.websiteAccountId) {
+      const { websiteRegistrationActive, restoreLinkedProfile } = require('./utils/websiteRegistration');
+      if (websiteRegistrationActive()) {
+        try {
+          const linked = await restoreLinkedProfile(msg);
+          if (linked) {
+            const User = require('./models/User');
+            const refreshed=await User.findOne(
+              {id:linked.userId},'registration websiteAccountId email emailVerifiedAt sessionLockedAt lastActiveAt'
+            ).lean();
+            return {blocked:false,senderId:linked.userId,wasActive:true,user:refreshed||existingUser};
+          }
+        } catch(err) {
+          // A website outage cannot lock out a pre-existing registered user.
+          console.error('Registered user website sync deferred:',err.message);
+        }
+      }
+    }
     return { blocked: false, senderId, wasActive: true, user: existingUser };
   }
 
