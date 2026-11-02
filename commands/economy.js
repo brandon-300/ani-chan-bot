@@ -15,7 +15,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { isCloudConfigured } = require('../utils/cloudinary');
-const { websiteRegistrationActive, websiteRegistrationLinks, claimWebsiteCode, restoreLinkedProfile } = require('../utils/websiteRegistration');
+const { websiteRegistrationActive, websiteRegistrationLinks, createWebsiteHandoff, restoreLinkedProfile } = require('../utils/websiteRegistration');
 const { maskEmail, isPrivateChat } = require('../utils/emailService');
 
 // ─── Profile pictures (.setpic) ───────────────────────────────────────────────
@@ -239,48 +239,44 @@ module.exports = {
   // .reg — the ONLY approved WhatsApp registration entry point.
   // .reg provides website signup/login. A one-time website code can be
   // submitted as .reg CODE; this is an argument to .reg, NOT a new command.
+  // .reg — the ONLY WhatsApp registration command.
+  // It sends a PRIVATE website login link. All signup, login, email
+  // verification and WhatsApp account binding happen inside the browser.
+  // No .reg CODE or second WhatsApp verification command is accepted.
   async reg(client, msg, args) {
     const chat = await safeGetChat(msg).catch(() => null);
-    if (!chat || chat.isGroup) return msg.reply('🔒 Please send *.reg* privately to AniChan for account registration and login.');
-    const websiteLinks = websiteRegistrationLinks();
-    const base =
-      '🌸 *Welcome to AniChan!*' +
-      '\n\nCreate your account or log in through our website:' +
-      '\n\n🆕 *New user:* ' + websiteLinks.register +
-      '\n🔑 *Existing website account:* ' + websiteLinks.login +
-      '\n\n🎴 Already have an AniChan WhatsApp account? Your cards, coins and guild remain in MongoDB.' +
-      '\n\n' + (websiteRegistrationActive()
-        ? 'To connect or recover your account, open your website dashboard, choose *Link WhatsApp*, then send *.reg YOUR_8_DIGIT_CODE* here in this chat. The code expires after 10 minutes.'
-        : 'WhatsApp linking is being prepared and will be enabled after testing. Existing gameplay accounts will not be deleted.');
-    if (!args.length) {
-      if (websiteRegistrationActive()) {
-        try {
-          const restored = await restoreLinkedProfile(msg);
-          if (restored) return msg.reply('✅ Your AniChan website and WhatsApp accounts are connected, and your profile is synchronized. Your existing gameplay progress is preserved.' +
-            (restored.pictureWarning ? '\n⚠️ ' + restored.pictureWarning : ''));
-        } catch (error) {
-          // A failed sync must not prevent a user from seeing the registration
-          // and login links. No secret, OTP or raw API response is logged.
-          console.error('AniChan website registration refresh failed:', error.message);
-        }
-      }
-      return msg.reply(base);
+    if (!chat || chat.isGroup) {
+      return msg.reply('🔒 To register or log in, message AniChan privately and send *.reg*. Complete the process on the website.');
     }
-    const code = String(args[0] || '');
-    if (args.length !== 1 || !/^\d{8}$/.test(code)) {
-      return msg.reply('❌ To get registration instructions, send *.reg* without extra words.' +
-        (websiteRegistrationActive() ? '\nTo link your website login, send *.reg 12345678* with your own eight-digit code.' : ''));
+    if (args.length) {
+      return msg.reply('🌸 Send only *.reg* (without a code or other arguments). All registration, login and verification happen on the website.');
     }
-    if (!websiteRegistrationActive()) return msg.reply(base);
+    const links=websiteRegistrationLinks();
+    if (!websiteRegistrationActive()) {
+      return msg.reply('🌸 *AniChan website login*\n\nRegister: '+links.register+
+        '\nLog in: '+links.login+
+        '\n\nAutomatic WhatsApp linking is being tested and is not active for this bot yet. Your existing cards, coins and guild are safe.');
+    }
     try {
-      const result = await claimWebsiteCode(msg, code);
-      return msg.reply('✅ *AniChan account connected!*\n\n' +
-        (result.existing ? 'Your existing WhatsApp progress has been retained.' : 'Your new AniChan gameplay account has been created.') +
-        '\nYou can now use AniChan as normal.' +
-        (result.pictureWarning ? '\n⚠️ ' + result.pictureWarning : ''));
-    } catch (error) {
-      return msg.reply('⚠️ Website account linking failed: ' + error.message +
-        '\n\nIf your website already shows the account as linked, send *.reg* to retry synchronization.');
+      const restored=await restoreLinkedProfile(msg);
+      if(restored){
+        return msg.reply('✅ Your WhatsApp account is connected to AniChan. You can continue chatting normally. Your existing game progress remains intact.'+
+          (restored.pictureWarning?'\n⚠️ '+restored.pictureWarning:''));
+      }
+      const handoff=await createWebsiteHandoff(msg);
+      if(handoff.alreadyLinked){
+        return msg.reply('✅ This WhatsApp number is already linked. Log in to your AniChan website account at '+links.login+
+          ', then return here and continue chatting. Your existing game data is preserved.');
+      }
+      return msg.reply('🌸 *Continue with AniChan on the website*\n\n'+
+        'Open your private registration/login link:\n'+handoff.url+
+        '\n\nOn the website, register or log in and verify your email. The website will link your WhatsApp automatically.\n\n'+
+        'Then return to WhatsApp and chat with AniChan normally. *No code or second WhatsApp command is required.*\n\n'+
+        '🔒 This personal link expires in 15 minutes. Do not share it with anyone.');
+    } catch(error) {
+      console.error('AniChan website handoff failed:',error.message);
+      return msg.reply('⚠️ AniChan could not prepare your secure website login link right now: '+error.message+
+        '\n\nPlease send *.reg* again later.');
     }
   },
   // .balance
