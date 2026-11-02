@@ -28,7 +28,8 @@ function grabWaTicket(){
 async function finishWaLogin(){
  const ticket=sessionStorage.getItem(WA_KEY);
  if(!ticket||!linkEnabled||!current||!current.emailVerified)return false;
- if(current.linked){sessionStorage.removeItem(WA_KEY);return true}
+ // Even already-linked website accounts must prove that this private ticket
+ // refers to the SAME WhatsApp identity; the server will reject mismatches.
  try{
    await send('/api/link/complete',{ticket});
    sessionStorage.removeItem(WA_KEY);current=(await api('/api/me')).account;
