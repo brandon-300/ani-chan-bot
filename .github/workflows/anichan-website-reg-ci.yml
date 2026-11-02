@@ -5,6 +5,7 @@ on:
       - feature/website-link-main
     paths:
       - 'utils/websiteRegistration.js'
+      - 'commands/account.js'
       - 'commands/economy.js'
       - 'index.js'
       - 'tests/website-registration.test.js'
@@ -24,6 +25,7 @@ jobs:
         run: |
           node --check index.js
           node --check commands/economy.js
+          node --check commands/account.js
           node --check utils/websiteRegistration.js
       - name: Run website-linking safety tests
         run: node --test tests/website-registration.test.js
