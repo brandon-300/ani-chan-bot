@@ -28,6 +28,7 @@ export interface WebAccount {
   passwordHash: string;
   passwordScheme?: string;
   emailVerifiedAt?: number | null;
+  lastWebLoginAt?: number | null;
   whatsappId?: string | null;
   createdAt: number;
   updatedAt: number;
