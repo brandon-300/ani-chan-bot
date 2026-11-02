@@ -1149,6 +1149,14 @@ function handleIncomingMessage(msg, resume = null) {
           logger.write('WARN', 'route.menu.ignored', { reason: 'unstable_connection', chatId: msg.from });
           return;
         }
+        // @mention takes an early exit, so enforce the same website-only
+        // registration gate before showing a menu to a first-time group user.
+        const menuRegistration=await checkRegistrationGate(msg,'menu').catch(async err=>{
+          logger.error('registration.mention.failed_closed',err,{chatId:msg.from});
+          await msg.reply('⚠️ Account verification is temporarily unavailable. Send *.reg* privately to register on the website.').catch(()=>{});
+          return {blocked:true};
+        });
+        if(menuRegistration.blocked)return;
         logger.write('INFO', 'route.menu.mention', { chatId: msg.from });
         return await sendQuickMenu(msg);
       }
