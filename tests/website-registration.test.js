@@ -4,144 +4,106 @@ const assert=require('node:assert/strict');
 const vm=require('node:vm');
 const fs=require('node:fs');
 const path=require('node:path');
+const crypto=require('node:crypto');
 
 const code=fs.readFileSync(path.join(__dirname,'../utils/websiteRegistration.js'),'utf8');
 const SITE_ID='d67106d2-79d1-4b07-aeba-bc9db8963697';
-const sample={siteId:SITE_ID,displayName:'New Nickname',bio:'Anime fan',dob:'2002-09-20',avatarData:''};
-const sender=(jid='2348000000000@c.us')=>({getContact:async()=>({id:{_serialized:jid}})});
-function harness({enabled=true,users=[],profile=sample}={}){
-  const writes=[],requests=[];
-  const User={
-    find(query){return{select(){return{lean:async()=>users.filter(u=>query.id.$in.includes(u.id))}}}},
-    findOne(query){return{select(){return{lean:async()=>users.find(u=>u.websiteAccountId===query.websiteAccountId)||null}}}},
-    async findOneAndUpdate(query,update,options){writes.push({query,update,options});return {...query,...update.$set}}
-  };
-  const mod={exports:{}};
-  const crypto=require('node:crypto');
-  const env={ANICHAN_SITE_URL:'https://anichan.pages.dev',
-    ANICHAN_SITE_BOT_SECRET:'a'.repeat(64),ANICHAN_REG_LINK_ENABLED:enabled?'true':'false'};
-  vm.runInNewContext('(function(require,module,process,fetch,URL,AbortSignal,Buffer){'+code+'\n})',
-    {console})(n=>n==='../models/User'?User:n==='./cloudinary'?{
-      isCloudConfigured:()=>false,
-      uploadBufferToCloud:async()=>{throw Error('Cloudinary should be off')}
-    }:n==='node:crypto'?crypto:require(n),mod,{env},async(url,opts)=>{
-      requests.push({url,opts});
-      return {ok:true,json:async()=>url.includes('claim-link')?profile:{account:profile}};
-    },URL,AbortSignal,Buffer);
-  // Execute CJS body: vm.runInNewContext returned the function but it must be called.
-  return {mod,writes,requests};
+const SITE_PROFILE={siteId:SITE_ID,displayName:'Verified Website User',bio:'Anime',dob:'2002-09-20',avatarData:''};
+const WA='2348000000000@c.us';
+function sender(jid=WA){return {getContact:async()=>({id:{_serialized:jid}})}}
+function setup({active=true,users=[],linkedProfile=null,siteUrl='https://anichan-api-stage.pages.dev'}={}){
+ const writes=[],requests=[];
+ const User={
+  find(q){return{select(){return{lean:async()=>users.filter(u=>q.id.$in.includes(u.id))}}}},
+  findOne(q){return{select(){return{lean:async()=>users.find(u=>u.websiteAccountId===q.websiteAccountId)||null}}}},
+  async findOneAndUpdate(q,u,options){writes.push({q,u,options});return {id:q.id}}
+ };
+ const mod={exports:{}},secret='s'.repeat(64);
+ const env={ANICHAN_SITE_URL:siteUrl,ANICHAN_SITE_BOT_SECRET:secret,ANICHAN_REG_LINK_ENABLED:active?'true':'false'};
+ const fn=vm.runInNewContext('(function(require,module,process,fetch,URL,AbortSignal,Buffer){'+code+'\n})',{console});
+ fn(n=>n==='../models/User'?User:n==='./cloudinary'?{isCloudConfigured:()=>false}:n==='node:crypto'?crypto:require(n),
+  mod,{env},async(url,opts)=>{
+   requests.push({url,opts});
+   const body=url.includes('/handoff')?
+    {ticket:'f'.repeat(64),expiresInSeconds:900}:
+    {account:linkedProfile};
+   return {ok:true,json:async()=>body};
+  },URL,AbortSignal,Buffer);
+ return {api:mod.exports,writes,requests};
 }
-function instance(settings={}){
-  const ctx=harness(settings);
-  // module.exports is assigned when the wrapper executes
-  return ctx;
-}
-
-test('existing user keeps original ID and economic values',async()=>{
-  const saved={id:'2348000000000@c.us',coins:888,bank:123,orbs:10,cards:['card1'],guildId:'guild1'};
-  const {mod,writes,requests}=instance({users:[saved]});
-  const result=await mod.exports.claimWebsiteCode(sender(),'12345678');
-  assert.equal(result.existing,true);
-  assert.equal(writes.length,1);
-  assert.equal(writes[0].query.id,saved.id);
-  assert.equal(writes[0].update.$set.websiteAccountId,SITE_ID);
-  for(const key of ['coins','bank','orbs','cards','guildId','inventory','xp','level']){
-    assert.ok(!(key in writes[0].update.$set),key+' must remain unchanged');
-  }
-  assert.equal(requests[0].opts.method,'POST');
-  assert.equal(requests[0].opts.headers.Authorization,'Bearer '+'a'.repeat(64));
+test('.reg handoff sends a private website URL fragment, never chat verification code',async()=>{
+ const h=setup();const result=await h.api.createWebsiteHandoff(sender());
+ assert.equal(result.alreadyLinked,false);
+ assert.equal(result.url,'https://anichan-api-stage.pages.dev/register#wa='+'f'.repeat(64));
+ assert.equal(result.expiresInSeconds,900);
+ assert.equal(h.requests.length,1);
+ assert.ok(h.requests[0].url.endsWith('/api/internal/handoff'));
+ assert.equal(JSON.parse(h.requests[0].opts.body).whatsappId,'2348000000000@s.whatsapp.net');
+ assert.equal(h.writes.length,0);
+ assert.equal(h.api.claimWebsiteCode,undefined);
 });
-test('no DB writes when feature is disabled',async()=>{
-  const h=instance({enabled:false});
-  await assert.rejects(()=>h.mod.exports.claimWebsiteCode(sender(),'12345678'),/not enabled/);
-  assert.equal(h.writes.length,0);
+test('a linked account does not require another .reg or handoff',async()=>{
+ const h=setup({users:[{id:WA,websiteAccountId:SITE_ID}]});
+ const result=await h.api.createWebsiteHandoff(sender());
+ assert.equal(result.alreadyLinked,true);
+ assert.equal(h.requests.length,0);
 });
-test('unknown LID is rejected safely',async()=>{
-  const h=instance();
-  await assert.rejects(()=>h.mod.exports.claimWebsiteCode(sender('12345@lid'),'12345678'),/identity/);
-  assert.equal(h.writes.length,0);
+test('ambiguous legacy identifiers are rejected before link issuance',async()=>{
+ const h=setup({users:[{id:WA},{id:'2348000000000@s.whatsapp.net'}]});
+ await assert.rejects(()=>h.api.createWebsiteHandoff(sender()),/Multiple legacy accounts/);
+ assert.equal(h.requests.length,0);
 });
-test('new web user can create one linked gameplay record',async()=>{
-  const h=instance();
-  const result=await h.mod.exports.claimWebsiteCode(sender(),'12345678');
-  assert.equal(result.existing,false);
-  assert.equal(h.writes.length,1);
-  assert.equal(h.writes[0].update.$set['registration.status'],'active');
+test('unknown WhatsApp LIDs cannot claim another person’s account',async()=>{
+ const h=setup();
+ await assert.rejects(()=>h.api.createWebsiteHandoff(sender('123@lid')),/identity/);
+ assert.equal(h.requests.length,0);
 });
-test('multiple legacy accounts are not merged',async()=>{
-  const h=instance({users:[{id:'2348000000000@c.us'},{id:'2348000000000@s.whatsapp.net'}]});
-  await assert.rejects(()=>h.mod.exports.claimWebsiteCode(sender(),'12345678'),/Multiple legacy accounts/);
-  assert.equal(h.writes.length,0);
+test('returning from website automatically restores a linked gameplay account',async()=>{
+ const saved={id:WA,coins:877,bank:5500,cards:['a'],guildId:'myguild',websiteAccountId:null};
+ const h=setup({users:[saved],linkedProfile:SITE_PROFILE});
+ const outcome=await h.api.restoreLinkedProfile(sender());
+ assert.equal(outcome.existing,true);
+ assert.equal(h.requests.length,1);
+ assert.ok(h.requests[0].url.includes('/api/internal/profile?waid='));
+ assert.equal(h.writes.length,1);
+ assert.equal(h.writes[0].q.id,WA);
+ assert.equal(h.writes[0].options.upsert,false);
+ assert.equal(h.writes[0].u.$set.websiteAccountId,SITE_ID);
+ assert.equal(h.writes[0].u.$set['registration.status'],'active');
+ for(const key of ['coins','bank','orbs','cards','guildId','inventory','loans','xp','email','emailVerifiedAt','sessionLockedAt']){
+   assert.ok(!(key in h.writes[0].u.$set),'Must preserve '+key);
+ }
 });
-test('a different web account cannot overwrite an existing link',async()=>{
-  const h=instance({users:[{id:'2348000000000@c.us',websiteAccountId:'another-id'}]});
-  await assert.rejects(()=>h.mod.exports.claimWebsiteCode(sender(),'12345678'),/different website login/);
-  assert.equal(h.writes.length,0);
+test('a brand new verified website user is activated on their next message',async()=>{
+ const h=setup({linkedProfile:SITE_PROFILE});
+ const x=await h.api.restoreLinkedProfile(sender());
+ assert.equal(x.existing,false);
+ assert.equal(h.writes[0].options.upsert,true);
+ assert.equal(h.writes[0].u.$setOnInsert.id,WA);
 });
-
-
-test('preflight inspection happens before atomic website claim',async()=>{
-  const {mod,requests,writes}=instance({users:[{id:'2348000000000@c.us',coins:123}]});
-  await mod.exports.claimWebsiteCode(sender(),'12345678');
-  assert.equal(requests.length,2);
-  assert.ok(requests[0].url.endsWith('/api/internal/inspect-link'));
-  assert.ok(requests[1].url.endsWith('/api/internal/claim-link'));
-  assert.equal(JSON.parse(requests[1].opts.body).siteId,SITE_ID);
-  assert.equal(writes.length,1);
+test('legacy accounts already connected to a different website cannot be overwritten',async()=>{
+ const h=setup({users:[{id:WA,websiteAccountId:'someone-else'}],linkedProfile:SITE_PROFILE});
+ await assert.rejects(()=>h.api.restoreLinkedProfile(sender()),/different website login/);
+ assert.equal(h.writes.length,0);
 });
-test('unsafe legacy duplicates block before consuming a code',async()=>{
-  const h=instance({users:[{id:'2348000000000@c.us'},{id:'2348000000000@s.whatsapp.net'}]});
-  await assert.rejects(()=>h.mod.exports.claimWebsiteCode(sender(),'12345678'),/Multiple legacy accounts/);
-  assert.equal(h.requests.length,1);
-  assert.ok(h.requests[0].url.includes('/inspect-link'));
-  assert.equal(h.writes.length,0);
+test('feature switch protects running production bot',async()=>{
+ const h=setup({active:false,linkedProfile:SITE_PROFILE});
+ assert.equal(h.api.websiteRegistrationActive(),false);
+ assert.equal(await h.api.restoreLinkedProfile(sender()),null);
+ await assert.rejects(()=>h.api.createWebsiteHandoff(sender()),/not enabled/);
+ assert.equal(h.requests.length,0);
+ assert.equal(h.writes.length,0);
 });
-test('already linked local user cannot consume another website code',async()=>{
-  const h=instance({users:[{id:'2348000000000@c.us',websiteAccountId:'some-other-account'}]});
-  await assert.rejects(()=>h.mod.exports.claimWebsiteCode(sender(),'12345678'),/different website login/);
-  assert.equal(h.requests.length,1);
+test('bot registration URLs respect configured staging site',()=>{
+ const h=setup();const v=h.api.websiteRegistrationLinks();
+ assert.deepEqual(JSON.parse(JSON.stringify(v)),{
+  register:'https://anichan-api-stage.pages.dev/register',
+  login:'https://anichan-api-stage.pages.dev/login'
+ });
 });
-test('new user insert remains conditional on empty website link',async()=>{
-  const h=instance();
-  await h.mod.exports.claimWebsiteCode(sender(),'12345678');
-  assert.equal(h.writes.length,1);
-  assert.equal(h.writes[0].options.upsert,true);
-  assert.ok(h.writes[0].query.$or.length>0);
-  assert.equal(h.writes[0].update.$setOnInsert.id,h.writes[0].query.id);
-});
-test('existing user updates cannot upsert a duplicate gameplay account',async()=>{
-  const h=instance({users:[{id:'2348000000000@c.us',coins:555,bank:888,cards:['1'],guildId:'g1'}]});
-  await h.mod.exports.claimWebsiteCode(sender(),'12345678');
-  assert.equal(h.writes[0].options.upsert,false);
-  assert.ok(h.writes[0].query.$or.some(x=>x.websiteAccountId===SITE_ID));
-  const changed=h.writes[0].update.$set;
-  for(const field of ['coins','bank','cards','guildId','sessionLockedAt','lastActiveAt','email','emailVerifiedAt'])
-    assert.ok(!(field in changed),field+' preserved');
-});
-
-test('already-linked user restores profile without spending a new code',async()=>{
-  const saved={id:'2348000000000@c.us',websiteAccountId:SITE_ID,coins:100,bank:500,cards:['card1'],guildId:'guild1'};
-  const h=instance({users:[saved]});
-  const result=await h.mod.exports.restoreLinkedProfile(sender());
-  assert.equal(result.existing,true);
-  assert.equal(h.requests.length,1);
-  assert.ok(h.requests[0].url.includes('/api/internal/profile?waid='));
-  assert.equal(h.requests[0].opts.method,'GET');
-  assert.equal(h.writes.length,1);
-  assert.equal(h.writes[0].options.upsert,false);
-  assert.equal(h.writes[0].update.$set.websiteAccountId,SITE_ID);
-  for(const key of ['coins','bank','cards','guildId']) assert.ok(!(key in h.writes[0].update.$set));
-});
-test('registration links remain confined to configured website',()=>{
-  const h=instance();
-  const links=h.mod.exports.websiteRegistrationLinks();
-  assert.equal(links.register,'https://anichan.pages.dev/register');
-  assert.equal(links.login,'https://anichan.pages.dev/login');
-});
-test('disabled linking prevents recovery and leaves account untouched',async()=>{
-  const h=instance({enabled:false,users:[{id:'2348000000000@c.us',websiteAccountId:SITE_ID}]});
-  const result=await h.mod.exports.restoreLinkedProfile(sender());
-  assert.equal(result,null);
-  assert.equal(h.requests.length,0);
-  assert.equal(h.writes.length,0);
+test('first bot interaction can automatically reconcile website identity',()=>{
+ const index=fs.readFileSync(path.join(__dirname,'../index.js'),'utf8');
+ assert.match(index,/if \(!wasActive && command !== 'reg'\)/);
+ assert.match(index,/restoreLinkedProfile\(msg\)/);
+ assert.match(index,/return \{blocked:false,senderId:restored.userId,wasActive:true,user\}/);
 });
