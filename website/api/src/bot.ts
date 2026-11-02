@@ -26,7 +26,7 @@ const authBot = (req:Request) => validSecret() && safeEqual(bearer(req),cfg().BO
 const enabled = () => validSecret() && cfg().WHATSAPP_LINK_ENABLED === 'true';
 const profile = (a:WebAccount) => ({
   siteId:a._id,displayName:a.displayName,bio:a.bio,dob:a.dob,
-  avatarData:a.avatarData,updatedAt:a.updatedAt
+  avatarData:a.avatarData,updatedAt:a.updatedAt,lastWebLoginAt:a.lastWebLoginAt||null
 });
 const remoteIp=(req:Request)=>req.get('CF-Connecting-IP')||'unavailable';
 
