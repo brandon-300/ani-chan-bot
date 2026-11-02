@@ -190,6 +190,16 @@ async function createWebsiteHandoff(msg) {
   return {alreadyLinked:false,url:links.register+'#wa='+response.ticket,expiresInSeconds:900,links};
 }
 
+async function getLinkedWebsiteProof(msg) {
+  if(!websiteRegistrationActive())return null;
+  const sender=await getSender(msg);
+  const data=await siteRequest('/api/internal/profile?waid='+encodeURIComponent(sender.pn));
+  if(!data.account)return null;
+  const checked=checkedProfile(data.account);
+  const when=Number(data.account.lastWebLoginAt);
+  return {siteId:checked.siteId,lastWebLoginAt:Number.isFinite(when)&&when>0?when:null};
+}
+
 async function restoreLinkedProfile(msg) {
   if(!websiteRegistrationActive())return null;
   const sender=await getSender(msg);
@@ -207,4 +217,4 @@ function websiteRegistrationLinks() {
   }
   return {register:u.origin+'/register',login:u.origin+'/login'};
 }
-module.exports={websiteRegistrationActive,websiteRegistrationLinks,createWebsiteHandoff,restoreLinkedProfile};
+module.exports={websiteRegistrationActive,websiteRegistrationLinks,createWebsiteHandoff,restoreLinkedProfile,getLinkedWebsiteProof};
