@@ -783,7 +783,7 @@ async function checkRegistrationGate(msg, command) {
         const User = require('./models/User');
         const user = await User.findOne(
           { id:restored.userId },
-          'registration email emailVerifiedAt sessionLockedAt lastActiveAt'
+          'registration websiteAccountId email emailVerifiedAt sessionLockedAt lastActiveAt'
         ).lean();
         if (!user || user.registration?.status !== 'active') {
           throw new Error('Website linked but the bot registration state was not saved.');
