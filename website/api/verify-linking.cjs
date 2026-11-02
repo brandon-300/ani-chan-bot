@@ -2,130 +2,122 @@
 const fs=require('node:fs');
 const path=require('node:path');
 const vm=require('node:vm');
-const ts=require('typescript');
 const assert=require('node:assert/strict');
+const ts=require('typescript');
 
-const CODE='12345678', SITE='d67106d2-79d1-4b07-aeba-bc9db8963697';
 const WA='2348000000000@s.whatsapp.net';
-const env={BOT_LINK_SECRET:'a'.repeat(64),WHATSAPP_LINK_ENABLED:'true'};
-const profile={_id:SITE,emailVerifiedAt:1730000000,whatsappId:null,displayName:'AniChan Tester',
-  bio:'Anime lover',dob:'2002-03-04',avatarData:'',updatedAt:1730000001};
-let activeAccount={...profile};
-let challenge={_id:'challenge',accountId:SITE,purpose:'whatsapp-link',tokenHash:'otp-'+CODE,
-  claimedAt:null,attempts:0,expiresAt:new Date(Date.now()+600000)};
-const stats={reads:0,updates:0,challengeWrites:0};
-function matches(doc,q){
-  if(!doc)return false;
-  return Object.entries(q).every(([k,v])=>{
-    if(k==='$or')return v.some(x=>matches(doc,x));
-    if(v && typeof v==='object' && !Array.isArray(v) && !(v instanceof Date)){
-      if('$gt' in v)return new Date(doc[k]).getTime()>new Date(v.$gt).getTime();
-      if('$lt' in v)return doc[k]<v.$lt;
-      if('$ne' in v)return doc[k]!==v.$ne;
-    }
-    return doc[k]===v;
-  });
+const SITE='d67106d2-79d1-4b07-aeba-bc9db8963697';
+const secret='x'.repeat(64);
+const env={BOT_LINK_SECRET:secret,WHATSAPP_LINK_ENABLED:'true'};
+let user={_id:SITE,emailVerifiedAt:Date.now(),whatsappId:null,
+ displayName:'Anime Lover',bio:'Testing',dob:'2001-01-01',avatarData:''};
+let ticket=null;
+let signedIn=true;
+const calls={handoffWrites:0,accountUpdates:0,ticketClaims:0};
+function matches(doc,filter){
+ if(!doc)return false;
+ return Object.entries(filter).every(([key,value])=>{
+  if(key==='$or')return value.some(f=>matches(doc,f));
+  if(value && typeof value==='object' && !(value instanceof Date)){
+   if('$gt' in value)return new Date(doc[key]).getTime()>new Date(value.$gt).getTime();
+  }
+  return doc[key]===value;
+ });
 }
-const db={
-  collection(name){
-    if(name==='accounts')return{
-      findOne:async q=>{stats.reads++;return matches(activeAccount,q)?{...activeAccount}:null;},
-      updateOne:async(q,u)=>{
-        if(!matches(activeAccount,q))return {matchedCount:0};
-        activeAccount={...activeAccount,...u.$set};stats.updates++;
-        return {matchedCount:1,modifiedCount:1};
-      }
-    };
-    if(name==='challenges')return {
-      findOne:async q=>matches(challenge,q)?{...challenge}:null,
-      findOneAndUpdate:async(q,u)=>{
-        if(!matches(challenge,q))return null;
-        challenge={...challenge,...u.$set};stats.challengeWrites++;return {...challenge};
-      }
-    };
-    return {};
+const db={collection(name){
+ if(name==='accounts')return{
+   findOne:async q=>matches(user,q)?{...user}:null,
+   updateOne:async(q,u)=>{
+    if(!matches(user,q))return {matchedCount:0};
+    user={...user,...u.$set};calls.accountUpdates++;
+    return {matchedCount:1,modifiedCount:1}
+   }
+ };
+ if(name==='whatsappHandoffs')return{
+  deleteMany:async()=>{ticket=null;return {deletedCount:1}},
+  insertOne:async v=>{ticket={...v};calls.handoffWrites++;return {acknowledged:true}},
+  findOne:async q=>matches(ticket,q)?{...ticket}:null,
+  findOneAndUpdate:async(q,u)=>{
+    if(!matches(ticket,q))return null;
+    ticket={...ticket,...u.$set};calls.ticketClaims++;return {...ticket}
   }
-};
-const routes={get:{},post:{}};
-const mockExpress={Router:()=>({
-  get(path,fn){routes.get[path]=fn},
-  post(path,fn){routes.post[path]=fn}
-})};
+ };
+ return {};
+}};
+const routes={};
 const mocks={
-  'express':mockExpress,
-  './auth':{signedIn:async()=>({...activeAccount})},
-  './mongo':{cfg:()=>env,withMongo:async fn=>fn(db),requestLimited:async()=>true},
-  './security':{
-    bearer:req=>(req.headers.authorization||'').replace(/^Bearer /,''),
-    safeEqual:(a,b)=>a===b,
-    waid:s=>typeof s==='string'&&/^\d{7,17}@s\.whatsapp\.net$/.test(s),
-    originAllowed:()=>true,
-    otpDigest:async code=>'otp-'+code,
-    millis:()=>Date.now(),pin:()=>CODE,token:()=> 'fake-token'
-  }
+ express:{Router:()=>({
+  get(route,fn){routes['GET '+route]=fn},
+  post(route,fn){routes['POST '+route]=fn}
+ })},
+ './auth':{signedIn:async()=>signedIn?{...user}:null},
+ './mongo':{cfg:()=>env,withMongo:async fn=>fn(db),requestLimited:async()=>true},
+ './security':{
+  bearer:req=>(req.headers.authorization||'').replace(/^Bearer /,''),
+  digest:async value=>'digest:'+value,
+  millis:()=>Date.now(),originAllowed:()=>true,
+  safeEqual:(a,b)=>a===b,token:()=> 'f'.repeat(64),
+  waid:x=>typeof x==='string' && /^\d{7,17}@s\.whatsapp\.net$/.test(x)
+ }
 };
-const source=fs.readFileSync(path.join(__dirname,'src/bot.ts'),'utf8');
-const compiled=ts.transpileModule(source,{compilerOptions:{
-  target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS,esModuleInterop:true
+const tsSource=fs.readFileSync(path.join(__dirname,'src/bot.ts'),'utf8');
+const compiled=ts.transpileModule(tsSource,{compilerOptions:{
+ target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS,esModuleInterop:true
 }}).outputText;
-const compiledModule={exports:{}};
-vm.runInNewContext(compiled,{exports:compiledModule.exports,module:compiledModule,require:name=>{
-  if(!(name in mocks))throw Error('Unexpected dependency '+name);
-  return mocks[name];
+const stage={exports:{}};
+vm.runInNewContext(compiled,{module:stage,exports:stage.exports,require:n=>{
+ if(n==='express')return {__esModule:true,default:mocks.express,...mocks.express};
+ if(!(n in mocks))throw Error('Unmocked import '+n);
+ return mocks[n];
 },console,Date},{filename:'bot.js'});
 function response(){
-  return {
-    code:200,body:null,headers:{},
-    status(n){this.code=n;return this},
-    set(a,b){this.headers[a]=b;return this},
-    json(payload){this.body=payload;return this}
-  };
+ return{statusCode:200,payload:null,headers:{},status(code){this.statusCode=code;return this},
+ set(k,v){this.headers[k]=v;return this},json(body){this.payload=body;return this}};
 }
-async function request(route,{body={},bearer=true}={}){
-  const req={body,query:{},headers:{authorization:bearer?'Bearer '+env.BOT_LINK_SECRET:''},
-    get(k){return this.headers[k.toLowerCase()]||''}};
-  const res=response();
-  const handler=routes.post[route] || routes.get[route];
-  assert.ok(handler,'Missing handler '+route);
-  await handler(req,res);return res;
+async function request(method,route,{body={},auth=true}={}){
+ const handler=routes[method+' '+route];assert.ok(handler,'Route missing '+method+' '+route);
+ const req={body,query:{},headers:{authorization:auth?'Bearer '+secret:''},
+  get(name){return this.headers[name.toLowerCase()]||''}};
+ const res=response();await handler(req,res);return res;
 }
 async function run(){
-  let r=await request('/api/internal/inspect-link',{bearer:false,body:{whatsappId:WA,code:CODE}});
-  assert.equal(r.code,403,'Bearer secret required');
-  r=await request('/api/internal/inspect-link',{body:{whatsappId:WA,code:CODE}});
-  assert.equal(r.code,200,'Valid code should inspect');
-  assert.equal(r.body.account.siteId,SITE);
-  assert.equal(challenge.claimedAt,null,'Preflight MUST NOT consume code');
-  assert.equal(activeAccount.whatsappId,null,'Preflight MUST NOT link account');
-
-  r=await request('/api/internal/claim-link',{body:{whatsappId:WA,code:CODE,siteId:'e3bb92a9-cc43-4ebd-9417-4637a26b18b2'}});
-  assert.equal(r.code,409,'Wrong inspected website ID rejected');
-  assert.equal(challenge.claimedAt,null,'Wrong site ID MUST NOT spend code');
-
-  r=await request('/api/internal/claim-link',{body:{whatsappId:WA,code:CODE,siteId:SITE}});
-  assert.equal(r.code,200,'Valid claim should succeed exactly once');
-  assert.equal(r.body.siteId,SITE);
-  assert.equal(activeAccount.whatsappId,WA);
-  assert.ok(challenge.claimedAt,'Challenge consumed atomically');
-  assert.equal(stats.challengeWrites,1);
-  assert.equal(stats.updates,1);
-
-  r=await request('/api/internal/claim-link',{body:{whatsappId:WA,code:CODE,siteId:SITE}});
-  assert.equal(r.code,400,'Reusing consumed challenge must fail');
-  assert.equal(stats.updates,1);
-
-  challenge={...challenge,claimedAt:null,expiresAt:new Date(Date.now()-1000)};
-  r=await request('/api/internal/inspect-link',{body:{whatsappId:WA,code:CODE}});
-  assert.equal(r.code,400,'Expired code rejected');
-
-  challenge={...challenge,claimedAt:null,expiresAt:new Date(Date.now()+600000)};
-  r=await request('/api/internal/inspect-link',{body:{whatsappId:'2348000000001@s.whatsapp.net',code:CODE}});
-  assert.equal(r.code,409,'Website account cannot be linked to two WhatsApp identities');
-  assert.equal(stats.updates,1);
-
-  env.WHATSAPP_LINK_ENABLED='false';
-  r=await request('/api/internal/inspect-link',{body:{whatsappId:WA,code:CODE}});
-  assert.equal(r.code,503,'Linking gate prevents unauthorised rollout');
-  console.log('PASS: secret verification, read-only inspection, site-ID match, atomic one-time code, replay and expiry rejection, identity collisions, disabled feature gate');
+ let r=await request('POST','/api/internal/handoff',{body:{whatsappId:WA},auth:false});
+ assert.equal(r.statusCode,403,'Bot requests require the shared secret');
+ env.WHATSAPP_LINK_ENABLED='false';
+ r=await request('POST','/api/internal/handoff',{body:{whatsappId:WA}});
+ assert.equal(r.statusCode,503,'Website linking stays off without activation');
+ env.WHATSAPP_LINK_ENABLED='true';
+ r=await request('POST','/api/internal/handoff',{body:{whatsappId:WA}});
+ assert.equal(r.statusCode,200,'Bot can issue private URL ticket');
+ assert.equal(r.payload.ticket,'f'.repeat(64));
+ assert.equal(r.payload.expiresInSeconds,900);
+ assert.equal(ticket.whatsappId,WA);
+ assert.equal(user.whatsappId,null,'Issuing ticket never binds an account');
+ const t=r.payload.ticket;
+ signedIn=false;
+ r=await request('POST','/api/link/complete',{body:{ticket:t}});
+ assert.equal(r.statusCode,401,'Website must be logged in');
+ assert.equal(ticket.claimedAt,null);
+ signedIn=true;user.emailVerifiedAt=null;
+ r=await request('POST','/api/link/complete',{body:{ticket:t}});
+ assert.equal(r.statusCode,403,'Email must be verified inside website');
+ assert.equal(ticket.claimedAt,null);
+ user.emailVerifiedAt=Date.now();
+ r=await request('POST','/api/link/complete',{body:{ticket:t}});
+ assert.equal(r.statusCode,200,'Website-only linking completes');
+ assert.equal(r.payload.linked,true);
+ assert.equal(user.whatsappId,WA);
+ assert.ok(ticket.claimedAt,'Ticket consumed only by verified web account');
+ assert.equal(calls.ticketClaims,1);
+ assert.equal(calls.accountUpdates,1);
+ r=await request('POST','/api/link/complete',{body:{ticket:t}});
+ assert.equal(r.statusCode,400,'Ticket replay must fail');
+ assert.equal(calls.accountUpdates,1);
+ // Verify a different WhatsApp number cannot steal an existing web login.
+ ticket={...ticket,whatsappId:'2348000000001@s.whatsapp.net',claimedAt:null,expiresAt:new Date(Date.now()+600000)};
+ r=await request('POST','/api/link/complete',{body:{ticket:t}});
+ assert.equal(r.statusCode,409,'Cannot attach a different WhatsApp number to a linked account');
+ assert.equal(calls.accountUpdates,1);
+ console.log('PASS: .reg sends private website ticket; signup/login and email proof enforced exclusively in browser; replay, identity collision, auth and feature gates secure');
 }
 run().catch(e=>{console.error(e);process.exitCode=1});
