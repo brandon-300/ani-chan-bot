@@ -107,3 +107,24 @@ test('first bot interaction can automatically reconcile website identity',()=>{
  assert.match(index,/restoreLinkedProfile\(msg\)/);
  assert.match(index,/return \{blocked:false,senderId:restored.userId,wasActive:true,user\}/);
 });
+
+test('first group @mention also passes registration gate instead of showing menu',()=>{
+ const src=fs.readFileSync(path.join(__dirname,'../index.js'),'utf8');
+ assert.match(src,/menuRegistration=await checkRegistrationGate\(msg,'menu'\)/);
+ assert.match(src,/if\(menuRegistration.blocked\)return/);
+});
+test('website-linked inactive users unlock through website login rather than WhatsApp OTP',()=>{
+ const src=fs.readFileSync(path.join(__dirname,'../commands/account.js'),'utf8');
+ assert.match(src,/getLinkedWebsiteProof\(msg\)/);
+ assert.match(src,/proof\.lastWebLoginAt>lockedSince/);
+ assert.match(src,/No WhatsApp verification code is needed/);
+});
+test('.reg handler never accepts chat verification codes',()=>{
+ const src=fs.readFileSync(path.join(__dirname,'../commands/economy.js'),'utf8');
+ const start=src.indexOf('  async reg(client, msg, args) {');
+ const end=src.indexOf('  // .balance',start);
+ const handler=src.slice(start,end);
+ assert.match(handler,/createWebsiteHandoff\(msg\)/);
+ assert.doesNotMatch(handler,/claimWebsiteCode|YOUR_8_DIGIT_CODE|\.reg 12345678/);
+ assert.match(handler,/if \(args.length\)/);
+});
