@@ -1,0 +1,29 @@
+# Cloudflare Tunnel config for the Ani-Chan Bot REST API.
+#
+# Copy this file to cloudflared.config.yml (do NOT commit the real one —
+# it contains your tunnel ID and credentials) and fill in the placeholders:
+#
+#   cp cloudflared.config.example.yml cloudflared.config.yml
+#
+# Then run:  cloudflared tunnel run ani-chan-bot
+# (or let scripts/setup-cloudflare-tunnel.sh do all of this for you)
+#
+# The tunnel exposes the bot's built-in Express API (src/api/server.ts,
+# API_PORT in .env, default 3000) to the public internet at:
+#
+#   https://<your-tunnel-hostname>            e.g. https://api.ani-chan.example.com
+#
+# Your website and (later) your Discord bot then talk to the bot through
+# that hostname — the same MongoDB data, no direct connection to your phone.
+
+tunnel: YOUR_TUNNEL_ID_HERE        # from: cloudflared tunnel create ani-chan-bot
+credentials-file: /home/YOUR_USER/.cloudflared/YOUR_TUNNEL_ID_HERE.json
+
+ingress:
+  # REST API served by the bot itself (API_ENABLED=true, API_PORT=3000 in .env)
+  - hostname: api.YOUR_DOMAIN_HERE  # e.g. api.ani-chan.example.com — must be a
+                                     # subdomain routed through this tunnel in the
+                                     # Cloudflare dashboard (Tunnel → Public Hostnames)
+    service: http://localhost:3000
+  # Required catch-all rule (must be last)
+  - service: http_status:404
