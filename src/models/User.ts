@@ -1,0 +1,254 @@
+
+import mongoose from 'mongoose';
+const UserSchema = new mongoose.Schema({
+  id: { type: String, required: true, unique: true },
+  name: { type: String, default: 'Unknown' },
+  bio: { type: String, default: '✨ No bio set.' },
+  age: { type: Number, default: 0 },
+  // Source of truth for age going forward — see .setdob in
+  // commands/economy.js. `age` above is still kept (and still what
+  // .profile/.setage read/write) for backward compatibility with existing
+  // accounts and the legacy .setage command; .setdob keeps both fields in
+  // sync by writing `age` as a calculated value alongside `dob`.
+  dob: { type: Date, default: null },
+  // ─── Registration gate (see index.js's registration gate + .setname/
+  // .setdob/.bio/.setpic in commands/economy.js) ────────────────────────
+  // `status` defaults to 'active' at the SCHEMA level deliberately — this
+  // is what grandfathers in every account that existed before this feature
+  // shipped. Mongoose applies a path's schema default whenever a document
+  // (including one already in MongoDB) is missing that path — a document
+  // this field before this change has no `registration` object at all, so
+  // it reads back as 'active' automatically, with no migration script
+  // needed. A genuinely brand-new user only ever gets 'pending' because
+  // findOrCreate() below explicitly $setOnInsert's it — that explicit value
+  // wins over this schema default for newly-inserted documents.
+  registration: {
+    status: { type: String, enum: ['pending', 'active'], default: 'active' },
+    nameSet: { type: Boolean, default: false },
+    dobSet: { type: Boolean, default: false },
+    bioSet: { type: Boolean, default: false },
+    picSet: { type: Boolean, default: false },
+  },
+  coins: { type: Number, default: 1000 },
+  bank: { type: Number, default: 0 },
+  orbs: { type: Number, default: 5 },
+  stardust: { type: Number, default: 0 },
+  xp: { type: Number, default: 0 },
+  level: { type: Number, default: 1 },
+  lastDaily: { type: Number, default: 0 },
+  lastDig: { type: Number, default: 0 },
+  lastFish: { type: Number, default: 0 },
+  lastBeg: { type: Number, default: 0 },
+  inventory: { type: [String], default: [] },
+  cards: { type: [String], default: [] },       // array of Card _id strings
+  warns: { type: Number, default: 0 },
+  nsfwEnabled: { type: Boolean, default: false },
+  guildId: { type: String, default: null },
+  pet: {
+    name: { type: String, default: null },
+    type: { type: String, default: null },
+    // Rarity tier of the adopted pet — 'C'/'B'/'A'/'S'/'SS'/'SSS', same
+    // scale as card tiers (see utils/helpers.js TIER_DROP_RATES). null for
+    // any pet adopted before the rarity system existed; commands/pets.js
+    // handles that gracefully (just omits the rarity tag when displaying).
+    rarity: { type: String, default: null },
+    // hunger = how HUNGRY the pet is (0 = full, 100 = starving). Rises over
+    // time since lastFed; .pet feed lowers it. (happiness is the opposite
+    // convention — 100 = happy — which matches its name, so it's untouched.)
+    hunger: { type: Number, default: 0 },
+    happiness: { type: Number, default: 100 },
+    lastFed: { type: Number, default: 0 },
+    lastPlayed: { type: Number, default: 0 },
+    // False for any pet whose stored `hunger` value predates the hunger-
+    // direction fix (still using the old "100 = full" meaning). The
+    // migratePetHunger.js script flips those old values once and sets this
+    // true; commands/pets.js also sets it true on every fresh .pet adopt,
+    // since new pets are created correctly from the start.
+    hungerMigrated: { type: Boolean, default: false },
+  },
+  profile: {
+    title: { type: String, default: '🌸 New Adventurer' },
+    badge: { type: String, default: '' },
+    // Cloudinary-hosted profile picture (see commands/economy.js's
+    // .setpic). picUrl is the permanent HTTPS URL sent back to WhatsApp via
+    // MessageMedia.fromUrl; picPublicId is Cloudinary's own id for the file,
+    // needed to delete/overwrite it later. Empty strings mean none set.
+    picUrl: { type: String, default: '' },
+    picPublicId: { type: String, default: '' },
+  },
+  campCount: { type: Number, default: 0 },      // for anticamp
+  achievements: { type: [String], default: [] }, // unlocked achievement ids
+  wishlist: { type: [String], default: [] },     // card names the user wants to be notified about
+  tradesCompleted: { type: Number, default: 0 },
+  createdAt: { type: Date, default: Date.now },
+  // ─── Bank Loan (commands/loan.js, .loan) ───────────────────────────────
+  // One active loan per user at a time, staked against one of their own
+  // OwnedCard docs (see models/Card.js's OwnedCardSchema.isStaked). Amounts
+  // are computed once at request time and frozen here — interest is never
+  // recalculated later, so nothing here needs to change if utils LOAN
+  // brackets are retuned after the fact. `cardId`/`cardName`/`cardTier` are
+  // a snapshot for display in .loan status even if the live card document
+  // is ever removed later; the authoritative unstake target is `cardId`.
+  loan: {
+    active: { type: Boolean, default: false },
+    bracket: { type: String, default: null },     // '1'..'6' or 'S' — see LOAN_BRACKETS in commands/loan.js
+    principal: { type: Number, default: 0 },
+    interest: { type: Number, default: 0 },
+    totalOwed: { type: Number, default: 0 },
+    cardId: { type: String, default: null },       // staked OwnedCard._id (string)
+    cardName: { type: String, default: null },
+    cardTier: { type: String, default: null },
+    issuedAt: { type: Number, default: null },      // ms epoch
+    dueAt: { type: Number, default: null },         // ms epoch
+  },
+  // Anchor for daily bank interest — see applyDailyInterest() below. null
+  // until the first time it's checked for this user (existing users get it
+  // seeded on their next command rather than backdated).
+  lastInterestAt: { type: Number, default: null },
+  // True once this user's `xp` has been converted from "progress within
+  // current level" to a lifetime cumulative total (see xpNeededForLevel in
+  // utils/helpers.js and migrateXPToCumulative.js). Defaults to true so any
+  // BRAND NEW user created after this change needs no conversion — their xp
+  // starts at 0 either way. Existing users predate this field entirely
+  // (so it reads as falsy/undefined until the migration script sets it),
+  // which is exactly what lets that script find only the accounts that
+  // still need converting.
+  xpMigrated: { type: Boolean, default: true },
+  // Last time this user triggered findOrCreate (i.e. ran any command, in a
+  // group or DM) — powers .users' "inactive Xd" display and the automatic
+  // 60-day cleanup sweep, both in commands/admin.js. See the write-side
+  // note in findOrCreate below for why this doesn't update on literally
+  // every single call.
+  lastActiveAt: { type: Number, default: null },
+  // Explicit AFK status (.afk [reason], commands/afk.js) — persisted so it
+  // survives a PM2 restart. This is only ever written on the low-frequency
+  // .afk/welcome-back events and read once at boot to rehydrate the
+  // in-memory afkUsers Map there — the actual per-message AFK checks
+  // (_checkAfkReturn/_checkAfkMentions, which run on EVERY incoming
+  // message across every group) keep reading that Map directly rather
+  // than querying Mongo on every message. Automatic (non-explicit) AFK
+  // detection has no persisted state at all — see afk.js's lastActive Map.
+  afk: {
+    active: { type: Boolean, default: false },
+    reason: { type: String, default: null },
+    since: { type: Date, default: null },
+  },
+});
+
+// ─── Daily Bank Interest ────────────────────────────────────────────────────
+// "The bank should function like a real bank" (Aug 2026): money sitting in
+// user.bank now compounds once per day. Deliberately a MODEST game-economy
+// rate, not a real-world APR — 0.2%/day compounds to roughly 2x/year if
+// left untouched the whole time, which is meant to feel like a nice bonus
+// for using the bank rather than a way to out-earn actually playing the
+// game (cards run into the hundreds of thousands of coins). Retune here if
+// that balance ever feels off.
+const DAILY_BANK_INTEREST_RATE = 0.002;
+const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+
+// There's deliberately no separate always-on scheduler for this (like the
+// existing 8AM WAT stats digest in index.js would be) — a fixed-time
+// trigger needs the Termux process to be alive at that exact moment, which
+// isn't reliable on this setup. Instead this runs LAZILY inside
+// findOrCreate below, every time any command touches a user, and always
+// catches up correctly on however many full days actually passed no matter
+// how long the bot was offline/restarted in between — same reasoning as
+// the loan-default and lend-expiry lazy checks elsewhere in the bot.
+//
+// Mutates `user` in place and returns true if it needs saving (new day(s)
+// elapsed, or this is the very first time lastInterestAt is being seeded)
+// — false is the common case (already checked today), so most calls add
+// zero extra writes. Also stashes the coins credited on the plain (non-
+// schema, never persisted) `user._interestCredited` property so callers
+// that care — .balance/.withdraw/.deposit in commands/economy.js — can
+// mention it; every other caller of findOrCreate can safely ignore it.
+//
+// KNOWN LIMITATION: interest is computed against whatever the CURRENT bank
+// balance is at check-time, not a real day-by-day ledger of what the
+// balance actually was on each elapsed day (this bot doesn't keep that
+// history). In practice that means someone who deposits a large sum right
+// after a long absence gets that day-count's compounding applied to the
+// new balance immediately, rather than to whatever (possibly $0) balance
+// they actually held meanwhile. For a small-group hobby bot this is a
+// minor, low-value edge case (it rewards NOT playing for a long time, not
+// actually playing), so it's left as-is rather than building a full daily
+// balance ledger for it — flagging it here in case that tradeoff ever
+// needs revisiting.
+function applyDailyInterest(user) {
+  const now = Date.now();
+
+  if (user.lastInterestAt == null) {
+    user.lastInterestAt = now;
+    user._interestCredited = 0;
+    return true;
+  }
+
+  const daysElapsed = Math.floor((now - user.lastInterestAt) / ONE_DAY_MS);
+  if (daysElapsed < 1) {
+    user._interestCredited = 0;
+    return false;
+  }
+
+  // Advance the anchor unconditionally, even if bank is currently 0 — so
+  // this same elapsed-days window can never be "cashed in" a second time
+  // later (e.g. withdraw everything, wait, deposit again).
+  user.lastInterestAt += daysElapsed * ONE_DAY_MS;
+
+  const before = user.bank;
+  if (before > 0) {
+    user.bank = Math.floor(before * Math.pow(1 + DAILY_BANK_INTEREST_RATE, daysElapsed));
+  }
+  user._interestCredited = user.bank - before;
+  return true;
+}
+
+UserSchema.statics.findOrCreate = async function (id, name) {
+  // `name` here is only ever a DEFAULT for a brand-new user — most call
+  // sites across the bot pass the caller's live contact.pushname on every
+  // single command purely so a first-time user starts with a sensible
+  // name. Previously this used $set, which applies unconditionally — so
+  // any of those same commands (e.g. viewing .profile) would silently
+  // re-sync an EXISTING user's name back to their live WhatsApp pushname,
+  // undoing .setname every time. $setOnInsert only ever applies on the
+  // initial upsert, so an existing user's name is never touched here. To
+  // explicitly change an existing user's name, set `user.name` directly
+  // and .save() — see .setname in commands/economy.js.
+  //
+  // registration.status: 'pending' is likewise only ever applied ON
+  // INSERT, via $setOnInsert — it deliberately overrides this schema's
+  // 'active' default (see the registration field's comment above) so every
+  // genuinely brand-new account starts out pending instead of active,
+  // while every account that already existed before this feature (and so
+  // has no `registration` path stored at all) keeps reading as 'active'.
+  const setOnInsert = {
+    id,
+    registration: { status: 'pending', nameSet: false, dobSet: false, bioSet: false, picSet: false },
+  };
+  if (name) setOnInsert.name = name;
+  const user = await this.findOneAndUpdate(
+    { id },
+    { $setOnInsert: setOnInsert },
+    { upsert: true, new: true, setDefaultsOnInsert: true }
+  );
+
+  let needsSave = applyDailyInterest(user);
+
+  // Debounced to once/hour rather than every single call — this bot is on
+  // a metered/unstable mobile connection, and hour-level granularity is
+  // already far more than the 60-day cleanup sweep or .users' "inactive
+  // Xd" display could ever need, so there's no reason to pay for an extra
+  // write on every command invocation just to track activity.
+  const now = Date.now();
+  const ACTIVITY_DEBOUNCE_MS = 60 * 60 * 1000;
+  if (!user.lastActiveAt || now - user.lastActiveAt > ACTIVITY_DEBOUNCE_MS) {
+    user.lastActiveAt = now;
+    needsSave = true;
+  }
+
+  if (needsSave) {
+    await user.save();
+  }
+  return user;
+};
+
+export default mongoose.model('User', UserSchema);
