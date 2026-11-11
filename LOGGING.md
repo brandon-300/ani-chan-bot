@@ -1,6 +1,6 @@
 # Logging
 
-The bot uses `utils/logger.js` as its single logging system. The default output is short, human-readable English for Termux and PM2:
+The bot uses `src/utils/logger.ts` as its single logging system. The default output is short, human-readable English for Termux and PM2:
 
 ```text
 [16:38:05] [command] Received .ping from Brandon in DM (normal queue)

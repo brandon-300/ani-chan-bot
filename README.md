@@ -2,6 +2,8 @@
 > A full-featured WhatsApp bot owned and maintained by **Brandon**, powered by **@whiskeysockets/baileys** (v7.0.0-rc14).
 >
 > Runs on Node.js in Termux on Android — no VPS required. The bot's persona is Marin Kitagawa from *My Dress-Up Darling*.
+>
+> The code is TypeScript now — everything in `src/` is `.ts` and runs directly with tsx. See [TypeScript](#typescript).
 
 ---
 
@@ -49,23 +51,23 @@ Edit `.env` and fill in the values — every variable the bot actually reads is 
 
 ### 4. Seed the Card Database (run once)
 ```bash
-node src/utils/seedCards.js
+npx tsx src/utils/seedCards.ts
 ```
 
 ### 5. Start the Bot
 ```bash
-node src/index.js
-# or with PM2 (recommended for 24/7 uptime):
+npm start        # run the bot (TypeScript runs directly via tsx)
+npm run dev      # same, but auto-restarts when you change code
+# or with PM2 (recommended for 24/7 uptime on Termux):
 npm install -g pm2
-pm2 start src/index.js --name ani-chan-bot
+npm run pm2      # starts via ecosystem.config.cjs
 pm2 save
-pm2 startup
 ```
 
 ### 6. Pair with WhatsApp (Baileys)
 **Baileys uses pairing codes instead of QR codes for Termux:**
 
-1. Start the bot: `node src/index.js`
+1. Start the bot: `npm start`
 2. The bot will display: `WhatsApp pairing code: ABC123`
 3. On your phone, open WhatsApp → Settings → Linked Devices → Link a Device
 4. Select "Pair with phone number" and enter the pairing code
@@ -169,7 +171,7 @@ Owner and moderator configuration works with both formats.
 
 This bot is actively developed and run entirely on an Android phone (Infinix Hot 50i) inside Termux — no server or VPS needed. Important considerations:
 
-- **No native npm binary dependencies.** Packages like `canvas`, `sharp`, and `jimp` don't reliably build in Termux. Every image the bot generates (chess/Tic Tac Toe boards, the Battle HUD, card grids) is drawn with a pure-JS pixel renderer instead — see `src/utils/pngEncoder.js` and the `*BoardImage.js` files under `src/commands/games/`. Connect 4's board is plain emoji/text instead of a rendered image.
+- **No native npm binary dependencies.** Packages like `canvas`, `sharp`, and `jimp` don't reliably build in Termux. Every image the bot generates (chess/Tic Tac Toe boards, the Battle HUD, card grids) is drawn with a pure-JS pixel renderer instead — see `src/utils/pngEncoder.ts` and the `*BoardImage.ts` files under `src/commands/games/`. Connect 4's board is plain emoji/text instead of a rendered image.
 - **ffmpeg is required** and used directly (via `fluent-ffmpeg`) for stickers, video/audio conversion, and voice notes — install it with `pkg install ffmpeg`.
 - **Mobile data is often unstable.** `npm install` and any first-time API call can be slow or need a retry — this is expected, not a bug.
 - **MongoDB free tier caps out at 512MB** — keep an eye on collection sizes if you're running this long-term on the free Atlas tier.
@@ -194,8 +196,11 @@ npm install
 cp .env.example .env
 nano .env
 
+# Keep Termux awake so Android does not kill the bot in the background
+termux-wake-lock
+
 # Start the bot
-node src/index.js
+npm start
 ```
 
 ---
@@ -210,6 +215,47 @@ Subscribe to these APIs on RapidAPI (most have free tiers):
 - `social-media-video-downloader` — for `.fb`
 - `pinterest-scraper` — for `.pinterest`
 - `ai-image-upscaler` — for `.upscale`
+
+---
+
+## TypeScript
+
+All bot code in `src/` is now **TypeScript** (`.ts` files). You do not need to compile anything to run the bot — it runs TypeScript directly with **tsx**:
+
+| Command | What it does |
+|---|---|
+| `npm start` | Run the bot |
+| `npm run dev` | Run the bot, auto-restart when you edit code |
+| `npm run build` | Compile everything to plain JavaScript in `dist/` |
+| `npm run start:prod` | Run the compiled version (`node dist/index.js`) |
+| `npm run typecheck` | Report type mistakes without running the bot |
+| `npm test` | Run the test suite |
+
+Details in `TYPESCRIPT_MIGRATION.md`.
+
+## REST API + Cloudflare Tunnel (for your website / Discord bot)
+
+The bot has a built-in read-only REST API, so your website can show the same data the bot uses (leaderboards, cards, guilds, auctions...). Turn it on in `.env`:
+
+```bash
+API_ENABLED="true"
+API_PORT=3000
+API_KEY="pick-a-long-random-secret"   # only needed for /api/admin/* routes
+```
+
+Endpoints (all start with `/api`): `health`, `stats`, `leaderboard?type=coins|xp|level|orbs|tradesCompleted`, `users/:id`, `users/:id/cards`, `cards?q=&tier=&sort=`, `cards/:cardId`, `guilds?sort=reputation`, `guilds/:id`, `auctions`, and `admin/users` (send header `X-API-Key: <API_KEY>`).
+
+To put the API on the internet without opening ports on your phone, use a Cloudflare Tunnel (needs the `cloudflared` app installed and a domain whose DNS is on Cloudflare):
+
+```bash
+# one-time setup
+bash scripts/setup-cloudflare-tunnel.sh api.your-domain.com
+
+# keep this running next to the bot
+cloudflared tunnel run ani-chan-bot
+```
+
+Your API is then live at `https://api.your-domain.com/api/health`. See `cloudflared.config.example.yml` for the manual config version.
 
 ---
 
@@ -237,7 +283,7 @@ The adapter provides a clean abstraction over Baileys, allowing the application 
 
 ## Commands Reference
 
-The bot's owner-only admin tools (card catalogue management, testing commands, etc.) are intentionally left out of this list — this is the public command set, kept in sync with the in-chat `.menu` command from a single shared source (`src/utils/commandReference.js`). These tables are regenerated from that file by `src/utils/generate_readme_commands.js` — run `node src/utils/generate_readme_commands.js` after changing commandReference.js rather than hand-editing the tables below.
+The bot's owner-only admin tools (card catalogue management, testing commands, etc.) are intentionally left out of this list — this is the public command set, kept in sync with the in-chat `.menu` command from a single shared source (`src/utils/commandReference.ts`). These tables are regenerated from that file by the `generate_readme_commands.cjs` script at the repo root — run `node generate_readme_commands.cjs` (or `npx tsx generate_readme_commands.cjs`) after changing commandReference.ts rather than hand-editing the tables below.
 
 <!-- COMMAND_TABLES_START — auto-generated by generate_readme_commands.js from utils/commandReference.js. Do not hand-edit below this line; run `node src/utils/generate_readme_commands.js` instead. -->
 
