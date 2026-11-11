@@ -9,7 +9,7 @@
     "pm2": "pm2 start ecosystem.config.cjs",
     "stickers:reset": "node scripts/reset-ai-sticker-library.js",
     "stickers:import": "node scripts/import-anime-sticker-packs.js",
-    "test": "vitest run tests/baileys-integration.js tests/baileys-migration-regressions.test.js",
+    "test": "vitest run tests/baileys-integration.js tests/baileys-migration-regressions.test.js tests/api-serializers.test.js",
     "test:watch": "vitest watch tests/baileys-integration.js",
     "pm2:stop": "pm2 delete ani-chan-bot-baileys",
     "logs": "pm2 logs ani-chan-bot-baileys --lines 30"
@@ -21,6 +21,7 @@
     "chess.js": "^1.0.0",
     "cloudinary": "^2.10.0",
     "dotenv": "^16.0.0",
+    "express": "^4.21.2",
     "fluent-ffmpeg": "^2.1.2",
     "form-data": "^4.0.0",
     "link-preview-js": "^3.0.0",

@@ -1,7 +1,7 @@
 /**
  * Ani-Chan Bot - Main Entry Point
  * This file now delegates to the Baileys-based implementation in src/index.js
- * 
+ *
  * For Termux on Android:
  * - Make sure you have Node.js 20+ installed
  * - Install dependencies: npm install
@@ -9,6 +9,11 @@
  * - Start with: node index.js
  * - Or use PM2: pm2 start index.js --name ani-chan-bot
  */
+
+// Start the REST API (website/Discord backend) once MongoDB is connected.
+import('./src/api/boot.js').catch(err => {
+  console.error('Failed to start REST API:', err);
+});
 
 // Import the Baileys-based main module
 import('./src/index.js').catch(err => {
