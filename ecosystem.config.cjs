@@ -1,4 +1,4 @@
-// PM2 config for the Baileys version of AniChan.
+// PM2 config for the Baileys version of AniChan (TypeScript entry point).
 //
 // Start it:   npm run pm2        (from ~/ani-chan-bot-baileys)
 //
@@ -6,11 +6,16 @@
 // both versions are the SAME bot on the SAME WhatsApp account, so only one of them
 // may run at a time. A different PM2 name lets you stop/start each one separately
 // without touching the other. Use ~/switch-bot.sh to change which one is running.
+//
+// The entry point is now index.ts, so PM2 runs it through tsx (installed as a
+// devDependency). For a compiled production run instead: npm run build, then
+// point `script` at 'dist/index.js' and drop the interpreter line.
 module.exports = {
   apps: [
     {
       name: 'ani-chan-bot-baileys',
-      script: 'src/index.js',
+      script: './node_modules/.bin/tsx',
+      args: 'index.ts',
       cwd: __dirname,
       autorestart: true,
       // Crash loops back off instead of hammering WhatsApp / MongoDB.
