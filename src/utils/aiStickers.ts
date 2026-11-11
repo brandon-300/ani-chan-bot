@@ -1458,3 +1458,198 @@ async function buildStickerCatalogue(chatId, persona = null, { max = AI_STICKER_
     const analysis = getPersonaAnalysis(entry, activePersona.id);
     if (!analysis || analysis.analysisStatus !== 'classified') { excluded.unclassified += 1; continue; }
     const fit = Math.max(0, Math.min(1, Number(analysis.personaFit) || 0));
+    if (fit < AI_STICKER_MIN_PERSONA_FIT) { excluded.low_persona_fit += 1; continue; }
+    if (recent.has(entry.hash)) { excluded.recently_sent += 1; continue; }
+    eligible.push({ entry, analysis });
+  }
+
+  // Spread across anime: shuffle inside each anime, then take one from each in
+  // turn until the cap is reached, so no single anime crowds the catalogue.
+  const groups = new Map();
+  for (const item of shuffled(eligible)) {
+    const key = isKnownAnime(item.entry.animeId) ? item.entry.animeId : UNKNOWN_ANIME_ID;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(item);
+  }
+  const queues = shuffled([...groups.values()]);
+  const picked = [];
+  while (picked.length < max && queues.some(queue => queue.length)) {
+    for (const queue of queues) {
+      if (picked.length >= max) break;
+      if (queue.length) picked.push(queue.shift());
+    }
+  }
+
+  // Number them in display order (grouped by anime) so the list is compact.
+  const byAnime = new Map();
+  for (const item of picked) {
+    const name = isKnownAnime(item.entry.animeId) ? (item.entry.animeName || item.entry.animeId) : 'Other';
+    if (!byAnime.has(name)) byAnime.set(name, []);
+    byAnime.get(name).push(item);
+  }
+  const items = [];
+  const lines = [];
+  for (const [name, group] of [...byAnime.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+    const parts = group.map(item => {
+      const id = items.length + 1;
+      const reactions = (item.analysis.reactions || []).slice(0, 3).join(', ');
+      const description = describeForCatalogue(item.entry, item.analysis);
+      const label = [description, reactions].filter(Boolean).join(' / ') || 'sticker';
+      items.push({ id, hash: item.entry.hash, entry: item.entry, analysis: item.analysis, label });
+      return `${id} "${description || 'sticker'}"${reactions ? ` [${reactions}]` : ''}`;
+    });
+    lines.push(`${name}: ${parts.join(' | ')}`);
+  }
+
+  const result = {
+    items,
+    text: lines.join('\n'),
+    eligible: eligible.length,
+    offered: items.length,
+    animeCount: byAnime.size,
+    excluded,
+    reason: items.length ? null : 'nothing_eligible',
+  };
+  logger.write('INFO', 'ai.catalogue', {
+    chatId: chatKey,
+    personaId: activePersona.id,
+    library: records.length,
+    eligible: result.eligible,
+    offered: result.offered,
+    animeCount: result.animeCount,
+    excluded,
+    reason: result.reason,
+  });
+  return result;
+}
+
+// Sends catalogue sticker `stickerId`. Never throws; the result says what
+// happened so the caller can log it and decide on a fallback.
+async function sendCatalogueSticker(client, msg, catalogue, stickerId, { persona = null } = {}) {
+  const id = Number(stickerId);
+  const item = (catalogue?.items || []).find(candidate => candidate.id === id);
+  if (!item) {
+    logger.write('WARN', 'ai.sticker.choice', { requested: stickerId, status: 'not_offered', offered: catalogue?.items?.length || 0 });
+    return { sent: false, reason: 'not_offered', item: null };
+  }
+  const activePersona = persona || getActivePersonaSafe();
+  const chatId = chatIdOf(msg);
+  try {
+    if (!chatId) throw new Error('Could not work out which chat to send the sticker to.');
+    const image = await fetchImageBuffer(item.entry.cloudinaryUrl);
+    const sent = await sendStickerBytes(client, chatId, image, item.entry.hash, activePersona);
+    const label = (item.analysis.reactions || [])[0] || 'neutral';
+    await rememberSentSticker(sent, chatId, { entry: item.entry, persona: activePersona }, label);
+    rememberRecent(chatId, item.entry.hash, item.entry.animeId);
+    logger.write('INFO', 'ai.sticker.sent', {
+      id,
+      hash: String(item.entry.hash || '').slice(0, 8),
+      anime: item.entry.animeName || item.entry.animeId || null,
+      description: item.label,
+      chatId,
+    });
+    return { sent: true, reason: null, item };
+  } catch (err) {
+    logger.error('ai.sticker.send.failed', err, { id, hash: String(item.entry.hash || '').slice(0, 8), chatId });
+    return { sent: false, reason: 'send_failed', item, error: err };
+  }
+}
+
+function _setAdaptersForTests({ Model, storage, mongoConnected } = {}) {
+  stickerModel = Model || AiSticker;
+  cloudinaryStorage = storage || cloudinary;
+  mongoIsReady = mongoConnected || (() => mongoose.connection.readyState === 1);
+  modelInitPromise = null;
+  personaIndexes.clear();
+  indexLoaders.clear();
+  importsInFlight.clear();
+  importSessions.clear();
+  recentByChat.clear();
+  recentAnimeByChat.clear();
+  recentHashesByChat.clear();
+  analysisQueue.length = 0;
+  queuedAnalysis.clear();
+  analysisBusy = false;
+  if (quotaResumeTimer) clearTimeout(quotaResumeTimer);
+  quotaResumeTimer = null;
+  quotaResumeAt = 0;
+  quotaStreak = 0;
+  geminiGate.setReservationProvider(analysisReservesGemini);
+}
+
+// Used by the .persona command: every persona that loads cleanly.
+async function getAvailablePersonas() {
+  const personas = [];
+  for (const personaId of listPersonaIds()) {
+    try {
+      const persona = loadPersona(personaId);
+      personas.push({
+        id: persona.id,
+        displayName: persona.displayName,
+        description: persona.series ? `from ${persona.series}` : '',
+      });
+    } catch (err) {
+      logger.error('ai.personas.unavailable', err, { personaId });
+    }
+  }
+  return personas;
+}
+
+const aiStickers = {
+  startImportMode,
+  stopImportMode,
+  handleIncomingSticker,
+  sendReactionSticker,
+  buildStickerCatalogue,
+  sendCatalogueSticker,
+  analyzeCommand,
+  queueManualAnalysis,
+  cancelQueuedAnalysis,
+  initialize,
+  getAvailablePersonas,
+  ALLOWED_REACTIONS,
+  _parseClassification: parseClassification,
+  _selectSticker: selectSticker,
+  _analyzeSticker: analyzeSticker,
+  _analyzeBatch: analyzeBatch,
+  _personaVersion: personaVersion,
+  _isUsableAnalysis: isUsableAnalysis,
+  _estimateRequests: estimateRequests,
+  _summarizeLibrary: summarizeLibrary,
+  _persistStickerRecord: persistStickerRecord,
+  _setAdaptersForTests,
+  _isQuotaError: isQuotaError,
+  _parseRetryDelayMs: parseRetryDelayMs,
+  _getAnalysisState: () => ({
+    busy: analysisBusy,
+    queued: analysisQueue.length,
+    pausedForQuota: quotaResumeTimer !== null,
+    resumeAt: quotaResumeAt,
+    quotaStreak,
+  }),
+  _enqueueAnalysis: enqueueAnalysis,
+  _getImportSessions: () => importSessions,
+  getSentStickerContext,
+  _scoreStickerAnalysis: scoreStickerAnalysis,
+  findSharedStickersByAnime,
+};
+
+export default aiStickers;
+
+export {
+  aiStickers,
+  startImportMode,
+  stopImportMode,
+  handleIncomingSticker,
+  sendReactionSticker,
+  buildStickerCatalogue,
+  sendCatalogueSticker,
+  analyzeCommand,
+  queueManualAnalysis,
+  cancelQueuedAnalysis,
+  initialize,
+  getAvailablePersonas,
+  getSentStickerContext,
+  findSharedStickersByAnime,
+  ALLOWED_REACTIONS,
+};
