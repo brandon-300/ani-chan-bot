@@ -1,0 +1,355 @@
+
+import FormData from 'form-data';
+import SentPin from '../models/SentPin.js';
+import SentWallpaper from '../models/SentWallpaper.js';
+import axios from 'axios';
+import gemini from '../utils/gemini.js';
+import { MessageMedia } from '../whatsapp/media.js';
+import { safeGetChat, safeGetQuotedMessage } from '../utils/helpers.js';
+const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY;
+
+async function sendImage(msg, url, caption) {
+  try {
+    const media = await MessageMedia.fromUrl(url, { unsafeMime: true });
+    await msg.reply(media, undefined, { caption });
+  } catch {
+    return msg.reply(caption + `\n🔗 ${url}`);
+  }
+}
+
+// LRCLIB only guarantees syncedLyrics for some entries — strips the
+// leading "[mm:ss.xx] " timestamp off each line so it reads as plain text
+// when plainLyrics itself isn't available for that entry.
+function stripLrcTimestamps(syncedLyrics) {
+  if (!syncedLyrics) return '';
+  return syncedLyrics
+    .split('\n')
+    .map(line => line.replace(/^\[\d{2}:\d{2}(?:\.\d{2,3})?\]\s*/, ''))
+    .join('\n')
+    .trim();
+}
+
+export default {
+  // .pinterest [query]
+  // .pinterest [query]
+  // Uses "Pinterest Pin Search" (pinterest-pin-search.p.rapidapi.com) — a
+  // real keyword-search endpoint, confirmed working via RapidAPI's test
+  // console (response shape verified 2026-08-13, replaces the previous
+  // arraybobo/pinterest-scraper listing which was returning empty bodies).
+  // Sends 1 result per call, skipping any pin already sent to this chat
+  // before — same seen/unseen tracking pattern as .wallpaper, using
+  // Pinterest's own pin id (globally unique, so dedup works across
+  // different search terms too, exactly like .wallpaper's behavior).
+  async pinterest(client, msg, args) {
+    const query = args.join(' ');
+    if (!query) return msg.reply('❌ Usage: .pinterest [search term]');
+
+    await msg.reply(`🔍 Searching Pinterest for "${query}"...`);
+    try {
+      const chat = await safeGetChat(msg);
+      if (!chat) return;
+      const chatId = chat.id._serialized;
+
+      const res = await axios.get('https://pinterest-pin-search.p.rapidapi.com/rapidapi/search', {
+        params: { offset: '0', keyword: query, r: 'search/pinterest' },
+        headers: {
+          'X-RapidAPI-Key': RAPIDAPI_KEY,
+          'X-RapidAPI-Host': 'pinterest-pin-search.p.rapidapi.com',
+        },
+        timeout: 20000,
+      });
+
+      const pins = res.data?.result?.results || [];
+
+      if (!pins.length) {
+        console.error('[pinterest] 200 OK but no pins in response:', JSON.stringify(res.data)?.slice(0, 1500));
+        return msg.reply('❌ No results found.');
+      }
+
+      const seenDocs = await SentPin.find({
+        chatId,
+        pinId: { $in: pins.map(p => p.id).filter(Boolean) },
+      }).select('pinId -_id');
+      const seenIds = new Set(seenDocs.map(d => d.pinId));
+
+      // Pinterest's own search mixes in loosely-related/aesthetic content,
+      // and the API gives no relevance score to sort by. Only drop a pin
+      // when its title/description actively don't mention any query word —
+      // pins with blank/vague metadata are left alone rather than
+      // penalized, since sparse text isn't evidence of irrelevance (several
+      // genuinely good results come back with empty titles).
+      const queryWords = query.toLowerCase().split(/\s+/).filter(w => w.length > 1);
+      const looksRelevant = (pin) => {
+        const text = `${pin.title || ''} ${pin.description || ''}`.toLowerCase().trim();
+        if (!text) return true;
+        return queryWords.some(w => text.includes(w));
+      };
+
+      const fresh = pins.filter(
+        p => p.id && !seenIds.has(p.id) && (p.image_link || p.image_url) && looksRelevant(p)
+      );
+
+      if (!fresh.length) {
+        return msg.reply(`❌ You've seen all recent Pinterest results for "${query}" (or nothing matched closely enough). Try a different search term.`);
+      }
+
+      const pin = fresh[Math.floor(Math.random() * fresh.length)];
+      const imgUrl = pin.image_link || pin.image_url;
+
+      await SentPin.create({ chatId, pinId: pin.id }).catch(() => {});
+      await sendImage(msg, imgUrl, `📌 Pinterest: ${query}`);
+    } catch (err) {
+      const status = err.response?.status;
+      console.error('[pinterest] request failed. status:', status, 'body:', JSON.stringify(err.response?.data)?.slice(0, 1500) || err.message);
+
+      if (status === 401 || status === 403) {
+        return msg.reply('❌ Pinterest search failed: RapidAPI rejected the key (401/403).\n💡 This usually means either the key is wrong, or this RapidAPI account isn\'t subscribed to "Pinterest Pin Search" specifically. Check both in your RapidAPI dashboard.');
+      } else if (status === 429) {
+        return msg.reply('❌ Pinterest search failed: RapidAPI rate/quota limit hit (429).\n💡 Check your remaining quota for "Pinterest Pin Search" on RapidAPI.');
+      } else if (err.code === 'ECONNABORTED') {
+        return msg.reply('❌ Pinterest search timed out (slow connection). Try again.');
+      } else {
+        return msg.reply('❌ Pinterest search failed. Check `pm2 logs ani-chan-bot` for the exact error.');
+      }
+    }
+  },
+
+  // .sauce / .reverseimg — reverse image search
+  //
+  // SauceNAO can only confirm a match if this EXACT image (or a near-identical
+  // crop/recompression of it) already exists in one of its crawled databases
+  // (Pixiv, Danbooru, Gelbooru, e-hentai, deviantArt, etc). Wallpaper edits,
+  // AI-upscaled images, and anything not sourced from those sites are usually
+  // NOT indexed at all — SauceNAO then returns its closest visual guesses
+  // (often from totally unrelated indexes) at low similarity, which is noise,
+  // not a real answer. Filtering those out is necessary, but leaves the
+  // person with nothing. So: if SauceNAO can't confidently confirm a source,
+  // fall back to asking Gemini vision to identify the character/scene
+  // directly — clearly labeled as an AI guess, not a confirmed source, since
+  // it's a fundamentally less certain kind of answer than a real source match.
+  async sauce(client, msg, args) {
+    const quoted = await safeGetQuotedMessage(msg).catch(() => null);
+    const targetMsg = quoted || msg;
+
+    if (!targetMsg.hasMedia) {
+      return msg.reply('❌ Reply to an image with .sauce to reverse search it.');
+    }
+
+    await msg.reply('🔍 Reverse searching image...');
+
+    let media;
+    try {
+      media = await targetMsg.downloadMedia();
+    } catch (err) {
+      return msg.reply('❌ Could not download that image — it may have expired. Try re-sending it.');
+    }
+    if (!media?.data) {
+      return msg.reply('❌ Could not download that image — it may have expired. Try re-sending it.');
+    }
+
+    // Fixed, fairly strict floor. SauceNAO's own suggested
+    // header.minimum_similarity can be as low as ~30%, which lets through
+    // noise matches (wrong index, unrelated image) — it's a "don't bother
+    // returning literal garbage" floor, not a "this is actually correct"
+    // signal. 60% is the commonly used bar for a trustworthy exact match.
+    const CONFIDENCE_FLOOR = 60;
+    let sauceResult = null; // { confident: [...] } | { bestSimilarity: number|null } | null (hard error)
+
+    try {
+      const imageBuffer = Buffer.from(media.data, 'base64');
+
+      // Use SauceNAO API for anime sources
+      const form = new FormData();
+      form.append('file', imageBuffer, { filename: 'image.jpg', contentType: media.mimetype });
+      form.append('output_type', '2');
+      form.append('numres', '6');
+
+      const res = await axios.post(
+        `https://saucenao.com/search.php?api_key=${process.env.SAUCENAO_KEY || 'demo'}&output_type=2`,
+        form,
+        { headers: form.getHeaders(), timeout: 30000 }
+      );
+
+      const header = res.data?.header;
+
+      // SauceNAO returns HTTP 200 even on errors — the real status lives in header.status.
+      if (!header || header.status < 0) {
+        console.error('[sauce] SauceNAO API error, header:', JSON.stringify(header));
+        // Fall through to the Gemini fallback below rather than dead-ending here.
+      } else {
+        const allResults = res.data?.results || [];
+        const sorted = [...allResults].sort(
+          (a, b) => parseFloat(b.header?.similarity || 0) - parseFloat(a.header?.similarity || 0)
+        );
+        const confident = sorted.filter(r => parseFloat(r.header?.similarity) >= CONFIDENCE_FLOOR);
+
+        sauceResult = confident.length
+          ? { confident }
+          : { bestSimilarity: sorted[0] ? parseFloat(sorted[0].header?.similarity) : null };
+      }
+    } catch (err) {
+      console.error('[sauce] SauceNAO request failed:', err.response?.data || err.message);
+      // Fall through to the Gemini fallback below rather than dead-ending here.
+    }
+
+    // Confident SauceNAO match — this is a confirmed source, show it and stop.
+    if (sauceResult?.confident) {
+      let text = `🔍 *Reverse Image Results*\n\n`;
+      sauceResult.confident.slice(0, 3).forEach((r, i) => {
+        text += `${i + 1}. *${r.header?.index_name || 'Unknown'}*\n`;
+        text += `   Similarity: ${r.header?.similarity}%\n`;
+        const ext = r.data?.ext_urls?.[0];
+        if (ext) text += `   🔗 ${ext}\n`;
+        text += '\n';
+      });
+      return msg.reply(text);
+    }
+
+    // No confident SauceNAO match (or SauceNAO errored/rate-limited/timed
+    // out) — fall back to Gemini vision for a best-effort character/scene ID.
+    try {
+      const identification = await gemini.generateVision({
+        prompt:
+          'Identify the anime/manga character, series, and scene in this image if you recognize it. ' +
+          'Reply in 2-3 short sentences: character name, series title, and any notable context ' +
+          '(e.g. arc/season/outfit) if identifiable. If you do not recognize it or are not confident, say so plainly — do not guess.',
+        base64Image: media.data,
+        mimeType: media.mimetype,
+        maxOutputTokens: 300,
+      });
+
+      const prefix = sauceResult?.bestSimilarity
+        ? `🔍 No confirmed source found on SauceNAO (closest match only ${sauceResult.bestSimilarity}% similar — likely wrong, not shown).\n\n`
+        : `🔍 SauceNAO couldn't confirm a source for this image.\n\n`;
+
+      return msg.reply(`${prefix}🤖 *AI best guess* (not a confirmed source):\n${identification}`);
+    } catch (err) {
+      console.error('[sauce] Gemini fallback failed:', err.message);
+      if (err.code === 'GEMINI_BUSY') {
+        // Sticker analysis currently owns the Gemini quota (utils/geminiGate.js).
+        return msg.reply("🔍 SauceNAO couldn't confirm a source for this image, and the AI fallback is unavailable right now. Please try again later.");
+      }
+      if (sauceResult?.bestSimilarity) {
+        return msg.reply(
+          `❌ No confident match found.\n📉 Closest SauceNAO result was only ${sauceResult.bestSimilarity}% similar, so it's likely wrong and wasn't shown.\n💡 Try a clearer, uncropped, or higher-resolution image.`
+        );
+      }
+      return msg.reply('❌ Reverse search failed. Make sure to reply to an image.\n💡 Get a free SauceNAO API key at saucenao.com');
+    }
+  },
+
+  // .wallpaper [query]
+async wallpaper(client, msg, args) {
+    const query = args.join(' ') || 'anime';
+    await msg.reply(`🖼️ Fetching wallpaper for "${query}"...`);
+
+    try {
+      const chat = await safeGetChat(msg);
+    if (!chat) return;
+      if (!chat) return;
+      const chatId = chat.id._serialized;
+
+      // Wallhaven API — free, no key needed for SFW
+      const res = await axios.get('https://wallhaven.cc/api/v1/search', {
+        params: {
+          q: query,
+          purity: '100',    // SFW only
+          categories: '111',
+          sorting: 'random',
+          per_page: 24,
+        },
+      });
+
+      const wallpapers = res.data?.data || [];
+      if (!wallpapers.length) return msg.reply('❌ No wallpapers found.');
+
+      const seenDocs = await SentWallpaper.find({
+        chatId,
+        wallpaperId: { $in: wallpapers.map(w => w.id) },
+      }).select('wallpaperId -_id');
+      const seenIds = new Set(seenDocs.map(d => d.wallpaperId));
+
+      const fresh = wallpapers.filter(w => !seenIds.has(w.id));
+
+      if (!fresh.length) {
+        return msg.reply(`❌ You've seen all recent wallpapers for "${query}". Try a different search, or wait for new ones to be added.`);
+      }
+
+      const wall = fresh[Math.floor(Math.random() * fresh.length)];
+      await SentWallpaper.create({ chatId, wallpaperId: wall.id }).catch(() => {});
+
+      const imgUrl = wall.path;
+      await sendImage(msg, imgUrl, `🖼️ Wallpaper: ${query}\n📐 ${wall.resolution}`);
+    } catch (err) {
+      return msg.reply('❌ Wallpaper search failed.');
+    }
+  },
+
+  // .lyrics [song name]
+  //
+  // Uses LRCLIB (https://lrclib.net) — free, no API key/signup, no rate
+  // limit, and purpose-built for lyrics (as opposed to being one minor
+  // endpoint on a general novelty API). Switched from Some Random API
+  // after it repeatedly failed on mainstream, correctly-attributed anime
+  // songs in production (e.g. "Inferno" by Mrs. GREEN APPLE — the Fire
+  // Force OP — see pm2 logs 2026-08-13), which pointed to weak underlying
+  // coverage rather than a query-formatting problem.
+  async lyrics(client, msg, args) {
+    const query = args.join(' ');
+    if (!query) return msg.reply('❌ Usage: .lyrics [song name]');
+
+    await msg.reply(`🎵 Searching lyrics for "${query}"...`);
+
+    const search = (params) =>
+      axios.get('https://lrclib.net/api/search', {
+        params,
+        headers: { 'User-Agent': 'AniChan-WhatsApp-Bot/1.0' },
+        timeout: 15000,
+      });
+
+    // "Title by Artist" is a natural way to type it, and LRCLIB's search
+    // matches better against track_name/artist_name split apart than
+    // against one free-text string containing the literal word "by". If
+    // that split search comes up empty (e.g. a wrong/tie-in artist credit),
+    // fall back to a plain free-text search on the whole query.
+    const byMatch = query.match(/^(.*?)\s+by\s+(.+)$/i);
+
+    try {
+      let results = [];
+
+      if (byMatch) {
+        const [, title, artist] = byMatch;
+        const res = await search({ track_name: title.trim(), artist_name: artist.trim() });
+        results = res.data || [];
+      }
+
+      if (!results.length) {
+        const res = await search({ q: query });
+        results = res.data || [];
+      }
+
+      const best = results.find(r => r.plainLyrics || r.syncedLyrics);
+
+      if (!best) {
+        return msg.reply(
+          `❌ Lyrics not found for "${query}".\n💡 Try a different spelling/romanization, or drop the artist and just search the title.`
+        );
+      }
+
+      const rawLyrics = best.plainLyrics || stripLrcTimestamps(best.syncedLyrics);
+      const lyrics = rawLyrics.slice(0, 3000); // WhatsApp message limit
+      const hasMore = rawLyrics.length > 3000;
+
+      return msg.reply(
+        `🎵 *${best.trackName}*\n👤 ${best.artistName}\n\n${lyrics}${hasMore ? '\n\n... (truncated)' : ''}`
+      );
+    } catch (err) {
+      if (err.code === 'ECONNABORTED') {
+        return msg.reply('❌ Lyrics search timed out (slow connection). Try again.');
+      } else {
+        console.error('[lyrics] request failed:', err.response?.data || err.message);
+        return msg.reply('❌ Lyrics search failed.');
+      }
+    }
+  },
+};
