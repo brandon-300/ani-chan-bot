@@ -1,0 +1,158 @@
+
+import battle from './games/battle.js';
+import chessGame from './games/chess.js';
+import connect4 from './games/connect4.js';
+import quiz from './games/quiz.js';
+import tictactoe from './games/tictactoe.js';
+import akinatorService from '../services/akinatorService.js';
+import { pick, mentionName, safeGetChat, resolveNameById } from '../utils/helpers.js';
+const GREEK_GODS = [
+  { name: 'Zeus', domain: 'Sky & Thunder', symbol: '⚡' },
+  { name: 'Poseidon', domain: 'Sea', symbol: '🌊' },
+  { name: 'Athena', domain: 'Wisdom', symbol: '🦉' },
+  { name: 'Apollo', domain: 'Sun & Arts', symbol: '☀️' },
+  { name: 'Artemis', domain: 'Moon & Hunt', symbol: '🌙' },
+  { name: 'Ares', domain: 'War', symbol: '⚔️' },
+  { name: 'Aphrodite', domain: 'Love', symbol: '💕' },
+  { name: 'Hermes', domain: 'Travel', symbol: '🪄' },
+  { name: 'Hephaestus', domain: 'Fire & Forge', symbol: '🔥' },
+  { name: 'Demeter', domain: 'Harvest', symbol: '🌾' },
+  { name: 'Dionysus', domain: 'Wine', symbol: '🍇' },
+  { name: 'Hades', domain: 'Underworld', symbol: '💀' },
+];
+
+const WCG_QUESTIONS = [
+  { q: 'Would you rather fight 100 duck-sized horses or 1 horse-sized duck?', opts: ['100 duck-sized horses', '1 horse-sized duck'] },
+  { q: 'Would you rather always be 10 minutes late or 20 minutes early?', opts: ['Always late', 'Always early'] },
+  { q: 'Would you rather have no fingers or no toes?', opts: ['No fingers', 'No toes'] },
+];
+
+const battleGames = battle.battleGames;
+
+export default {
+  battleGames: battle.battleGames,
+  ttt: tictactoe.ttt,
+  tttGames: tictactoe.tttGames,
+
+  // .quitgame / .quit — forfeit whichever game you're currently in. Your
+  // opponent is declared the winner regardless of the current board state.
+  async quitgame(client, msg, args) {
+    // Akinator is per player (not per chat), so only the sender's own game is stopped.
+    try {
+      if (await akinatorService.cancelForMessage(msg)) {
+        return msg.reply('🛑 Your Akinator game was stopped.');
+      }
+    } catch (err) {
+      console.warn('[Akinator] .quitgame cancellation check failed:', err.message);
+    }
+
+    const chat = await safeGetChat(msg);
+    if (!chat) return;
+    const contact = await msg.getContact();
+    const chatId = chat.id._serialized;
+    const playerId = contact.id._serialized;
+
+    // Tic Tac Toe
+    const tttResult = tictactoe.quitTTT(chatId, playerId);
+    if (tttResult) {
+      return msg.reply(`🚩 *${tttResult.quitterName}* quit Tic Tac Toe.\n🏆 *${tttResult.winnerName} wins by forfeit!*`);
+    }
+
+    // Connect 4
+    const c4Result = connect4.quitC4(chatId, playerId);
+    if (c4Result) {
+      return msg.reply(`🚩 *${c4Result.quitterName}* quit Connect 4.\n🏆 *${c4Result.winnerName} wins by forfeit!*`);
+    }
+
+    // Chess
+    const chessResult = chessGame.quitChess(chatId, playerId);
+    if (chessResult) {
+      return msg.reply(`🚩 *${chessResult.quitterName}* resigned from Chess.\n🏆 *${chessResult.winnerName} wins by forfeit!*`);
+    }
+
+    // Battle
+    const battleResult = battle.quitBattle(chatId, playerId);
+    if (battleResult) {
+      return msg.reply(`🚩 *${battleResult.quitterName}* fled the battle.\n🏆 *${battleResult.winnerName} wins by forfeit!*`);
+    }
+
+    // Anime Quiz — now a starter/joiner match (up to 5 players, see
+    // .quiz start/.quiz join in quiz.js). Only the starter can end a
+    // pending lobby or an active match this way; a joiner gets an explicit
+    // explanation instead (leave the lobby, or that only the starter can
+    // end a running match) rather than the generic "not in any game"
+    // below, since they genuinely are in one — they just can't end it.
+    // quitQuiz returns null only when the caller isn't in a quiz lobby or
+    // match here AT ALL, which does fall through to that generic message.
+    const quizResult = quiz.quitQuiz(chatId, playerId);
+    if (quizResult) {
+      if (!quizResult.ended) {
+        return msg.reply(
+          quizResult.reason === 'joiner-in-lobby'
+            ? '❌ Only the person who started this lobby can cancel it — use *.quiz leave* to leave it yourself.'
+            : '❌ Only the quiz starter can end this match.'
+        );
+      }
+      if (quizResult.lobby) return msg.reply('🛑 Quiz lobby cancelled.');
+      return msg.reply(
+        `🚩 *${mentionName(contact)}* stopped the Anime Quiz (${quizResult.askedSoFar}/${quizResult.total} questions asked).\n\n🏆 *Scoreboard*\n\n${quizResult.board}`
+      );
+    }
+
+    return msg.reply("❌ You're not currently in any game.");
+  },
+
+  // .quiz — anime character guessing quiz, sourced from the card catalogue.
+  // Starter/joiner match (up to 5 players): .quiz start opens a lobby (the
+  // starter auto-joins as Player 1), .quiz join takes a slot, .quiz leave
+  // backs out (joiners only), .quiz end cancels/ends (starter only) — see
+  // quiz.js for the full flow.
+  quiz: quiz.quiz,
+
+  // .startbattle
+  startbattle: battle.startbattle,
+
+  // .attack
+  attack: battle.attack,
+
+  // .defend
+  defend: battle.defend,
+
+  // .flee
+  flee: battle.flee,
+
+  // .akinator [start|stop|help] — alias .aki
+  // The service owns the persistent per-player game and handles the quoted answers.
+  akinator(client, msg, args) {
+    return akinatorService.startOrContinue(client, msg, args);
+  },
+
+  // .greekgod
+  async greekgod(client, msg, args) {
+    const god = pick(GREEK_GODS);
+    const contact = await msg.getContact();
+    return msg.reply(
+      `🏛️ *Your Greek God*\n\n${god.symbol} *${god.name}*\nDomain: ${god.domain}\n\nYou embody the spirit of ${god.name}, ${contact.pushname}!`
+    );
+  },
+
+  // .c4 — connect 4
+  c4: connect4.c4,
+
+  // .drop [col]
+  drop: connect4.drop,
+
+  // .wcg — would you rather (group game)
+  async wcg(client, msg, args) {
+    const q = pick(WCG_QUESTIONS);
+    return msg.reply(`🎮 *Would You Rather?*\n\n${q.q}\n\nA) ${q.opts[0]}\nB) ${q.opts[1]}\n\nReply A or B!`);
+  },
+
+  // .chess @user (play a person) | .chess [easy|medium|hard] (play the bot)
+  chess: chessGame.chess,
+
+  // .move [e2e4]
+  move: chessGame.move,
+};
+
+export { battleGames };
